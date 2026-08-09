@@ -47,7 +47,7 @@ new GuiChunkedBitmapCtrl(TNBMailGui) {
 			visible = "1";
 			hideCursor = "0";
 			bypassHideCursor = "0";
-			command = "TNBMailUnsupported();";
+			command = "TNBMailShowBlockList();";
 			helpTag = "0";
 			text = "BLOCK LIST";
 			simpleStyle = "0";

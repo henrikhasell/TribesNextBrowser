@@ -30,15 +30,6 @@
 if ($TNB::MailURI $= "")
    $TNB::MailURI = "/tn/json/json_mail.php";
 
-// Whether the backend serves the WON-era extras: Sent/Deleted folders, block
-// lists, working send. TribesNext serves none of them, a self-hosted TNBrowser
-// backend serves all of them, so the controls follow this rather than being
-// hidden outright.
-//
-// Left off by default so pointing at TribesNext behaves exactly as before.
-if ($TNB::FullFeatures $= "")
-   $TNB::FullFeatures = 0;
-
 //-----------------------------------------------------------------------------
 // API
 //
@@ -149,6 +140,19 @@ function TNBMailGui::onWake(%this)
    Canvas.pushDialog(LaunchToolbarDlg);
    TNBMailHideUnsupported();
 
+   // Open on the inbox, and say so in both places: the folder the next request
+   // will ask for, and the tab the user sees lit. TNBMailApiList falls back to
+   // "inbox" when the folder is empty, so leaving this implicit still showed
+   // the right messages -- under no tab at all, which reads as a broken screen.
+   //
+   // setValue does not fire the control's command on this build (measured), so
+   // this lights the tab without also triggering TNBMailShowFolder and a second
+   // list request.
+   $TNB::MailFolder = "inbox";
+   TNBMailTabInbox.setValue(1);
+   TNBMailTabSent.setValue(0);
+   TNBMailTabDeleted.setValue(0);
+
    TNBMailList.ClearColumns();
    TNBMailList.addColumn(0, "", 24, 24, 24, "center");
    TNBMailList.addColumn(1, "From", 120, 60, 220);
@@ -169,32 +173,31 @@ function TNBMailGui::setKey(%this, %key) { %this.key = %key; }
 function TNBMailGui::onClose(%this, %key) { }
 function TNBMailGui::connectionTerminated(%this, %key) { }
 
-// Show only what the backend behind us can actually do.
+// Hide only what has no counterpart at all.
 //
-// Against TribesNext the mail API is count/read/delete/send-that-refuses, with
-// no folders and no block list, so those controls stay hidden. Against a
-// TNBrowser backend they all work and are shown.
+// Everything else is offered unconditionally. The backend is a TNBrowser
+// backend -- TribesNext is contacted for the login and nothing else -- so there
+// is no capability left to switch on, and a mode flag that has to be set
+// correctly for the UI to be honest is a poor way to express something the
+// server already answers for itself. A method a backend cannot serve reports
+// its own refusal, which is how this client treats every other method.
 function TNBMailHideUnsupported()
 {
-   %full = $TNB::FullFeatures;
+   // Set both ways, not just the hiding. GUI objects outlive a single open --
+   // they are created once and reused -- so a control this function does not
+   // explicitly show stays however it was last left, and anything hidden
+   // earlier in the session would never come back.
+   TNBMailBlockListBtn.setVisible(1);
+   TNBMailBlockBtn.setVisible(1);
+   TNBMailForwardBtn.setVisible(1);
+   TNBMailReplyAllBtn.setVisible(1);
+   TNBMailTabSent.setVisible(1);
+   TNBMailTabDeleted.setVisible(1);
 
-   TNBMailBlockListBtn.setVisible(%full);
-   TNBMailBlockBtn.setVisible(%full);
-   TNBMailTabSent.setVisible(%full);
-   TNBMailTabDeleted.setVisible(%full);
-
-   // Forward and reply-all both need a working send, which only a TNBrowser
-   // backend has.
-   TNBMailForwardBtn.setVisible(%full);
-   TNBMailReplyAllBtn.setVisible(%full);
-
-   // Sender tracking was a WON buddy-list shortcut; the buddy list itself lives
-   // on the player pane, so this button stays retired either way.
+   // Sender tracking was a WON buddy-list shortcut. The buddy list itself lives
+   // on the player pane, so these two have nothing to call.
    TNBMailTrackBtn.setVisible(0);
    TNBMailTrackListBtn.setVisible(0);
-
-   if (!%full)
-      TNBMailTabInbox.setValue(1);
 }
 
 // Folder tabs. INBOX/SENT/DELETED map to the folder argument the backend takes.
@@ -229,6 +232,56 @@ function TNBMailAfterBlock(%ctx, %status, %result)
       return;
    }
    MessageBoxOK("EMAIL", "Blocked. Their mail will no longer arrive.");
+}
+
+// The block list, rendered into the message pane rather than a dialog of its
+// own -- the stock BLOCK LIST button opened a WON-backed list this mod has no
+// .gui for, and the pane is already a GuiMLTextCtrl, which the TNBrowserLinks
+// package makes clickable everywhere.
+//
+// Blocking itself happens from a message (TNBMailBlockSender). This is the
+// other half: seeing who is blocked, and undoing it.
+function TNBMailShowBlockList()
+{
+   TNBMailSetBody("<just:center>\n\nLoading your block list...");
+   TNBApiEnqueue("blocklist", "", "TNBMailBlockListLoaded", "", 0);
+}
+
+function TNBMailBlockListLoaded(%ctx, %status, %result)
+{
+   if (%status $= "error")
+   {
+      TNBMailSetBody("<just:center>\n\nCould not load your block list.\n\n" @ %result);
+      return;
+   }
+
+   %count = TNBJsonCount(%result);
+   %text = "<font:Univers Bold:16>Blocked players<font:Univers:14>\n\n";
+   if (%count == 0)
+      %text = %text @ "<spush><color:808080>You have not blocked anyone.<spop>\n";
+
+   for (%i = 0; %i < %count; %i++)
+   {
+      %b = TNBJsonIndex(%result, %i);
+      %guid = TNBJsonStr(%b, "guid");
+      %text = %text @ "  " @
+              TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
+                            TNBJsonBool(%b, "append")) @
+              "   <a:tnb\tunblock\t" @ %guid @ ">[ unblock ]</a>\n";
+   }
+
+   %text = %text @ "\nBlocked players cannot send you mail.";
+   TNBMailSetBody(%text);
+}
+
+function TNBMailAfterUnblock(%ctx, %status, %result)
+{
+   if (%status $= "error")
+   {
+      MessageBoxOK("EMAIL", %result);
+      return;
+   }
+   TNBMailShowBlockList();
 }
 
 function TNBMailUnsupported()

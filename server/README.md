@@ -69,17 +69,17 @@ Point the client at it from the game console:
 
 ```
 $TNB::Host = "http://your-host:8080";
-$TNB::FullFeatures = 1;
 ```
 
 or bake both into the packages so installing is a single file copy:
 
 ```sh
-../tools/build-vl2.sh --host "http://your-host:8080" --full-features
+../tools/build-vl2.sh --host "http://your-host:8080"
 ```
 
-`$TNB::AuthHost` stays on TribesNext — that is where the account lives.
-`$TNB::FullFeatures` un-hides the controls only this backend can serve.
+`$TNB::AuthHost` stays on TribesNext — that is where the account lives. Every
+control the client offers is offered unconditionally: this backend serves them
+all, and the client reports a refusal if any backend ever cannot.
 
 ## Logs
 

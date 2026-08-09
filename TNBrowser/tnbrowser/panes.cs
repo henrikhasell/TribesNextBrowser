@@ -439,7 +439,7 @@ function TNBRenderPlayerProfile()
               "   <a:tnb\teditsite\t>[ Edit my website ]</a>";
    }
    %text = %text @ "\n<a:tnb\tuserhistory\t>[ View history ]</a>";
-   if (%isSelf && $TNB::FullFeatures)
+   if (%isSelf)
       %text = %text @ "   <a:tnb\tbuddies\t>[ Buddy list ]</a>";
 
    TNBSetPlayerText(%text);
@@ -971,6 +971,12 @@ function TNBHandleLink(%action, %arg)
       case "unbuddy":
          TNBApiEnqueue("buddyremove", TNBJsonObject("to", %arg),
                        "TNBAfterBuddyChange", "", 0);
+
+      // Rendered by the mail window's block list, which shares this dispatcher
+      // because onURL is packaged for every GuiMLTextCtrl, not per pane.
+      case "unblock":
+         TNBApiEnqueue("blockremove", TNBJsonObject("to", %arg),
+                       "TNBMailAfterUnblock", "", 0);
 
       case "userhistory":
          TNBSetPlayerText("<just:center>\n\nLoading history...");

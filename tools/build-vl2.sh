@@ -38,8 +38,6 @@
 #                       game-server mod. They are the same central server in
 #                       every normal deployment, which is why this is one flag.
 #                       Default http://localhost:8080.
-#   --full-features     turn on the controls only a TNBrowser backend can serve
-#                       (mail folders, block and buddy lists).
 #
 # If your game servers must reach the backend at a different address than
 # players do -- an internal hostname, or split-horizon DNS -- set $TNBS::Host in
@@ -49,13 +47,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="http://localhost:8080"
-FULL_FEATURES=""
 OUTDIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --host)        HOST="${2:?--host needs a URL}"; shift 2 ;;
-        --full-features) FULL_FEATURES=1; shift ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) OUTDIR="$1"; shift ;;
     esac
@@ -106,16 +102,7 @@ pack() {
 
     case "$moddir" in
         TNBrowser)
-            bake "$stage/tnbrowser/settings.cs" "TNB::Host" "$HOST"
-            if [ -n "$FULL_FEATURES" ]; then
-                # This one is a number, not a quoted string, so it needs its own
-                # rewrite rather than the bake() helper.
-                sed -i 's/^\(   \$TNB::FullFeatures = \).*$/\11;/' \
-                    "$stage/tnbrowser/settings.cs" 2>/dev/null || true
-                sed -i 's/^\(   \$TNB::FullFeatures = \).*$/\11;/' \
-                    "$stage/tnbrowser/mail.cs"
-                echo "  baked \$TNB::FullFeatures = 1" >&2
-            fi ;;
+            bake "$stage/tnbrowser/settings.cs" "TNB::Host" "$HOST" ;;
         TNBrowserServer)
             bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$HOST" ;;
     esac

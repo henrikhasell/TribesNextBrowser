@@ -76,7 +76,6 @@ GameData/MyMod/autoexec.cs      <- your settings
 
 ```
 $TNB::Host = "http://your-backend:8080";
-$TNB::FullFeatures = 1;
 ```
 
 The game execs every mod's `scripts/autoexec/*.cs` first and `autoexec.cs` last
@@ -96,7 +95,7 @@ For something you hand to someone else, bake the settings into the archive at
 build time instead, so installing is copying one file:
 
 ```sh
-./tools/build-vl2.sh --host "http://your-backend:8080" --full-features
+./tools/build-vl2.sh --host "http://your-backend:8080"
 ```
 
 One `--host` covers both packages: the client reads its data there and the game
@@ -120,10 +119,6 @@ It loads two ways, so it does not depend on any single boot path: once from
 `scripts/TNBrowserServerGame.cs`, which `CreateServer()` execs on every server
 start (`base/scripts/server.cs` scans `scripts/*Game.cs` across the mod path
 stack, archives included). Whichever fires first loads it; the other is a no-op.
-
-`--full-features` belongs with `--host`: pointing the client at your backend
-without it leaves the mail folders and block/buddy lists hidden, which is the
-right default for TribesNext and the wrong one for yours.
 
 Baking works from a copy, so the source tree is untouched, and the settings keep
 their `if empty` guard, so a loose `autoexec.cs` can still override a baked
@@ -414,7 +409,6 @@ then in the game console:
 
 ```
 $TNB::Host = "http://your-host:8080";   # data from your backend
-$TNB::FullFeatures = 1;                  # un-hide folders, block lists, buddies
 ```
 
 `$TNB::AuthHost` stays on TribesNext: players still log in there with their RSA

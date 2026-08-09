@@ -4,7 +4,17 @@
 // probing the live endpoint established, including the fact that send is
 // refused with "500 Invalid Parameters".
 //
-//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099");
+//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099", 0);
+//
+// The second argument says which kind of server is behind it: 0 for the
+// TribesNext-shaped mock, 1 for a TNBrowser backend. The two differ in what
+// they can actually do -- a TNBrowser backend delivers mail, keeps Sent and
+// Deleted folders, and serves block and buddy lists; TribesNext has none of it
+// and refuses every send.
+//
+// That is a property of the server, so the *test* is told. The client is not:
+// it offers every control unconditionally and reports whatever refusal comes
+// back, which is what removing $TNB::FullFeatures was about.
 
 function TNBMailTestEq(%name, %got, %want)
 {
@@ -39,8 +49,9 @@ function TNBMailTestHas(%name, %haystack, %needle)
    }
 }
 
-function TNBMailSelfTest(%host)
+function TNBMailSelfTest(%host, %isBackend)
 {
+   $TNBMailTest::IsBackend = %isBackend;
    $TNBMailTest::Pass = 0;
    $TNBMailTest::Fail = 0;
    $TNBMailTest::Done = 0;
@@ -86,14 +97,21 @@ function TNBMailStep2()
    TNBMailTestEq("cached body", $TNB::MailBody[1], "Good games last night.\n\n-- Ravage");
    TNBMailTestEq("second cached id", $TNB::MailId[1], "12");
 
-   // Controls follow what the backend can actually do: hidden against
-   // TribesNext, shown against a backend that serves folders and block lists.
-   TNBMailTestEq("block button follows capability",
-                 TNBMailBlockBtn.isVisible(), $TNB::FullFeatures ? 1 : 0);
-   TNBMailTestEq("sent folder follows capability",
-                 TNBMailTabSent.isVisible(), $TNB::FullFeatures ? 1 : 0);
-   if (!$TNB::FullFeatures)
-      TNBMailTestEq("inbox tab selected", TNBMailTabInbox.getValue(), 1);
+   // Every control the mail API has any counterpart for is offered, whichever
+   // backend is behind it. Only sender tracking stays hidden, having nothing to
+   // call at all.
+   TNBMailTestEq("block button offered", TNBMailBlockBtn.isVisible(), 1);
+   TNBMailTestEq("sent folder offered", TNBMailTabSent.isVisible(), 1);
+   TNBMailTestEq("deleted folder offered", TNBMailTabDeleted.isVisible(), 1);
+   TNBMailTestEq("sender tracking hidden", TNBMailTrackBtn.isVisible(), 0);
+
+   // Opening the window lights INBOX and asks for the inbox. Unconditional:
+   // the selection used to live inside the capability guard, so the shipped
+   // build opened on the inbox with no tab lit at all.
+   TNBMailTestEq("inbox tab lit on open", TNBMailTabInbox.getValue(), 1);
+   TNBMailTestEq("sent tab not lit", TNBMailTabSent.getValue(), 0);
+   TNBMailTestEq("deleted tab not lit", TNBMailTabDeleted.getValue(), 0);
+   TNBMailTestEq("folder follows the tab", $TNB::MailFolder, "inbox");
 
    // Selecting a row renders the message from the cached list entry.
    TNBMailTestEq("starts unread", $TNB::MailUnread[0], 1);
@@ -173,7 +191,7 @@ function TNBMailStepAfterSend()
    // The headline difference between the backends: TribesNext refuses every
    // send, a self-hosted backend delivers. Either way the client must report
    // what actually happened rather than assume.
-   if ($TNB::FullFeatures)
+   if ($TNBMailTest::IsBackend)
       TNBMailTestEq("send delivered", $TNBMailTest::SendStatus, "ok");
    else
       TNBMailTestEq("send reported as failure", $TNBMailTest::SendStatus, "error");
@@ -191,6 +209,89 @@ function TNBMailStepAfterDelete()
    TNBMailTestEq("remaining message", $TNB::MailSubject[0], "gg");
    TNBMailTestEq("remaining id", $TNB::MailId[0], "12");
 
+   // Everything past here needs a TNBrowser backend. Against the mock, which
+   // stands in for TribesNext, these methods do not exist at all -- the client
+   // still offers the controls and would report the 501, which is the designed
+   // behaviour, but there is nothing to assert about the feature itself.
+   if (!$TNBMailTest::IsBackend)
+   {
+      TNBMailFinish();
+      return;
+   }
+
+   // Deleting moved the message rather than destroying it: the Deleted folder
+   // is the two-stage delete the original's tab implied (store.MailDelete).
+   TNBMailShowFolder("deleted");
+   schedule(2500, 0, "TNBMailStepDeletedFolder");
+}
+
+function TNBMailStepDeletedFolder()
+{
+   TNBMailTestEq("folder request switched", $TNB::MailFolder, "deleted");
+   TNBMailTestEq("deleted folder holds the message", $TNB::MailCount, 1);
+   TNBMailTestEq("and it is the one deleted", $TNB::MailId[0], "11");
+
+   TNBMailShowFolder("sent");
+   schedule(2500, 0, "TNBMailStepSentFolder");
+}
+
+function TNBMailStepSentFolder()
+{
+   TNBMailTestEq("sent folder requested", $TNB::MailFolder, "sent");
+   // The send earlier in this run went to 4120041, so it is filed here.
+   TNBMailTestEq("sent folder holds what we sent", ($TNB::MailCount > 0), 1);
+
+   // Block list: blocking happens from a message, this is the other half.
+   $TNB::MailReplyTo = "4200999";
+   TNBMailConfirmBlock();
+   schedule(2500, 0, "TNBMailStepBlockList");
+}
+
+function TNBMailStepBlockList()
+{
+   TNBMailShowBlockList();
+   schedule(2500, 0, "TNBMailStepBlockListShown");
+}
+
+function TNBMailStepBlockListShown()
+{
+   %text = TNBMailBody.getText();
+   TNBMailTestHas("block list names the blocked player", %text, "Ravage");
+   TNBMailTestHas("block list offers an unblock", %text, "unblock");
+
+   TNBHandleLink("unblock", "4200999");
+   schedule(2500, 0, "TNBMailStepAfterUnblock");
+}
+
+function TNBMailStepAfterUnblock()
+{
+   %text = TNBMailBody.getText();
+   TNBMailTestEq("unblocking empties the list",
+                 (strstr(%text, "Ravage") >= 0) ? 0 : 1, 1);
+
+   // Buddy list, which nothing exercised from the client before now.
+   TNBApiEnqueue("buddyadd", TNBJsonObject("to", "4120041"),
+                 "TNBMailStepBuddyAdded", "", 0);
+}
+
+function TNBMailStepBuddyAdded(%ctx, %status, %result)
+{
+   TNBMailTestEq("buddyadd accepted", %status, "ok");
+   TNBApiEnqueue("buddylist", "", "TNBMailStepBuddyList", "", 0);
+}
+
+function TNBMailStepBuddyList(%ctx, %status, %result)
+{
+   TNBMailTestEq("buddylist status", %status, "ok");
+   TNBMailTestEq("one buddy listed", TNBJsonCount(%result), 1);
+   TNBMailTestEq("buddy is who we added",
+                 TNBJsonStr(TNBJsonIndex(%result, 0), "guid"), "4120041");
+
+   TNBMailFinish();
+}
+
+function TNBMailFinish()
+{
    echo("");
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail);
    $TNBMailTest::Done = 1;
