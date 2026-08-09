@@ -62,7 +62,7 @@ echo
 echo "== gui =="
 restart_mock
 $CONSOLE "$LOAD" 'exec("tests/gui_test.cs");' \
-    "TNBGuiSelfTest(\"$HOST_ADDR\");" \
+    "TNBGuiSelfTest(\"$HOST_ADDR\", 0);" \
     --until '$TNBGuiTest::Done' --until-timeout 120 >/dev/null 2>&1
 
 # The GUI steps run from schedule() callbacks, so their console output lands

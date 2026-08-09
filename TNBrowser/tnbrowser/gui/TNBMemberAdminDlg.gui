@@ -29,7 +29,7 @@ new GuiControl(TNBMemberAdminDlg) {
 		minExtent = "48 92";
 		visible = "1";
 		helpTag = "0";
-		text = "MEMBER RANK";
+		text = "MEMBER PROFILE";
 		maxLength = "255";
 		noTitleBar = "0";
 
@@ -56,7 +56,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			minExtent = "8 8";
 			visible = "1";
 			helpTag = "0";
-			text = "MEMBER TITLE";
+			text = "WARRIOR TITLE";
 			maxLength = "255";
 		};
 		new ShellRadioButton(TNBRank4) {
@@ -69,7 +69,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			visible = "1";
 			command = "TNBRankSelect(4);";
 			helpTag = "0";
-			text = " RANK 4: Leader";
+			text = " RANK 4: Tribe Admin 1";
 			maxLength = "255";
 			groupNum = "1";
 		};
@@ -83,7 +83,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			visible = "1";
 			command = "TNBRankSelect(3);";
 			helpTag = "0";
-			text = " RANK 3: Senior Admin";
+			text = " RANK 3: Tribe Admin 2";
 			maxLength = "255";
 			groupNum = "1";
 		};
@@ -97,7 +97,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			visible = "1";
 			command = "TNBRankSelect(2);";
 			helpTag = "0";
-			text = " RANK 2: Officer";
+			text = " RANK 2: Tribe Admin 3";
 			maxLength = "255";
 			groupNum = "1";
 		};
@@ -111,7 +111,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			visible = "1";
 			command = "TNBRankSelect(1);";
 			helpTag = "0";
-			text = " RANK 1: Member";
+			text = " RANK 1: Tribe Member";
 			maxLength = "255";
 			groupNum = "1";
 		};
@@ -125,7 +125,7 @@ new GuiControl(TNBMemberAdminDlg) {
 			visible = "1";
 			command = "TNBRankSelect(0);";
 			helpTag = "0";
-			text = "RANK 0: Recruit";
+			text = "RANK 0: On Probation";
 			maxLength = "255";
 			groupNum = "1";
 		};

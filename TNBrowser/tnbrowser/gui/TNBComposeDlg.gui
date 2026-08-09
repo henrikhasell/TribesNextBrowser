@@ -5,9 +5,8 @@
 // and commands point at TNBrowser's handlers, leaving the original (WON-backed)
 // GUI untouched.
 //
-// Controls the TribesNext mail API has no equivalent for -- block lists, sender
-// tracking, the Sent and Deleted folders -- are hidden at runtime in mail.cs
-// rather than deleted here, so the layout stays byte-comparable to the original.
+// Controls with nothing to call are hidden at runtime in mail.cs rather than
+// deleted here, so the layout stays byte-comparable to the original.
 new GuiControl(TNBComposeDlg) {
 	profile = "GuiModelessDialogProfile";
 	horizSizing = "right";

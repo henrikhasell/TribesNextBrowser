@@ -521,6 +521,29 @@ func TestBlockingSilentlyDropsMail(t *testing.T) {
 	if got := strings.TrimSpace(string(body)); got != `"0"` {
 		t.Fatalf("blocked mail should not arrive, count = %s", got)
 	}
+
+	// Silent to the sender, but counted: the stock EDIT BLOCK LIST dialog shows
+	// how many messages each block has turned away.
+	_, body = h.browser("4510186", "blocklist", nil)
+	list := decode[[]person](t, body)
+	if len(list) != 1 {
+		t.Fatalf("block list: %+v", list)
+	}
+	if list[0].Hits != "1" {
+		t.Fatalf("blocked send should be counted, hits = %q", list[0].Hits)
+	}
+	if list[0].Since == "" || list[0].Since == "0" {
+		t.Fatalf("block list carries no date, since = %q", list[0].Since)
+	}
+}
+
+// person is the shape the buddy, block and clan-invite lists all return.
+type person struct {
+	GUID   string `json:"guid"`
+	Name   string `json:"name"`
+	Online int    `json:"online"`
+	Since  string `json:"since"`
+	Hits   string `json:"hits"`
 }
 
 func TestBuddyList(t *testing.T) {
@@ -532,11 +555,14 @@ func TestBuddyList(t *testing.T) {
 		t.Fatalf("buddyadd refused: %s", body)
 	}
 	_, body := h.browser("4510186", "buddylist", nil)
-	if list := decode[[]struct {
-		GUID string `json:"guid"`
-		Name string `json:"name"`
-	}](t, body); len(list) != 1 || list[0].Name != "Shifter" {
+	list := decode[[]person](t, body)
+	if len(list) != 1 || list[0].Name != "Shifter" {
 		t.Fatalf("buddy list: %+v", list)
+	}
+	// SINCE is the second column of the stock BUDDYLIST view, so it has to be
+	// on the wire and not merely in the table.
+	if list[0].Since == "" || list[0].Since == "0" {
+		t.Fatalf("buddy list carries no date, since = %q", list[0].Since)
 	}
 
 	// Adding someone who does not exist is a refusal, not a silent no-op.
@@ -552,6 +578,35 @@ func TestBuddyList(t *testing.T) {
 	_, body = h.browser("4510186", "buddylist", nil)
 	if list := decode[[]struct{}](t, body); len(list) != 0 {
 		t.Fatalf("expected empty buddy list, got %d", len(list))
+	}
+}
+
+// The clan INVITES view is a list, not prose, and stock gave it two columns:
+// PLAYER and INVITED. Online state is carried too, because the original greyed
+// out whoever was offline (webbrowser.cs:1528).
+func TestClanInvitesCarryDateAndPresence(t *testing.T) {
+	h := newHarness(t)
+	h.seed("4510186", "4120041")
+	clan := h.makeClan("4510186", "Test Clan", "[TC]")
+
+	if _, body := h.browser("4510186", "claninvite",
+		map[string]any{"id": clan, "to": "4120041"}); decode[status](t, body).Status != "success" {
+		t.Fatalf("claninvite refused: %s", body)
+	}
+
+	_, body := h.browser("4510186", "clanviewinvites", map[string]any{"id": clan})
+	env := decode[struct {
+		Status  string   `json:"status"`
+		Payload []person `json:"payload"`
+	}](t, body)
+	if len(env.Payload) != 1 || env.Payload[0].Name != "Shifter" {
+		t.Fatalf("clan invites: %+v", env)
+	}
+	if env.Payload[0].Since == "" || env.Payload[0].Since == "0" {
+		t.Fatalf("invite carries no date, since = %q", env.Payload[0].Since)
+	}
+	if env.Payload[0].Online != 1 {
+		t.Fatalf("a player seen just now should read online, got %d", env.Payload[0].Online)
 	}
 }
 

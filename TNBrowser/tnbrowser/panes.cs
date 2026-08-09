@@ -4,18 +4,26 @@
 // per open subject (a player or a clan) exactly as the stock browser did, and
 // each pane has its own row of sub-tabs.
 //
-//   Player pane   0 PROFILE   1 HISTORY   2 CLANS    3 INVITES   4 EDIT
-//   Clan pane     0 PROFILE   1 ROSTER    2 OPTIONS  3 INVITES   4 ADMIN
+//   Player pane   0 PROFILE   1 HISTORY   2 TRIBES   3 BUDDYLIST  4 ADMIN
+//   Clan pane     0 PROFILE   1 ROSTER    2 OPTIONS  3 INVITES    4 ADMIN
+//
+// The labels are stock's, and so are the slots: this is the same five-button
+// strip the WON browser had, down to the split radio groups that leave one
+// button lit per group.
 //
 // All data arrives asynchronously. Every load therefore renders a placeholder
 // first and fills the controls from an API callback, so a slow server shows
 // "Loading..." rather than a blank pane that looks broken.
 
-$TNB::RankName[0] = "Recruit";
-$TNB::RankName[1] = "Member";
-$TNB::RankName[2] = "Officer";
-$TNB::RankName[3] = "Senior Admin";
-$TNB::RankName[4] = "Leader";
+// Stock's names for the five ranks, taken from TribeAdminMemberDlg.gui, so the
+// rendered rank agrees with the radio button the admin dialog offers. The
+// numbers are the wire protocol -- clanrank takes "an integer 0 to 4" -- and it
+// is only the wording that follows the original here.
+$TNB::RankName[0] = "On Probation";
+$TNB::RankName[1] = "Tribe Member";
+$TNB::RankName[2] = "Tribe Admin 3";
+$TNB::RankName[3] = "Tribe Admin 2";
+$TNB::RankName[4] = "Tribe Admin 1";
 
 // Ranks required to perform each clan action, matching what the backend
 // enforces. Used only to decide which controls to show -- the server remains
@@ -291,7 +299,7 @@ function TNBOpenPlayer(%guid)
 {
    $TNB::CurrentPlayer = %guid;
    TNBShowPlayerPane();
-   TNBPlayerTabsLight(0);
+   TNBPlayerTabProfile.setValue(1);
    $TNB::PlayerTab = 0;
 
    TNBSetPlayerText("<just:center>\n\nLoading profile...");
@@ -359,58 +367,17 @@ function TNBTabView::addTabFor(%this, %label, %type, %key)
    %this.tabKey[%index] = %key;
 }
 
-// The five tab buttons are one strip, so exactly one is lit -- whether the user
-// clicked it or the code selected it.
-//
-// setValue on these radios FIRES the button's own command: measured, with a
-// package counting entries into selectTab, and it reported [sel 0] for a bare
-// TNBPlayerTabProfile.setValue(1). (The mail folder tabs measured the opposite,
-// which is why this is written down rather than assumed either way.) So lighting
-// five buttons raises up to five selectTab calls; the guard swallows those,
-// leaving the caller's own pass to do the work.
-function TNBPlayerTabsLight(%tab)
-{
-   if ($TNB::TabLighting)
-      return;
-   $TNB::TabLighting = 1;
-
-   TNBPlayerTabProfile.setValue(%tab == 0);
-   TNBPlayerTabHistory.setValue(%tab == 1);
-   TNBPlayerTabClans.setValue(%tab == 2);
-   TNBPlayerTabInvites.setValue(%tab == 3);
-   TNBPlayerTabEdit.setValue(%tab == 4);
-
-   $TNB::TabLighting = "";
-}
-
-function TNBClanTabsLight(%tab)
-{
-   if ($TNB::TabLighting)
-      return;
-   $TNB::TabLighting = 1;
-
-   TNBClanTabProfile.setValue(%tab == 0);
-   TNBClanTabRoster.setValue(%tab == 1);
-   TNBClanTabOptions.setValue(%tab == 2);
-   TNBClanTabInvites.setValue(%tab == 3);
-   TNBClanTabAdmin.setValue(%tab == 4);
-
-   $TNB::TabLighting = "";
-}
-
 function TNBPlayerPane::selectTab(%this, %tab)
 {
-   // Raised by our own setValue while lighting the strip, not by the user.
-   if ($TNB::TabLighting)
-      return;
-
-   TNBPlayerTabsLight(%tab);
    $TNB::PlayerTab = %tab;
 
+   // Slot 3 is stock's BUDDYLIST button, and it shows the buddy list. Invites
+   // have no button in the original -- the player pane never had them, they
+   // lived on the tribe pane -- so they are reached from a link on your own
+   // profile instead, through TNBHandleLink's "invites" case.
    if (%tab == 3)
    {
-      TNBSetPlayerText("<just:center>\n\nLoading invitations...");
-      TNBApiUserInvites("TNBPlayerInvitesLoaded", "");
+      TNBRenderBuddies();
       return;
    }
    if (%tab == 1)
@@ -421,12 +388,9 @@ function TNBPlayerPane::selectTab(%this, %tab)
    }
    if (%tab == 4)
    {
-      // EDIT is an action, not a tab: open the dialog and leave the strip on
-      // PROFILE. Rendered explicitly rather than by re-entering selectTab.
       TNBPlayerPropsOpen();
-      TNBPlayerTabsLight(0);
+      TNBPlayerTabProfile.setValue(1);
       $TNB::PlayerTab = 0;
-      TNBRenderPlayerTab();
       return;
    }
    TNBRenderPlayerTab();
@@ -486,8 +450,11 @@ function TNBRenderPlayerProfile()
               "   <a:tnb\teditsite\t>[ Edit my website ]</a>";
    }
    %text = %text @ "\n<a:tnb\tuserhistory\t>[ View history ]</a>";
+   // The buddy list has its own button on the strip, where stock put it.
+   // Invitations do not: the original player pane had none, so they hang off
+   // the profile the way the buddy list used to.
    if (%isSelf)
-      %text = %text @ "   <a:tnb\tbuddies\t>[ Buddy list ]</a>";
+      %text = %text @ "   <a:tnb\tinvites\t>[ Invitations ]</a>";
 
    TNBSetPlayerText(%text);
 }
@@ -507,23 +474,36 @@ function TNBBuddiesLoaded(%ctx, %status, %result)
       return;
    }
 
-   %count = TNBJsonCount(%result);
-   %text = "<font:Univers Bold:16>Buddies<font:Univers:14>\n\n";
-   if (%count == 0)
-      %text = %text @ "<spush><color:808080>Nobody on your list yet.<spop>\n";
+   // Stock filled this same control from ButtonClick(3), with exactly these two
+   // columns (webbrowser.cs:1935-36), and set CID to 1 so a double-click knew it
+   // was looking at buddies rather than tribes. Both are reproduced -- the list
+   // is shared with the TRIBES view, so the columns have to be rebuilt each time.
+   TNBPlayerClans.Clear();
+   TNBPlayerClans.ClearColumns();
+   TNBPlayerClans.CID = 1;
+   TNBPlayerClans.addColumn(0, "BUDDY", 100, 0, 250);
+   TNBPlayerClans.addColumn(1, "SINCE", 112, 0, 250);
 
+   %count = TNBJsonCount(%result);
    for (%i = 0; %i < %count; %i++)
    {
       %b = TNBJsonIndex(%result, %i);
       %guid = TNBJsonStr(%b, "guid");
-      %text = %text @ "  <a:tnb\tplayer\t" @ %guid @ ">" @
-              TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
-                            TNBJsonBool(%b, "append")) @ "</a>" @
-              (TNBJsonBool(%b, "online") ? "   (online)" : "") @
-              "   <a:tnb\tunbuddy\t" @ %guid @ ">[ remove ]</a>\n";
+
+      TNBPlayerClans.AddRow(%guid,
+         TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
+                       TNBJsonBool(%b, "append")) TAB
+         TNBFormatDate(TNBJsonStr(%b, "since")));
+
+      TNBPlayerClans.setRowStylebyID(%guid, !TNBJsonBool(%b, "online"));
    }
 
-   %text = %text @ "\n<a:tnb\taddbuddy\t>[ Add a buddy ]</a>";
+   %text = (%count == 0
+      ? "<just:center>\n\nNobody on your list yet."
+      : "<just:center>\n\nDouble-click a buddy to open their profile.");
+   %text = %text @ "\n\n<a:tnb\taddbuddy\t>[ Add a buddy ]</a>";
+   if (%count > 0)
+      %text = %text @ "   <a:tnb\tunbuddy\t>[ Remove selected ]</a>";
    TNBSetPlayerText(%text);
 }
 
@@ -531,10 +511,11 @@ function TNBRenderPlayerClans()
 {
    TNBPlayerClans.Clear();
    TNBPlayerClans.ClearColumns();
-   // Same width budget as the roster: this list is the stock W_MemberList.
-   TNBPlayerClans.addColumn(0, "Clan", 110, 70, 200);
-   TNBPlayerClans.addColumn(1, "Title", 65, 45, 160);
-   TNBPlayerClans.addColumn(2, "Rank", 40, 30, 60, "numeric center");
+   TNBPlayerClans.CID = 0;
+   // Stock's own columns for this control, widths included (webbrowser.cs:1905-07).
+   TNBPlayerClans.addColumn(0, "TRIBE", 94, 0, 330);
+   TNBPlayerClans.addColumn(1, "TITLE", 80, 0, 300);
+   TNBPlayerClans.addColumn(2, "RNK", 38, 0, 50, "numeric center");
 
    for (%i = 0; %i < $TNB::PlayerClanCount; %i++)
    {
@@ -546,13 +527,24 @@ function TNBRenderPlayerClans()
    TNBSetPlayerText("<just:center>\n\nSelect a clan from the list to open it.");
 }
 
+// The list is shared between the TRIBES and BUDDYLIST views, so what a
+// double-click means depends on which filled it. Stock disambiguated with the
+// same CID flag.
 function TNBPlayerClansActivate()
 {
    %row = TNBPlayerClans.getSelectedRow();
    if (%row < 0)
       return;
-   %clanId = TNBPlayerClans.getRowId(%row);
-   TNBOpenClanTab(%clanId, getField(TNBPlayerClans.getRowText(%row), 0));
+
+   %id = TNBPlayerClans.getRowId(%row);
+   %name = getField(TNBPlayerClans.getRowText(%row), 0);
+
+   if (TNBPlayerClans.CID == 1)
+   {
+      TNBTabView.view(%name, "player", %id);
+      return;
+   }
+   TNBOpenClanTab(%id, %name);
 }
 
 function TNBPlayerInvitesLoaded(%ctx, %status, %result)
@@ -630,7 +622,7 @@ function TNBOpenClan(%clanId)
 {
    $TNB::CurrentClan = %clanId;
    TNBShowClanPane();
-   TNBClanTabsLight(0);
+   TNBClanTabProfile.setValue(1);
    $TNB::ClanTab = 0;
 
    TNBSetClanText("<just:center>\n\nLoading clan...");
@@ -683,10 +675,6 @@ function TNBClanLoaded(%clanId, %status, %result)
 
 function TNBClanPane::selectTab(%this, %tab)
 {
-   if ($TNB::TabLighting)
-      return;
-
-   TNBClanTabsLight(%tab);
    $TNB::ClanTab = %tab;
 
    if (%tab == 3)
@@ -765,9 +753,11 @@ function TNBRenderRoster()
    // "Status" column simply does not fit.
    TNBRoster.Clear();
    TNBRoster.ClearColumns();
-   TNBRoster.addColumn(0, "Member", 110, 70, 200);
-   TNBRoster.addColumn(1, "Title", 65, 45, 160);
-   TNBRoster.addColumn(2, "Rank", 40, 30, 60, "numeric center");
+   TNBRoster.CID = 0;
+   // Stock's own columns for this control, widths included (webbrowser.cs:1580-82).
+   TNBRoster.addColumn(0, "MEMBER", 92, 0, 100, "left");
+   TNBRoster.addColumn(1, "TITLE", 90, 0, 100, "left");
+   TNBRoster.addColumn(2, "RNK", 30, 0, 40, "numeric center");
 
    for (%i = 0; %i < $TNB::ClanMemberCount; %i++)
    {
@@ -863,6 +853,14 @@ function TNBRosterActivate()
    %guid = TNBRoster.getRowId(%row);
    %text = TNBRoster.getRowText(%row);
 
+   // Filled by the INVITES view rather than the roster: there is no rank to
+   // edit on someone who has not joined, so a double-click opens their profile.
+   if (TNBRoster.CID == 1)
+   {
+      TNBTabView.view(getField(%text, 0), "player", %guid);
+      return;
+   }
+
    if (TNBMyRankInCurrentClan() >= $TNB::RankToPromote &&
        %guid !$= TNBSessionGuid())
    {
@@ -886,22 +884,32 @@ function TNBClanInvitesLoaded(%ctx, %status, %result)
    if (!%list)
       %list = %result;
 
-   %count = TNBJsonCount(%list);
-   if (%count == 0)
-   {
-      TNBSetClanText("<just:center>\n\nThis clan has no outstanding invitations.");
-      return;
-   }
+   // Stock's INVITES view filled the roster control with these two columns
+   // (webbrowser.cs:1597-98) and flagged it CID 1, which is what TNBRosterActivate
+   // reads to tell an invitee from a member.
+   TNBRoster.Clear();
+   TNBRoster.ClearColumns();
+   TNBRoster.CID = 1;
+   TNBRoster.addColumn(0, "PLAYER", 100, 0, 350, "left");
+   TNBRoster.addColumn(1, "INVITED", 112, 0, 300, "left");
 
-   %text = "<font:Univers Bold:16>Outstanding invitations<font:Univers:14>\n\n";
+   %count = TNBJsonCount(%list);
    for (%i = 0; %i < %count; %i++)
    {
       %inv = TNBJsonIndex(%list, %i);
       %guid = TNBJsonStr(%inv, "guid");
-      %text = %text @ "  <a:tnb\tplayer\t" @ %guid @ ">" @
-              TNBJsonStr(%inv, "name") @ "</a>\n";
+
+      TNBRoster.AddRow(%guid,
+         TNBTaggedName(TNBJsonStr(%inv, "name"), TNBJsonStr(%inv, "tag"),
+                       TNBJsonBool(%inv, "append")) TAB
+         TNBFormatDate(TNBJsonStr(%inv, "since")));
+
+      TNBRoster.setRowStylebyID(%guid, !TNBJsonBool(%inv, "online"));
    }
-   TNBSetClanText(%text);
+
+   TNBSetClanText(%count == 0
+      ? "<just:center>\n\nThis clan has no outstanding invitations."
+      : "<just:center>\n\nDouble-click an invited player to open their profile.");
 }
 
 //-----------------------------------------------------------------------------
@@ -1019,19 +1027,32 @@ function TNBHandleLink(%action, %arg)
       case "addbuddy":
          TNBSearchOpen("buddy");
 
+      // With no argument, the target is whichever row of the buddy list is
+      // selected: the list has no per-row link to carry a guid the way the
+      // prose version did.
       case "unbuddy":
+         if (%arg $= "")
+         {
+            %row = TNBPlayerClans.getSelectedRow();
+            if (%row < 0)
+            {
+               MessageBoxOK("BUDDY LIST", "Select a buddy first.");
+               return;
+            }
+            %arg = TNBPlayerClans.getRowId(%row);
+         }
          TNBApiEnqueue("buddyremove", TNBJsonObject("to", %arg),
                        "TNBAfterBuddyChange", "", 0);
-
-      // Rendered by the mail window's block list, which shares this dispatcher
-      // because onURL is packaged for every GuiMLTextCtrl, not per pane.
-      case "unblock":
-         TNBApiEnqueue("blockremove", TNBJsonObject("to", %arg),
-                       "TNBMailAfterUnblock", "", 0);
 
       case "userhistory":
          TNBSetPlayerText("<just:center>\n\nLoading history...");
          TNBApiUserHistory($TNB::CurrentPlayer, "TNBHistoryLoaded", "player");
+
+      // Stock's player pane had no invitations view, so there is no button for
+      // this -- it hangs off your own profile instead.
+      case "invites":
+         TNBSetPlayerText("<just:center>\n\nLoading invitations...");
+         TNBApiUserInvites("TNBPlayerInvitesLoaded", "");
 
       case "accept":
          TNBApiAcceptInvite(%arg, "TNBAfterInviteAction", "accepted");
@@ -1066,7 +1087,7 @@ function TNBHandleLink(%action, %arg)
          TNBPromptOpen("Clan website", $TNB::ClanSite, "TNBApplyClanSite");
 
       case "disband":
-         MessageBoxYesNo("DISBAND CLAN",
+         MessageBoxYesNo("DISBAND TRIBE",
             "Authorise disbanding " @ $TNB::ClanName @ "? This is how a clan is "
             @ "permanently removed once enough leaders agree.",
             "TNBApiDisbandClan($TNB::CurrentClan, 1, \"TNBAfterClanChange\", \"\");", "");
@@ -1133,9 +1154,9 @@ function TNBAfterTagChange(%ctx, %status, %result)
    }
 
    if (%ctx $= "clear")
-      MessageBoxOK("CLAN TAG", "You are no longer wearing a clan tag.");
+      MessageBoxOK("TRIBE TAG", "You are no longer wearing a clan tag.");
    else
-      MessageBoxOK("CLAN TAG",
+      MessageBoxOK("TRIBE TAG",
          "Your clan tag is saved. It shows in your name on servers running " @
          "the TNBrowserServer mod.");
 
@@ -1168,7 +1189,8 @@ function TNBSearchOpen(%mode)
 
 function TNBSearchDlg::onWake(%this)
 {
-   TNBSearchPane.setText($TNB::SearchMode $= "clan" ? "CLAN SEARCH" : "PLAYER SEARCH");
+   // Stock sets the same two titles from script (webbrowser.cs:332,627).
+   TNBSearchPane.setText($TNB::SearchMode $= "clan" ? "TRIBE SEARCH" : "WARRIOR SEARCH");
    TNBSearchField.makeFirstResponder(1);
 }
 

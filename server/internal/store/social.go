@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -16,6 +17,11 @@ import (
 // restored here.
 
 // people runs a list query that yields the standard person shape.
+//
+// The column order is fixed: guid, name, tag, append, last_seen, created, hits.
+// created becomes the SINCE / INVITED column the stock screens showed, and hits
+// the block dialog's "# Blocked Emails" -- a query with no counter of its own
+// selects a literal 0.
 func (s *Store) people(ctx context.Context, sql, guid string) ([]model.Person, error) {
 	rows, err := s.pool.Query(ctx, sql, guid)
 	if err != nil {
@@ -30,19 +36,24 @@ func (s *Store) people(ctx context.Context, sql, guid string) ([]model.Person, e
 			p        model.Person
 			app      bool
 			lastSeen int64
+			created  int64
+			hits     int
 		)
-		if err := rows.Scan(&p.GUID, &p.Name, &p.Tag, &app, &lastSeen); err != nil {
+		if err := rows.Scan(&p.GUID, &p.Name, &p.Tag, &app, &lastSeen, &created, &hits); err != nil {
 			return nil, err
 		}
 		p.Append = model.Bool(app)
 		p.Online = online(lastSeen, now)
+		p.Since = strconv.FormatInt(created, 10)
+		p.Hits = strconv.Itoa(hits)
 		out = append(out, p)
 	}
 	return out, rows.Err()
 }
 
 const buddyListSQL = `
-	SELECT b.buddy_guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE), a.last_seen
+	SELECT b.buddy_guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE),
+	       a.last_seen, b.created, 0
 	  FROM buddies b
 	  JOIN accounts a ON a.guid = b.buddy_guid
 	  LEFT JOIN clans c ON c.id = a.active_clan
@@ -50,7 +61,8 @@ const buddyListSQL = `
 	 ORDER BY a.name`
 
 const blockListSQL = `
-	SELECT b.blocked_guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE), a.last_seen
+	SELECT b.blocked_guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE),
+	       a.last_seen, b.created, b.hits
 	  FROM blocks b
 	  JOIN accounts a ON a.guid = b.blocked_guid
 	  LEFT JOIN clans c ON c.id = a.active_clan

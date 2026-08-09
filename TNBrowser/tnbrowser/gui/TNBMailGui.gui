@@ -5,9 +5,11 @@
 // and commands point at TNBrowser's handlers, leaving the original (WON-backed)
 // GUI untouched.
 //
-// Controls the TribesNext mail API has no equivalent for -- block lists, sender
-// tracking, the Sent and Deleted folders -- are hidden at runtime in mail.cs
-// rather than deleted here, so the layout stays byte-comparable to the original.
+// Controls with nothing to call -- TRACK SENDER and TRACKING LIST, which were
+// WON buddy-list shortcuts -- are hidden at runtime in mail.cs rather than
+// deleted here, so the layout stays byte-comparable to the original. SENT MAIL
+// is hidden for a different reason: the original hides it too, and this screen
+// follows the original.
 new GuiChunkedBitmapCtrl(TNBMailGui) {
 	profile = "GuiContentProfile";
 	horizSizing = "right";

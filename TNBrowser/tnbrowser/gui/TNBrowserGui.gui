@@ -30,7 +30,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 		hideCursor = "0";
 		bypassHideCursor = "0";
 		helpTag = "0";
-		text = "TRIBESNEXT COMMUNITY";
+		text = "COMMUNITY BROWSER";
 		maxLength = "255";
 		noTitleBar = "0";
 
@@ -299,7 +299,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "INVITES";
 					maxLength = "255";
-					groupNum = "4";
+					groupNum = "5";
 				};
 				new ShellRadioButton(TNBClanTabProfile) {
 					profile = "ShellRadioProfile";
@@ -331,7 +331,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "ROSTER";
 					maxLength = "255";
-					groupNum = "4";
+					groupNum = "5";
 				};
 				new ShellRadioButton(TNBClanTabOptions) {
 					profile = "ShellRadioProfile";
@@ -553,11 +553,11 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					bypassHideCursor = "0";
 					command = "TNBPlayerPane.selectTab(4);";
 					helpTag = "0";
-					text = "EDIT";
+					text = "ADMIN";
 					maxLength = "255";
 					groupNum = "4";
 				};
-				new ShellRadioButton(TNBPlayerTabInvites) {
+				new ShellRadioButton(TNBPlayerTabBuddies) {
 					profile = "ShellRadioProfile";
 					horizSizing = "right";
 					vertSizing = "bottom";
@@ -569,9 +569,9 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					bypassHideCursor = "0";
 					command = "TNBPlayerPane.selectTab(3);";
 					helpTag = "0";
-					text = "INVITES";
+					text = "BUDDYLIST";
 					maxLength = "255";
-					groupNum = "4";
+					groupNum = "5";
 				};
 				new ShellRadioButton(TNBPlayerTabProfile) {
 					profile = "ShellRadioProfile";
@@ -617,9 +617,9 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					bypassHideCursor = "0";
 					command = "TNBPlayerPane.selectTab(2);";
 					helpTag = "0";
-					text = "CLANS";
+					text = "TRIBES";
 					maxLength = "255";
-					groupNum = "4";
+					groupNum = "5";
 				};
 			};
 			new GuiTextCtrl(TNBTitle) {
@@ -665,7 +665,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 			bypassHideCursor = "0";
 			command = "TNBCreateClanOpen();";
 			helpTag = "0";
-			text = "CREATE CLAN";
+			text = "CREATE TRIBE";
 			simpleStyle = "0";
 		};
 		new ShellBitmapButton() {
@@ -680,7 +680,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 			bypassHideCursor = "0";
 			command = "TNBSearchOpen(\"clan\");";
 			helpTag = "0";
-			text = "CLAN SEARCH";
+			text = "TRIBE SEARCH";
 			simpleStyle = "0";
 		};
 		new ShellBitmapButton() {
@@ -695,7 +695,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 			bypassHideCursor = "0";
 			command = "TNBSearchOpen(\"player\");";
 			helpTag = "0";
-			text = "PLAYER SEARCH";
+			text = "WARRIOR SEARCH";
 			simpleStyle = "0";
 		};
 	};

@@ -31,7 +31,7 @@ new GuiChunkedBitmapCtrl(TNBPlayerPropsDlg) {
 		minExtent = "8 8";
 		visible = "1";
 		helpTag = "0";
-		text = "PLAYER PROPERTIES";
+		text = "WARRIOR PROPERTIES";
 		maxLength = "255";
 
 		new ShellFieldCtrl(TNBPPProfilePane) {

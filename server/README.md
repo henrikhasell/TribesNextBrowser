@@ -52,7 +52,9 @@ docker run -d --name tnb-postgres \
   -e POSTGRES_PASSWORD=tnbrowser -e POSTGRES_USER=tnbrowser -e POSTGRES_DB=tnbrowser \
   -p 5433:5432 postgres:16-alpine
 
-psql "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" -f migrations/0001_init.sql
+for m in migrations/*.sql; do
+  psql "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" -f "$m"
+done
 
 go build -o tnserver ./cmd/tnserver
 ./tnserver -dsn "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser"

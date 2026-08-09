@@ -183,6 +183,13 @@ func (s *Store) MailSend(ctx context.Context, guid, to, subject, body string) er
 			return err
 		}
 		if blocked {
+			// Counted so the block dialog can show what the block has actually
+			// turned away, which is the column the stock screen had.
+			if _, err := tx.Exec(ctx,
+				`UPDATE blocks SET hits = hits + 1 WHERE guid = $1 AND blocked_guid = $2`,
+				toGUID, guid); err != nil {
+				return err
+			}
 			// Deliberately indistinguishable from success: telling a sender
 			// they have been blocked invites them to work around it.
 			return nil

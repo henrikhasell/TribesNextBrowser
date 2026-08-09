@@ -144,7 +144,7 @@ function TNBClanPropsChangeRecruiting()
 
 function TNBClanPropsDisband()
 {
-   MessageBoxYesNo("DISBAND CLAN",
+   MessageBoxYesNo("DISBAND TRIBE",
       "Authorise disbanding " @ $TNB::ClanName @ "?\n\nThis is how a clan is " @
       "permanently removed once enough leaders agree. You can withdraw the " @
       "authorisation while the clan still exists.",

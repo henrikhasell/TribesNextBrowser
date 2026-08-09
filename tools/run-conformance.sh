@@ -57,7 +57,7 @@ echo
 echo "== gui, against the Go backend =="
 reseed
 $CONSOLE "$LOAD" 'exec("tests/gui_test.cs");' \
-    "TNBGuiSelfTest(\"$DATA\"); $SPLIT" \
+    "TNBGuiSelfTest(\"$DATA\", 1); $SPLIT" \
     --until '$TNBGuiTest::Done' --until-timeout 150 >/dev/null 2>&1
 $CONSOLE 'echo("CONFORMANCE-GUI pass=" @ $TNBGuiTest::Pass @ " fail=" @ $TNBGuiTest::Fail); if ($TNBGuiTest::Fail > 0) echo($TNBGuiTest::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-GUI|\(got |\(missing "

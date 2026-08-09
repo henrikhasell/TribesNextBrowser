@@ -30,7 +30,7 @@ new GuiChunkedBitmapCtrl(TNBClanPropsDlg) {
 		minExtent = "8 8";
 		visible = "1";
 		helpTag = "0";
-		text = "CLAN PROPERTIES";
+		text = "TRIBE PROPERTIES";
 		maxLength = "255";
 
 		new ShellFieldCtrl() {
@@ -396,7 +396,7 @@ new GuiChunkedBitmapCtrl(TNBClanPropsDlg) {
 						minExtent = "8 8";
 						visible = "1";
 						helpTag = "0";
-						text = "CLAN TAG";
+						text = "TRIBE TAG";
 						maxLength = "255";
 					};
 					new ShellRadioButton(TNBPropsPrefixBtn) {
@@ -526,7 +526,7 @@ new GuiChunkedBitmapCtrl(TNBClanPropsDlg) {
 				minExtent = "8 8";
 				visible = "1";
 				helpTag = "0";
-				text = "DISBAND CLAN";
+				text = "DISBAND TRIBE";
 				maxLength = "255";
 			};
 			new GuiTextCtrl(TNBPropsRecruitLabel) {
@@ -601,7 +601,7 @@ new GuiChunkedBitmapCtrl(TNBClanPropsDlg) {
 				minExtent = "8 8";
 				visible = "1";
 				helpTag = "0";
-				text = "Current clan picture:";
+				text = "Current Tribe Graphic:";
 				maxLength = "255";
 			};
 			new ShellBitmapButton(TNBPropsSubmitGfxBtn) {

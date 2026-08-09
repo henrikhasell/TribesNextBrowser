@@ -68,7 +68,7 @@ function TNBPlayerPropsClose()
 
 function TNBPlayerPropsUnsupported()
 {
-   MessageBoxOK("PLAYER PROPERTIES",
+   MessageBoxOK("WARRIOR PROPERTIES",
       "The TribesNext API has no player picture, so this cannot be changed.");
 }
 
@@ -111,7 +111,7 @@ function TNBPlayerPropsChangeUrl()
 
 function TNBPlayerPropsChangeName()
 {
-   MessageBoxOK("PLAYER PROPERTIES",
+   MessageBoxOK("WARRIOR PROPERTIES",
       "Your account name is managed by your TribesNext account and cannot be " @
       "changed from here.");
 }

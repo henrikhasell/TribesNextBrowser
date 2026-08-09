@@ -106,7 +106,10 @@ function TNBMailStep2()
    // backend is behind it. Only sender tracking stays hidden, having nothing to
    // call at all.
    TNBMailTestEq("block button offered", TNBMailBlockBtn.isVisible(), 1);
-   TNBMailTestEq("sent folder offered", TNBMailTabSent.isVisible(), 1);
+   // SENT MAIL stays hidden because the original hides it: EmailGui.gui ships
+   // rbSendItems with visible = "0" and webemail.cs never shows it. The backend
+   // serves the folder either way -- this is about the screen matching stock.
+   TNBMailTestEq("sent folder hidden as in stock", TNBMailTabSent.isVisible(), 0);
    TNBMailTestEq("deleted folder offered", TNBMailTabDeleted.isVisible(), 1);
    TNBMailTestEq("sender tracking hidden", TNBMailTrackBtn.isVisible(), 0);
 
@@ -279,19 +282,26 @@ function TNBMailStepBlockList()
 
 function TNBMailStepBlockListShown()
 {
-   %text = TNBMailBody.getText();
-   TNBMailTestHas("block list names the blocked player", %text, "Ravage");
-   TNBMailTestHas("block list offers an unblock", %text, "unblock");
+   // The stock EDIT BLOCK LIST dialog, recreated: a two-column list in its own
+   // dialog rather than prose in the message pane.
+   TNBMailTestEq("block dialog opened", isObject(TNBBlockDlg), 1);
+   TNBMailTestEq("one blocked player", TNBBlockList.rowCount(), 1);
+   TNBMailTestEq("row is keyed by guid", TNBBlockList.getRowId(0), "4200999");
+   TNBMailTestHas("block list names the blocked player",
+                  TNBBlockList.getRowText(0), "Ravage");
+   TNBMailTestEq("and carries the blocked count",
+                 (getField(TNBBlockList.getRowText(0), 1) !$= ""), 1);
 
-   TNBHandleLink("unblock", "4200999");
+   // REMOVE BLOCK acts on the selection, the way the original's did.
+   TNBBlockList.setSelectedRow(0);
+   TNBMailRemoveBlock();
    schedule(2500, 0, "TNBMailStepAfterUnblock");
 }
 
 function TNBMailStepAfterUnblock()
 {
-   %text = TNBMailBody.getText();
-   TNBMailTestEq("unblocking empties the list",
-                 (strstr(%text, "Ravage") >= 0) ? 0 : 1, 1);
+   TNBMailTestEq("unblocking empties the list", TNBBlockList.rowCount(), 0);
+   Canvas.popDialog(TNBBlockDlg);
 
    // Buddy list, which nothing exercised from the client before now.
    TNBApiEnqueue("buddyadd", TNBJsonObject("to", "4120041"),
@@ -372,6 +382,14 @@ function TNBMailCheckFolderMemory()
    TNBMailGui.onWake();
    TNBMailTestEq("unknown folder falls back", $TNB::MailFolder, "inbox");
    TNBMailTestEq("and lights the inbox", TNBMailTabInbox.getValue(), 1);
+
+   // Sent is a folder the server has but the screen does not show, so a session
+   // that had selected it must come back to the inbox rather than to a hidden
+   // tab with nothing lit.
+   $TNB::MailFolder = "sent";
+   TNBMailGui.onWake();
+   TNBMailTestEq("remembered sent falls back too", $TNB::MailFolder, "inbox");
+   TNBMailTestEq("and the hidden tab stays dark", TNBMailTabSent.getValue(), 0);
 }
 
 function TNBMailFinish()

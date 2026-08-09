@@ -6,24 +6,11 @@
 // each step schedules the next, and $TNBGuiTest::Done marks the end so a runner
 // can wait on it.
 //
-//   exec("tests/gui_test.cs"); TNBGuiSelfTest("http://172.17.0.1:8099");
-
-// The five tab buttons on each pane are one strip, so exactly one is lit at a
-// time. They came from the stock GUI split across two radio groups (4 and 5),
-// which meant one from each group stayed lit and two read as selected at once.
-function TNBGuiPlayerTabsLit()
-{
-   return TNBPlayerTabProfile.getValue() + TNBPlayerTabHistory.getValue()
-        + TNBPlayerTabClans.getValue() + TNBPlayerTabInvites.getValue()
-        + TNBPlayerTabEdit.getValue();
-}
-
-function TNBGuiClanTabsLit()
-{
-   return TNBClanTabProfile.getValue() + TNBClanTabRoster.getValue()
-        + TNBClanTabOptions.getValue() + TNBClanTabInvites.getValue()
-        + TNBClanTabAdmin.getValue();
-}
+//   exec("tests/gui_test.cs"); TNBGuiSelfTest("http://172.17.0.1:8099", 0);
+//
+// %isBackend says which server is behind it. The mock stands in for TribesNext,
+// which has no buddy list, so the views built on one are asserted only when a
+// real backend is answering -- the same split mail_test.cs already uses.
 
 function TNBGuiEq(%name, %got, %want)
 {
@@ -61,12 +48,13 @@ function TNBGuiHas(%name, %haystack, %needle)
    }
 }
 
-function TNBGuiSelfTest(%host)
+function TNBGuiSelfTest(%host, %isBackend)
 {
    $TNBGuiTest::Pass = 0;
    $TNBGuiTest::Fail = 0;
    $TNBGuiTest::Done = 0;
    $TNBGuiTest::Failures = "";
+   $TNBGuiTest::Backend = %isBackend;
 
    $TNB::Host = %host;
    $TNB::AuthHost = %host;
@@ -83,7 +71,7 @@ function TNBGuiSelfTest(%host)
    TNBGuiEq("tag prefixed", TNBTaggedName("Bob", "[TC]", 0), "[TC]Bob");
    TNBGuiEq("tag appended", TNBTaggedName("Bob", "[TC]", 1), "Bob[TC]");
    TNBGuiEq("no tag", TNBTaggedName("Bob", "", 0), "Bob");
-   TNBGuiEq("rank name", TNBRankName(4), "Leader");
+   TNBGuiEq("rank name", TNBRankName(4), "Tribe Admin 1");
    TNBGuiEq("rank name out of range", TNBRankName(9), "Unknown");
 
    TNBrowserOpen();
@@ -111,11 +99,12 @@ function TNBGuiStep2()
    // Tab strip seeded with our profile plus one tab per clan.
    TNBGuiEq("tab count", TNBTabView.tabCount(), 3);
 
-   // CLANS sub-tab fills the side list.
+   // TRIBES sub-tab fills the side list. The strip is stock's five buttons in
+   // stock's slots, so the button has to be there at all.
+   TNBGuiEq("tribes button present", isObject(TNBPlayerTabClans), 1);
    TNBPlayerPane.selectTab(2);
    TNBGuiEq("clan list rows", TNBPlayerClans.rowCount(), 2);
-   TNBGuiEq("one player tab lit on CLANS", TNBGuiPlayerTabsLit(), 1);
-   TNBGuiEq("and it is CLANS", TNBPlayerTabClans.getValue(), 1);
+   TNBGuiEq("list flagged as tribes", TNBPlayerClans.CID, 0);
 
    TNBOpenClan("7");
    schedule(2000, 0, "TNBGuiStep3");
@@ -136,15 +125,13 @@ function TNBGuiStep3()
    // ROSTER sub-tab.
    TNBClanPane.selectTab(1);
    TNBGuiEq("roster rows", TNBRoster.rowCount(), 2);
-   TNBGuiEq("one clan tab lit on ROSTER", TNBGuiClanTabsLit(), 1);
-   TNBGuiEq("and it is ROSTER", TNBClanTabRoster.getValue(), 1);
+   TNBGuiEq("list flagged as roster", TNBRoster.CID, 0);
    TNBGuiEq("roster first member", getField(TNBRoster.getRowText(0), 0), "orange01");
    TNBGuiEq("roster title column", getField(TNBRoster.getRowText(1), 1), "Officer");
    TNBGuiEq("roster rank column", getField(TNBRoster.getRowText(1), 2), "2");
 
    // ADMIN sub-tab: we are the leader, so the dangerous options appear.
    TNBClanPane.selectTab(4);
-   TNBGuiEq("one clan tab lit on ADMIN", TNBGuiClanTabsLit(), 1);
    %admin = TNBClanText.getText();
    TNBGuiHas("admin offers invite", %admin, "Invite a player");
    TNBGuiHas("admin offers properties", %admin, "Clan properties");
@@ -164,6 +151,23 @@ function TNBGuiStep3()
    // OPTIONS sub-tab.
    TNBClanPane.selectTab(2);
    TNBGuiHas("options offers tag", TNBClanText.getText(), "Wear this clan's tag");
+
+   // INVITES sub-tab: a list in the same control as the roster, which is why
+   // the CID flag has to move with it.
+   TNBClanPane.selectTab(3);
+   schedule(2000, 0, "TNBGuiStep3b");
+}
+
+function TNBGuiStep3b()
+{
+   // The two backends seed a different number of invitations, so this asserts
+   // the shape of the view rather than the fixture: it is a list, it is flagged
+   // as invites so a double-click does not reach for the rank editor, and the
+   // INVITED column has something in it.
+   TNBGuiEq("invites listed as rows", (TNBRoster.rowCount() >= 1), 1);
+   TNBGuiEq("list flagged as invites", TNBRoster.CID, 1);
+   TNBGuiEq("invited column filled",
+            (getField(TNBRoster.getRowText(0), 1) !$= ""), 1);
 
    TNBGuiStep4();
 }
@@ -219,10 +223,30 @@ function TNBGuiStep7()
    schedule(1500, 0, "TNBGuiStep8");
 }
 
+// Slot 3 is stock's BUDDYLIST and shows the buddy list, which the mock -- a
+// TribesNext stand-in -- cannot serve.
 function TNBGuiStep8()
 {
+   if (!$TNBGuiTest::Backend)
+   {
+      TNBGuiStep8b();
+      return;
+   }
    TNBPlayerPane.selectTab(3);
-   TNBGuiEq("one player tab lit on INVITES", TNBGuiPlayerTabsLit(), 1);
+   schedule(2000, 0, "TNBGuiStep8b");
+}
+
+function TNBGuiStep8b()
+{
+   if ($TNBGuiTest::Backend)
+   {
+      TNBGuiEq("list flagged as buddies", TNBPlayerClans.CID, 1);
+      TNBGuiHas("buddy view offers add", TNBPlayerText.getText(), "Add a buddy");
+   }
+
+   // Invitations have no button: stock's player pane never had one, so they
+   // hang off the profile instead.
+   TNBHandleLink("invites", "");
    schedule(2000, 0, "TNBGuiStep9");
 }
 

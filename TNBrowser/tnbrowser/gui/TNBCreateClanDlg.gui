@@ -24,7 +24,7 @@ new GuiControl(TNBCreateClanDlg) {
 		minExtent = "48 92";
 		visible = "1";
 		helpTag = "0";
-		text = "CREATE CLAN";
+		text = "CREATE TRIBE";
 		maxLength = "255";
 		noTitleBar = "0";
 
@@ -37,7 +37,7 @@ new GuiControl(TNBCreateClanDlg) {
 			minExtent = "8 8";
 			visible = "1";
 			helpTag = "0";
-			text = "Clan Name:";
+			text = "Tribe Name:";
 			maxLength = "255";
 		};
 		new GuiTextCtrl() {
@@ -49,7 +49,7 @@ new GuiControl(TNBCreateClanDlg) {
 			minExtent = "8 8";
 			visible = "1";
 			helpTag = "0";
-			text = "Clan Tag:";
+			text = "Tribe Tag:";
 			maxLength = "255";
 		};
 		new GuiTextCtrl() {
@@ -108,7 +108,7 @@ new GuiControl(TNBCreateClanDlg) {
 			variable = "$TNB::NewClanAppend";
 			command = "TNBUpdateTagPreview();";
 			helpTag = "0";
-			text = "APPEND CLAN TAG";
+			text = "APPEND TRIBE TAG";
 			maxLength = "255";
 		};
 		new ShellToggleButton(TNBNewClanRecruiting) {

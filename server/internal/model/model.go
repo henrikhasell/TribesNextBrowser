@@ -118,13 +118,21 @@ type Message struct {
 	Folder   string `json:"folder"`
 }
 
-// Person is a buddy or blocked player.
+// Person is a buddy, a blocked player, or someone a clan has invited.
+//
+// Since and Hits carry the second column the stock screens showed beside the
+// name -- SINCE on the buddy list, INVITED on a clan's invitations, and
+// "# Blocked Emails" on the block dialog. They are additions to the protocol
+// rather than renames: TribesNext serves the login and nothing else now, so
+// nothing else reads these payloads.
 type Person struct {
 	GUID   string `json:"guid"`
 	Name   string `json:"name"`
 	Tag    string `json:"tag"`
 	Append string `json:"append"`
 	Online int    `json:"online"`
+	Since  string `json:"since"`
+	Hits   string `json:"hits"`
 }
 
 // Status is the reply shape for every mutating method.

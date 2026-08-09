@@ -133,11 +133,13 @@ function TNBMailEnsureGuis()
 {
    // Same deferred load as the browser: at autoexec time the shell profiles do
    // not exist yet and the controls would render unstyled.
-   if (isObject(TNBMailGui))
-      return;
-
-   exec("tnbrowser/gui/TNBMailGui.gui");
-   exec("tnbrowser/gui/TNBComposeDlg.gui");
+   //
+   // Checked per file rather than behind one guard on TNBMailGui, for the reason
+   // spelled out over TNBEnsureGuis: a single guard means a screen added later
+   // never loads in any session that has already opened the mail window.
+   TNBEnsureGui(TNBMailGui, "tnbrowser/gui/TNBMailGui.gui");
+   TNBEnsureGui(TNBComposeDlg, "tnbrowser/gui/TNBComposeDlg.gui");
+   TNBEnsureGui(TNBBlockDlg, "tnbrowser/gui/TNBBlockDlg.gui");
 }
 
 function TNBMailOpen()
@@ -164,13 +166,15 @@ function TNBMailGui::onWake(%this)
    // setValue does not fire the control's command on this build (measured), so
    // this lights the tab without also triggering TNBMailShowFolder and a second
    // list request.
+   // "sent" is not among them: the tab is hidden, so a session that had it
+   // selected must come back to the inbox rather than to nothing lit.
    %folder = $TNB::MailFolder;
-   if (%folder !$= "sent" && %folder !$= "deleted")
+   if (%folder !$= "deleted")
       %folder = "inbox";
    $TNB::MailFolder = %folder;
 
    TNBMailTabInbox.setValue(%folder $= "inbox");
-   TNBMailTabSent.setValue(%folder $= "sent");
+   TNBMailTabSent.setValue(0);
    TNBMailTabDeleted.setValue(%folder $= "deleted");
 
    TNBMailList.ClearColumns();
@@ -211,8 +215,13 @@ function TNBMailHideUnsupported()
    TNBMailBlockBtn.setVisible(1);
    TNBMailForwardBtn.setVisible(1);
    TNBMailReplyAllBtn.setVisible(1);
-   TNBMailTabSent.setVisible(1);
    TNBMailTabDeleted.setVisible(1);
+
+   // Hidden because the original hid it: EmailGui.gui ships rbSendItems with
+   // visible = "0" and webemail.cs never shows it. The backend serves the folder
+   // and TNBMailShowFolder("sent") still works -- this is a decision about the
+   // screen, not about what the server can do.
+   TNBMailTabSent.setVisible(0);
 
    // Sender tracking was a WON buddy-list shortcut. The buddy list itself lives
    // on the player pane, so these two have nothing to call.
@@ -266,9 +275,13 @@ function TNBMailAfterBlock(%ctx, %status, %result)
 //
 // Blocking itself happens from a message (TNBMailBlockSender). This is the
 // other half: seeing who is blocked, and undoing it.
+// BLOCK LIST opens the stock dialog, as it did originally: push it empty and
+// fill it when the list arrives (webemail.cs:401-407).
 function TNBMailShowBlockList()
 {
-   TNBMailSetBody("<just:center>\n\nLoading your block list...");
+   TNBMailEnsureGuis();
+   TNBBlockList.clear();
+   Canvas.pushDialog(TNBBlockDlg);
    TNBApiEnqueue("blocklist", "", "TNBMailBlockListLoaded", "", 0);
 }
 
@@ -276,27 +289,37 @@ function TNBMailBlockListLoaded(%ctx, %status, %result)
 {
    if (%status $= "error")
    {
-      TNBMailSetBody("<just:center>\n\nCould not load your block list.\n\n" @ %result);
+      MessageBoxOK("EDIT BLOCK LIST", %result);
       return;
    }
 
-   %count = TNBJsonCount(%result);
-   %text = "<font:Univers Bold:16>Blocked players<font:Univers:14>\n\n";
-   if (%count == 0)
-      %text = %text @ "<spush><color:808080>You have not blocked anyone.<spop>\n";
+   TNBBlockList.clear();
 
+   // Two columns, matching the dialog's two headers: the sender, and how many
+   // of their messages the block has turned away. The row id is the guid, which
+   // is what REMOVE BLOCK sends back.
+   %count = TNBJsonCount(%result);
    for (%i = 0; %i < %count; %i++)
    {
       %b = TNBJsonIndex(%result, %i);
-      %guid = TNBJsonStr(%b, "guid");
-      %text = %text @ "  " @
-              TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
-                            TNBJsonBool(%b, "append")) @
-              "   <a:tnb\tunblock\t" @ %guid @ ">[ unblock ]</a>\n";
+      TNBBlockList.addRow(TNBJsonStr(%b, "guid"),
+         TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
+                       TNBJsonBool(%b, "append")) TAB
+         TNBJsonStr(%b, "hits"));
+   }
+}
+
+function TNBMailRemoveBlock()
+{
+   %guid = TNBBlockList.getSelectedId();
+   if (%guid == -1)
+   {
+      MessageBoxOK("EDIT BLOCK LIST", "Select a blocked player first.");
+      return;
    }
 
-   %text = %text @ "\nBlocked players cannot send you mail.";
-   TNBMailSetBody(%text);
+   TNBApiEnqueue("blockremove", TNBJsonObject("to", %guid),
+                 "TNBMailAfterUnblock", "", 0);
 }
 
 function TNBMailAfterUnblock(%ctx, %status, %result)
@@ -306,7 +329,9 @@ function TNBMailAfterUnblock(%ctx, %status, %result)
       MessageBoxOK("EMAIL", %result);
       return;
    }
-   TNBMailShowBlockList();
+   // Re-read rather than removing the row locally: the server is the authority
+   // on what is left, and the dialog is already open.
+   TNBApiEnqueue("blocklist", "", "TNBMailBlockListLoaded", "", 0);
 }
 
 function TNBMailUnsupported()

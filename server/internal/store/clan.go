@@ -134,7 +134,7 @@ func (s *Store) CreateClan(ctx context.Context, guid, name, tag string, append_ 
 
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO clan_members (clan_id, guid, rank, title, joined)
-			VALUES ($1, $2, $3, 'Leader', $4)`,
+			VALUES ($1, $2, $3, 'Tribe Admin 1', $4)`,
 			id, guid, RankLeader, s.now()); err != nil {
 			return err
 		}
@@ -257,9 +257,12 @@ func (s *Store) ClanInvites(ctx context.Context, guid string, id int64) ([]model
 		return nil, err
 	}
 
+	// last_seen and created are carried so the view can do what stock's did:
+	// grey out whoever is offline, and fill the INVITED column beside the name.
 	out := []model.Person{}
 	rows, err := s.pool.Query(ctx, `
-		SELECT i.guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE)
+		SELECT i.guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE),
+		       a.last_seen, i.created
 		  FROM clan_invites i
 		  JOIN accounts a ON a.guid = i.guid
 		  LEFT JOIN clans c ON c.id = a.active_clan
@@ -270,15 +273,21 @@ func (s *Store) ClanInvites(ctx context.Context, guid string, id int64) ([]model
 	}
 	defer rows.Close()
 
+	now := s.now()
 	for rows.Next() {
 		var (
-			p   model.Person
-			app bool
+			p        model.Person
+			app      bool
+			lastSeen int64
+			created  int64
 		)
-		if err := rows.Scan(&p.GUID, &p.Name, &p.Tag, &app); err != nil {
+		if err := rows.Scan(&p.GUID, &p.Name, &p.Tag, &app, &lastSeen, &created); err != nil {
 			return nil, err
 		}
 		p.Append = model.Bool(app)
+		p.Online = online(lastSeen, now)
+		p.Since = strconv.FormatInt(created, 10)
+		p.Hits = "0"
 		out = append(out, p)
 	}
 	return out, rows.Err()
