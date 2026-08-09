@@ -121,7 +121,7 @@ func (s *Store) BuddyClear(ctx context.Context, guid string) error {
 // a player's auth-info record, in one query.
 //
 // It is deliberately not a browser method -- the game server has no player
-// token, so it authenticates with the server key instead.
+// token, and needs none: it only ever asks for public facts.
 func (s *Store) ClanTagFor(ctx context.Context, guid string) (name, tag string, append_ bool, memberships []model.Membership, err error) {
 	err = s.pool.QueryRow(ctx, `
 		SELECT a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE)

@@ -50,8 +50,7 @@ docker run -d --name tnb-postgres \
 psql "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" -f migrations/0001_init.sql
 
 go build -o tnserver ./cmd/tnserver
-./tnserver -dsn "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" \
-           -server-key "$(openssl rand -hex 16)"
+./tnserver -dsn "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser"
 ```
 
 | flag | env | meaning |
@@ -59,7 +58,6 @@ go build -o tnserver ./cmd/tnserver
 | `-addr` | `TNB_ADDR` | listen address, default `:8080` |
 | `-dsn` | `TNB_DSN` | PostgreSQL connection string, required |
 | `-upstream` | `TNB_UPSTREAM` | TribesNext endpoint used to verify sessions |
-| `-server-key` | `TNB_SERVER_KEY` | shared key authorising game-server clan lookups |
 | `-verify-ttl` | | how long a verified session is cached, default 10m |
 
 Point the client at it from the game console:
@@ -73,8 +71,7 @@ or bake both into the packages so installing is a single file copy:
 
 ```sh
 ../tools/build-vl2.sh --host "http://your-host:8080" --full-features \
-                      --server-host "http://your-host:8080" \
-                      --server-key "$TNB_SERVER_KEY"
+                      --server-host "http://your-host:8080"
 ```
 
 `$TNB::AuthHost` stays on TribesNext — that is where the account lives.
@@ -97,7 +94,9 @@ Paths and shapes are TribesNext's, so the client needs no new code:
 - `/tn/json/json_mail.php` — `count`, `read`, `delete`, `send`, with an optional
   `folder` on read and delete
 - `/tn/server/authinfo` — not a client endpoint; the game-server mod's clan
-  lookup, authorised by `-server-key`
+  lookup. Unauthenticated: a game server holds no player token, and everything
+  it returns — a name and a clan tag — is on the scoreboard of every server that
+  player joins. It is read-only and reveals nothing a game client could not.
 
 Two behavioural differences from TribesNext, both intentional:
 

@@ -4,9 +4,9 @@
 // server) and gives connecting players their clan tag, which the stock
 // server.cs then renders into their displayed name.
 //
-// Point it at a TNBrowser backend. The key must match the server's
-// TNB_SERVER_KEY: this endpoint answers questions about *other* players, so it
-// is not open.
+// Point it at a TNBrowser backend. The lookup it uses needs no credential: a
+// name and a clan tag are public, visible on the scoreboard of every server the
+// player joins.
 //
 // Setting these without unpacking the .vl2
 // -----------------------------------------------------------------------------
@@ -31,9 +31,6 @@ if ($TNBS::Host $= "")
 
 if ($TNBS::AuthInfoURI $= "")
    $TNBS::AuthInfoURI = "/tn/server/authinfo";
-
-if ($TNBS::ServerKey $= "")
-   $TNBS::ServerKey = "";
 
 // How long a cached lookup stays good, in seconds. Clan membership changes
 // rarely, and a stale tag for a minute is better than a round trip on the

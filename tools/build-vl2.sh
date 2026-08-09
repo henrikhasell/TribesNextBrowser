@@ -43,18 +43,12 @@
 #                       leaves those controls hidden, which is right for
 #                       TribesNext and wrong for yours.
 #   --server-host URL   backend the game-server mod looks clans up in
-#   --server-key KEY    must match the backend's TNB_SERVER_KEY
-#
-# Note the server key ends up inside the archive, so a .vl2 built with one is a
-# secret: it speaks for every player, not one account. Build your own rather
-# than passing someone else's around.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLIENT_HOST=""
 FULL_FEATURES=""
 SERVER_HOST=""
-SERVER_KEY=""
 OUTDIR=""
 
 while [ $# -gt 0 ]; do
@@ -62,7 +56,6 @@ while [ $# -gt 0 ]; do
         --host)        CLIENT_HOST="${2:?--host needs a URL}"; shift 2 ;;
         --full-features) FULL_FEATURES=1; shift ;;
         --server-host) SERVER_HOST="${2:?--server-host needs a URL}"; shift 2 ;;
-        --server-key)  SERVER_KEY="${2:?--server-key needs a value}"; shift 2 ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) OUTDIR="$1"; shift ;;
     esac
@@ -124,8 +117,7 @@ pack() {
                 echo "  baked \$TNB::FullFeatures = 1" >&2
             fi ;;
         TNBrowserServer)
-            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$SERVER_HOST"
-            bake "$stage/tnbserver/settings.cs" "TNBS::ServerKey" "$SERVER_KEY" ;;
+            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$SERVER_HOST" ;;
     esac
 
     cd "$stage"

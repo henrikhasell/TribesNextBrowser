@@ -66,17 +66,6 @@ function TNBSCachePut(%guid, %info)
 // object would interleave their bodies.
 function TNBSFetch(%client, %guid)
 {
-   if ($TNBS::ServerKey $= "")
-   {
-      // Fail loudly once rather than silently never tagging anyone.
-      if (!$TNBS::WarnedNoKey)
-      {
-         error("TNBrowserServer: no server key set, clan tags are disabled");
-         $TNBS::WarnedNoKey = 1;
-      }
-      return;
-   }
-
    %t = $TNBS::QTail;
    $TNBS::QGuid[%t] = %guid;
    $TNBS::QClient[%t] = %client;
@@ -112,8 +101,7 @@ function TNBSPump()
 
    // The query string has to be part of the request-URI: this build's
    // HTTPObject ignores the third argument.
-   TNBSConnection.get($TNBS::Host,
-      $TNBS::AuthInfoURI @ "?key=" @ $TNBS::ServerKey @ "&guid=" @ %guid, "");
+   TNBSConnection.get($TNBS::Host, $TNBS::AuthInfoURI @ "?guid=" @ %guid, "");
 }
 
 function TNBSConnection::onLine(%this, %line)

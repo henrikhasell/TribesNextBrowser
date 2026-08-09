@@ -12,14 +12,6 @@
 // Your TNBrowser backend, reachable from the game server.
 $TNBS::Host = "http://your-backend:8080";
 
-// Must match the backend's TNB_SERVER_KEY. Without it the backend refuses the
-// lookup and nobody gets a tag -- the mod says so once in the console rather
-// than failing quietly.
-//
-// This key speaks for every player, so treat it as a secret: it is not a
-// player's session token and is not scoped to one account.
-$TNBS::ServerKey = "the value you passed to tnserver -server-key";
-
 // How long a looked-up clan record stays good, in seconds. Clan membership
 // changes rarely, and a stale tag for a few minutes is better than a network
 // round trip on the connect path.

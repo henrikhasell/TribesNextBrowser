@@ -55,20 +55,19 @@ func (s *Server) mailMethods() map[string]handler {
 
 // handleAuthInfo serves the game-server mod.
 //
-// A dedicated server has no player token -- it is asking about other people --
-// so this endpoint authenticates with the shared server key instead of a
-// session. It returns exactly the record the game's auth-info format wants, so
-// the mod can drop it into %client.t2csri_authInfo without reformatting:
+// Unauthenticated on purpose. A dedicated server has no player token -- it is
+// asking about other people -- and everything this returns is public: a name
+// and a clan tag are on the scoreboard of every server that player joins.
+// Guarding it would only add a shared secret to distribute and rotate, for
+// data anyone can read by joining a game.
+//
+// It returns exactly the record the game's auth-info format wants, so the mod
+// can drop it into %client.t2csri_authInfo without reformatting:
 //
 //	Name <TAB> ActiveTag <TAB> Prepend(0)/Append(1) <TAB> guid
 //	NumberOfClans
 //	ClanName <TAB> Tag <TAB> Append <TAB> clanid <TAB> rank <TAB> title
 func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
-	if s.ServerKey == "" || r.FormValue("key") != s.ServerKey {
-		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
-		return
-	}
-
 	guid := r.FormValue("guid")
 	if guid == "" {
 		fatal(w, http.StatusNotImplemented, "501 Not Implemented")

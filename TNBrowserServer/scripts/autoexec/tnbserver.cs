@@ -6,10 +6,9 @@
 // server.cs.
 //
 // Install: copy TNBrowserServer.vl2 into GameData/<MOD>/ and launch the server
-// with -mod <MOD>. Set at least:
+// with -mod <MOD>. Set the one thing it needs:
 //
-//    $TNBS::Host      = "http://your-backend:8080";
-//    $TNBS::ServerKey = "the same value as the backend's TNB_SERVER_KEY";
+//    $TNBS::Host = "http://your-backend:8080";
 //
 // in the server's prefs, or edit tnbserver/settings.cs.
 //

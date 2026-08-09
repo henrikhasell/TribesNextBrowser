@@ -22,10 +22,9 @@ import (
 )
 
 type Server struct {
-	Store     *store.Store
-	Verifier  *auth.Verifier
-	ServerKey string // authorises the game-server mod, which has no player token
-	Log       *slog.Logger
+	Store    *store.Store
+	Verifier *auth.Verifier
+	Log      *slog.Logger
 }
 
 // payload is the decoded JSON `payload` parameter. Every field the protocol

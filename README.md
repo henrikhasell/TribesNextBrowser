@@ -91,8 +91,7 @@ build time instead, so installing is copying one file:
 
 ```sh
 ./tools/build-vl2.sh --host "http://your-backend:8080" --full-features \
-                     --server-host "http://your-backend:8080" \
-                     --server-key "$TNB_SERVER_KEY"
+                     --server-host "http://your-backend:8080"
 ```
 
 Then `cp dist/TNBrowserServer.vl2 <Tribes2>/GameData/<the active mod>/` is the
@@ -107,10 +106,6 @@ right default for TribesNext and the wrong one for yours.
 Baking works from a copy, so the source tree is untouched, and the settings keep
 their `if empty` guard, so a loose `autoexec.cs` can still override a baked
 value later.
-
-A server archive built with `--server-key` contains that key, and the key speaks
-for every player rather than one account. Build your own rather than passing
-someone else's around.
 
 ---
 
@@ -386,7 +381,7 @@ TribesNext's to own.
 
 ```sh
 cd server && go build -o tnserver ./cmd/tnserver
-./tnserver -dsn "postgres://..." -server-key "$(openssl rand -hex 16)"
+./tnserver -dsn "postgres://..."
 ```
 
 then in the game console:

@@ -30,11 +30,10 @@ import (
 
 func main() {
 	var (
-		addr      = flag.String("addr", envOr("TNB_ADDR", ":8080"), "listen address")
-		dsn       = flag.String("dsn", envOr("TNB_DSN", ""), "PostgreSQL connection string")
-		upstream  = flag.String("upstream", envOr("TNB_UPSTREAM", auth.DefaultUpstream), "TribesNext endpoint used to verify sessions")
-		serverKey = flag.String("server-key", envOr("TNB_SERVER_KEY", ""), "shared key authorising game-server clan lookups")
-		ttl       = flag.Duration("verify-ttl", 10*time.Minute, "how long a verified session is cached")
+		addr     = flag.String("addr", envOr("TNB_ADDR", ":8080"), "listen address")
+		dsn      = flag.String("dsn", envOr("TNB_DSN", ""), "PostgreSQL connection string")
+		upstream = flag.String("upstream", envOr("TNB_UPSTREAM", auth.DefaultUpstream), "TribesNext endpoint used to verify sessions")
+		ttl      = flag.Duration("verify-ttl", 10*time.Minute, "how long a verified session is cached")
 	)
 	flag.Parse()
 
@@ -61,16 +60,9 @@ func main() {
 	}
 
 	srv := &api.Server{
-		Store:     store.New(pool),
-		Verifier:  auth.NewVerifier(*upstream, *ttl),
-		ServerKey: *serverKey,
-		Log:       log,
-	}
-
-	if *serverKey == "" {
-		// Not fatal: the browser and mail APIs work without it. Only the
-		// game-server clan lookup needs it, and it fails closed.
-		log.Warn("no server key set; game-server clan lookups will be refused")
+		Store:    store.New(pool),
+		Verifier: auth.NewVerifier(*upstream, *ttl),
+		Log:      log,
 	}
 
 	httpSrv := &http.Server{

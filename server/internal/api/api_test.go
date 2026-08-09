@@ -92,10 +92,9 @@ func newHarness(t *testing.T) *harness {
 
 	st := store.New(pool)
 	s := &api.Server{
-		Store:     st,
-		Verifier:  auth.NewVerifier(upstream.URL, time.Minute),
-		ServerKey: "test-key",
-		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Store:    st,
+		Verifier: auth.NewVerifier(upstream.URL, time.Minute),
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	srv := httptest.NewServer(s.Routes())
@@ -566,20 +565,15 @@ func TestAuthInfoEndpointForTheGameServer(t *testing.T) {
 		t.Fatalf("wear tag: %s", body)
 	}
 
-	// Wrong key is refused: this endpoint speaks for every player, so it must
-	// not be open.
-	resp, err := http.Get(h.srv.URL + "/tn/server/authinfo?key=wrong&guid=4510186")
+	// Deliberately unauthenticated: a game server has no player token, and a
+	// name and clan tag are public anyway.
+	resp, err := http.Get(h.srv.URL + "/tn/server/authinfo?guid=4510186")
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("bad server key should be 401, got %d", resp.StatusCode)
-	}
-
-	resp, err = http.Get(h.srv.URL + "/tn/server/authinfo?key=test-key&guid=4510186")
-	if err != nil {
-		t.Fatal(err)
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("open lookup should be 200, got %d", resp.StatusCode)
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
