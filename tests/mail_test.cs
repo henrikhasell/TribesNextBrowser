@@ -60,6 +60,11 @@ function TNBMailSelfTest(%host, %isBackend)
    $TNB::Host = %host;
    $TNB::AuthHost = %host;
    $TNB::GuidOverride = "4510186";
+
+   // The mail window remembers the last folder in $TNB::MailFolder, and globals
+   // outlive a suite run in the same game process. Clear it so the assertions
+   // below are about a first open rather than whatever the previous run left.
+   $TNB::MailFolder = "";
    TNBSessionEnd();
    TNBApiInit();
 
@@ -105,9 +110,9 @@ function TNBMailStep2()
    TNBMailTestEq("deleted folder offered", TNBMailTabDeleted.isVisible(), 1);
    TNBMailTestEq("sender tracking hidden", TNBMailTrackBtn.isVisible(), 0);
 
-   // Opening the window lights INBOX and asks for the inbox. Unconditional:
-   // the selection used to live inside the capability guard, so the shipped
-   // build opened on the inbox with no tab lit at all.
+   // A first open lights INBOX and asks for the inbox -- nothing remembered
+   // yet. The selection used to live inside the capability guard, so the
+   // shipped build opened on the inbox with no tab lit at all.
    TNBMailTestEq("inbox tab lit on open", TNBMailTabInbox.getValue(), 1);
    TNBMailTestEq("sent tab not lit", TNBMailTabSent.getValue(), 0);
    TNBMailTestEq("deleted tab not lit", TNBMailTabDeleted.getValue(), 0);
@@ -290,8 +295,29 @@ function TNBMailStepBuddyList(%ctx, %status, %result)
    TNBMailFinish();
 }
 
+// Reopening returns to the folder last used rather than snapping back to the
+// inbox. Left to the end because onWake refetches, and nothing after this
+// depends on the list.
+function TNBMailCheckFolderMemory()
+{
+   $TNB::MailFolder = "deleted";
+   TNBMailGui.onWake();
+   TNBMailTestEq("reopen remembers the folder", $TNB::MailFolder, "deleted");
+   TNBMailTestEq("and lights its tab", TNBMailTabDeleted.getValue(), 1);
+   TNBMailTestEq("without lighting the inbox", TNBMailTabInbox.getValue(), 0);
+
+   // An unknown folder is not a tab, so it must fall back rather than light
+   // nothing -- the failure mode this whole change was about.
+   $TNB::MailFolder = "nonsense";
+   TNBMailGui.onWake();
+   TNBMailTestEq("unknown folder falls back", $TNB::MailFolder, "inbox");
+   TNBMailTestEq("and lights the inbox", TNBMailTabInbox.getValue(), 1);
+}
+
 function TNBMailFinish()
 {
+   TNBMailCheckFolderMemory();
+
    echo("");
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail);
    $TNBMailTest::Done = 1;

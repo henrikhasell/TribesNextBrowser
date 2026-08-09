@@ -140,18 +140,27 @@ function TNBMailGui::onWake(%this)
    Canvas.pushDialog(LaunchToolbarDlg);
    TNBMailHideUnsupported();
 
-   // Open on the inbox, and say so in both places: the folder the next request
-   // will ask for, and the tab the user sees lit. TNBMailApiList falls back to
-   // "inbox" when the folder is empty, so leaving this implicit still showed
-   // the right messages -- under no tab at all, which reads as a broken screen.
+   // Open on whichever folder was last used, the inbox the first time. Say it
+   // in both places -- the folder the next request asks for, and the tab the
+   // user sees lit -- because TNBMailApiList falls back to "inbox" on an empty
+   // folder, so leaving the tab implicit still showed the right messages under
+   // no tab at all, which reads as a broken screen.
+   //
+   // $TNB::MailFolder is the memory as well as the request argument, so the two
+   // cannot drift apart. Anything that is not a folder we know falls back
+   // rather than lighting nothing.
    //
    // setValue does not fire the control's command on this build (measured), so
    // this lights the tab without also triggering TNBMailShowFolder and a second
    // list request.
-   $TNB::MailFolder = "inbox";
-   TNBMailTabInbox.setValue(1);
-   TNBMailTabSent.setValue(0);
-   TNBMailTabDeleted.setValue(0);
+   %folder = $TNB::MailFolder;
+   if (%folder !$= "sent" && %folder !$= "deleted")
+      %folder = "inbox";
+   $TNB::MailFolder = %folder;
+
+   TNBMailTabInbox.setValue(%folder $= "inbox");
+   TNBMailTabSent.setValue(%folder $= "sent");
+   TNBMailTabDeleted.setValue(%folder $= "deleted");
 
    TNBMailList.ClearColumns();
    TNBMailList.addColumn(0, "", 24, 24, 24, "center");
