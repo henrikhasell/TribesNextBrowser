@@ -129,6 +129,11 @@ function TNBMailStep2()
 
    // Opening it drops the envelope, updated in place with setRowFlags the way
    // the stock client does it, so the list keeps its rows and its selection.
+   // Opening from the cached list must set the reply/block target too. It used
+   // not to -- and since the list carries bodies, that is the branch which
+   // normally runs, so reply and block acted on nothing.
+   TNBMailTestEq("cached open sets the target", $TNB::MailReplyTo, "4120041");
+
    TNBMailTestEq("envelope cleared locally", $TNB::MailUnread[0], 0);
    TNBMailTestEq("row kept after marking read", TNBMailList.rowCount(), 2);
    TNBMailTestEq("selection kept", TNBMailList.getSelectedId(), "11");
@@ -245,6 +250,14 @@ function TNBMailStepSentFolder()
    TNBMailTestEq("sent folder requested", $TNB::MailFolder, "sent");
    // The send earlier in this run went to 4120041, so it is filed here.
    TNBMailTestEq("sent folder holds what we sent", ($TNB::MailCount > 0), 1);
+
+   // In Sent the sender is you, so the party to act on is the recipient.
+   // Targeting the sender made blocking answer "you cannot block yourself".
+   TNBMailList.setSelectedRow(0);
+   TNBMailList::onSelect(TNBMailList, $TNB::MailId[0], "");
+   TNBMailTestEq("sent mail targets the recipient", $TNB::MailReplyTo, "4120041");
+   TNBMailTestEq("and never yourself",
+                 ($TNB::MailReplyTo $= TNBSessionGuid()) ? 0 : 1, 1);
 
    // Block list: blocking happens from a message, this is the other half.
    $TNB::MailReplyTo = "4200999";

@@ -95,6 +95,17 @@ function TNBMailSubject(%node) { return TNBMailField(%node, "subject subj title"
 function TNBMailBodyText(%node){ return TNBMailField(%node, "body text message content msg"); }
 function TNBMailDate(%node)    { return TNBMailField(%node, "date time sent received timestamp"); }
 function TNBMailUnread(%node)  { return TNBMailField(%node, "unread new status"); }
+function TNBMailToGuid(%node)  { return TNBMailField(%node, "toguid recipientguid to"); }
+
+// Who the *other* party is. In the inbox that is the sender; in Sent it is the
+// recipient, because there the sender is you -- which is how blocking used to
+// answer "you cannot block yourself" instead of blocking anyone.
+function TNBMailOtherParty(%fromGuid, %toGuid)
+{
+   if (%fromGuid $= TNBSessionGuid() && %toGuid !$= "")
+      return %toGuid;
+   return %fromGuid;
+}
 
 // Render a date for display. Formatting happens here and nowhere else, so a
 // value can never be formatted twice -- which matters because TNBJsonIsNumber
@@ -221,6 +232,11 @@ function TNBMailBlockSender()
    if ($TNB::MailReplyTo $= "")
    {
       MessageBoxOK("EMAIL", "Select a message first.");
+      return;
+   }
+   if ($TNB::MailReplyTo $= TNBSessionGuid())
+   {
+      MessageBoxOK("EMAIL", "That message is between you and yourself.");
       return;
    }
    MessageBoxYesNo("BLOCK SENDER",
@@ -364,6 +380,8 @@ function TNBMailListLoaded(%ctx, %status, %result)
       $TNB::MailBody[%i] = TNBMailBodyText(%m);
       $TNB::MailDate[%i] = TNBMailDate(%m);
       $TNB::MailUnread[%i] = (TNBMailUnread(%m) ? 1 : 0);
+      $TNB::MailFromGuid[%i] = TNBMailFromGuid(%m);
+      $TNB::MailToGuid[%i] = TNBMailToGuid(%m);
 
       TNBMailAddRow(%i);
    }
@@ -402,6 +420,14 @@ function TNBMailList::onSelect(%this, %id, %text)
    %index = TNBMailIndexOfId(%id);
    if (%index >= 0 && $TNB::MailBody[%index] !$= "")
    {
+      // Set the same state the by-id path sets. Without this, reply and block
+      // acted on whatever was left from a previous message -- and since the
+      // list carries bodies, this branch is the one that normally runs, so they
+      // acted on nothing at all.
+      $TNB::MailReplyTo = TNBMailOtherParty($TNB::MailFromGuid[%index],
+                                            $TNB::MailToGuid[%index]);
+      $TNB::MailReplySubject = $TNB::MailSubject[%index];
+
       TNBMailShow($TNB::MailFrom[%index], $TNB::MailSubject[%index],
                   $TNB::MailDate[%index], $TNB::MailBody[%index]);
       TNBMailMarkRead(%index, %id);
@@ -474,7 +500,7 @@ function TNBMailReadLoaded(%id, %status, %result)
       %m = TNBJsonIndex(%result, 0);
    }
 
-   $TNB::MailReplyTo = TNBMailFromGuid(%m);
+   $TNB::MailReplyTo = TNBMailOtherParty(TNBMailFromGuid(%m), TNBMailToGuid(%m));
    $TNB::MailReplySubject = TNBMailSubject(%m);
 
    TNBMailShow(TNBMailFrom(%m), TNBMailSubject(%m), TNBMailDate(%m),
