@@ -305,6 +305,15 @@ function TNBMailUnsupported()
 
 function TNBMailRefresh()
 {
+   // Opening the window wakes it twice -- the launch bar adds the tab, which
+   // selects it, and then selects it again -- and each wake refreshes. Collapse
+   // that into one request rather than paying a round trip twice on every open.
+   // Keyed on the folder so switching tabs while one is in flight still fetches.
+   %folder = ($TNB::MailFolder $= "" ? "inbox" : $TNB::MailFolder);
+   if ($TNB::MailListPending $= %folder)
+      return;
+   $TNB::MailListPending = %folder;
+
    TNBMailSetBody("<just:center>\n\nChecking for mail...");
    TNBMailApiList("TNBMailListLoaded", "");
 }
@@ -317,6 +326,10 @@ function TNBMailSetBody(%text)
 
 function TNBMailListLoaded(%ctx, %status, %result)
 {
+   // Cleared first: this runs for failures too, and a stuck flag would block
+   // every later refresh of that folder.
+   $TNB::MailListPending = "";
+
    TNBMailList.clear();
    $TNB::MailCount = 0;
 

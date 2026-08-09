@@ -177,6 +177,23 @@ function TNBApiTestUnreachable(%ctx, %status, %result)
    TNBApiTestEq("unreachable host errors", %status, "error");
    echo("   (error was: " @ %result @ ")");
 
+   // The waiter table must survive a client that has never ended a session.
+   // $TNB::WaitCount starts unset, and "" is not 0 as an array index: the first
+   // waiter used to land at $TNB::WaitFn[""] while the count advanced to 1, so
+   // the flush called index 0, found nothing, and dropped it. That cost the
+   // first request of the session -- the mail window sat on "Checking for
+   // mail..." until the folder was clicked again.
+   //
+   // Every suite calls TNBSessionEnd, which resets the count, so this is forced
+   // by hand: it is the one state the tests could not otherwise reach.
+   $TNB::WaitCount = "";
+   $TNB::WaitFn[0] = "";
+   $TNB::UUID = "";
+   TNBSessionOnReady("TNBApiTestWaiterProbe", "probe");
+   TNBApiTestEq("waiter lands at a numeric index",
+                $TNB::WaitFn[0], "TNBApiTestWaiterProbe");
+   TNBApiTestEq("and the count advances from it", $TNB::WaitCount, 1);
+
    // TribesNext is the identity provider and nothing else. The login is the
    // only URI that may be resolved against $TNB::AuthHost; everything else --
    // browser, clan, mail -- belongs to the backend. Asserted here because it is
@@ -188,5 +205,8 @@ function TNBApiTestUnreachable(%ctx, %status, %result)
    echo("");
    echo("TNBAPIRESULT pass=" @ $TNBApiTest::Pass @ " fail=" @ $TNBApiTest::Fail);
 }
+
+// Never called; it only has to exist so the probe above stores a real name.
+function TNBApiTestWaiterProbe(%ctx, %status, %reason) { }
 
 echo("TNBrowser: api_test.cs loaded");

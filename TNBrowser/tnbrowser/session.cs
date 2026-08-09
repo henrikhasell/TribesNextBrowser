@@ -31,6 +31,20 @@
 // $TNB::Errors     consecutive failures, drives the backoff
 // $TNB::Schedule   pending retry/refresh event
 
+// Waiter table state. Initialised here, at load, because "" is not 0 when used
+// as an array index: on a client that has never called TNBSessionEnd -- which
+// is every real game, since only the tests end a session explicitly -- the
+// first waiter was stored at $TNB::WaitFn[""] while the count advanced to 1.
+// The flush then called $TNB::WaitFn[0], found nothing, and the waiter was
+// silently dropped.
+//
+// It cost exactly one request, the first of the session, and only ever the
+// first: by the second the count is a real number. That is why it presented as
+// "the mail window sits on Checking for mail... until I click the folder
+// again", and why no suite saw it -- they all call TNBSessionEnd first.
+if ($TNB::WaitCount $= "")
+   $TNB::WaitCount = 0;
+
 function TNBSessionReady()
 {
    return ($TNB::UUID !$= "");
@@ -67,6 +81,8 @@ function TNBSessionOnReady(%fn, %ctx)
    }
 
    %n = $TNB::WaitCount;
+   if (%n $= "")
+      %n = 0;
    $TNB::WaitFn[%n] = %fn;
    $TNB::WaitCtx[%n] = %ctx;
    $TNB::WaitCount = %n + 1;
@@ -79,7 +95,13 @@ function TNBSessionFlushWaiters()
    %count = $TNB::WaitCount;
    $TNB::WaitCount = 0;
    for (%i = 0; %i < %count; %i++)
+   {
+      // Skip empties rather than call(""), which the console reports only as
+      // ": Unknown command." -- an error message with nothing in it to trace.
+      if ($TNB::WaitFn[%i] $= "")
+         continue;
       call($TNB::WaitFn[%i], $TNB::WaitCtx[%i]);
+   }
 }
 
 function TNBSessionFailWaiters(%reason)
@@ -87,7 +109,11 @@ function TNBSessionFailWaiters(%reason)
    %count = $TNB::WaitCount;
    $TNB::WaitCount = 0;
    for (%i = 0; %i < %count; %i++)
+   {
+      if ($TNB::WaitFn[%i] $= "")
+         continue;
       call($TNB::WaitFn[%i], $TNB::WaitCtx[%i], "error", %reason);
+   }
 }
 
 //-----------------------------------------------------------------------------
