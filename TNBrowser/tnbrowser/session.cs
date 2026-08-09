@@ -1,0 +1,329 @@
+// TNBrowser -- community session via RSA challenge/response
+//
+// The game never keeps the account password around, so a session cannot be
+// negotiated with one. Instead the backend runs a challenge/response against
+// the account's RSA key:
+//
+//   1. Client sends its GUID and a random nonce.
+//   2. Server returns a challenge encrypted with the account's public key.
+//      The same challenge comes back for repeat requests within its lifetime.
+//   3. Client decrypts it, checks that the leading bytes replay the nonce it
+//      sent (proving the server answered *this* request), and returns the
+//      remainder.
+//   4. Server issues a session UUID, used to authorise every later call.
+//
+// This mirrors tournamentNetClient2's tournament/login.cs, with the two
+// substitutions the current client requires:
+//
+//   * raw TCPObject with a hand-assembled request  ->  HTTPObject (HTTPS)
+//   * rubyEval("... $accountKey.decrypt ...")      ->  t2csri_rsa_decrypt()
+//
+// The 2017 tournament client predates both; the Ruby interpreter it relied on
+// is gone from this build.
+
+//-----------------------------------------------------------------------------
+// State
+//-----------------------------------------------------------------------------
+
+// $TNB::UUID       current session token, "" when not logged in
+// $TNB::Nonce      nonce awaiting a challenge
+// $TNB::Challenge  challenge awaiting decryption
+// $TNB::Errors     consecutive failures, drives the backoff
+// $TNB::Schedule   pending retry/refresh event
+
+function TNBSessionReady()
+{
+   return ($TNB::UUID !$= "");
+}
+
+// The account GUID. $TNB::GuidOverride exists so the mod can be driven against
+// the mock backend on a client that has never logged in.
+function TNBSessionGuid()
+{
+   if ($TNB::GuidOverride !$= "")
+      return $TNB::GuidOverride;
+   return getField($LoginCertificate, 1);
+}
+
+// Hex modulus of the account key; its length sizes the nonce.
+function TNBSessionModulus()
+{
+   return getField($LoginCertificate, 3);
+}
+
+//-----------------------------------------------------------------------------
+// Readiness callbacks
+//
+// GUI code wants to say "run this once we have a session" without caring
+// whether that is immediately or after a round trip.
+//-----------------------------------------------------------------------------
+
+function TNBSessionOnReady(%fn, %ctx)
+{
+   if (TNBSessionReady())
+   {
+      call(%fn, %ctx);
+      return;
+   }
+
+   %n = $TNB::WaitCount;
+   $TNB::WaitFn[%n] = %fn;
+   $TNB::WaitCtx[%n] = %ctx;
+   $TNB::WaitCount = %n + 1;
+
+   TNBSessionStart();
+}
+
+function TNBSessionFlushWaiters()
+{
+   %count = $TNB::WaitCount;
+   $TNB::WaitCount = 0;
+   for (%i = 0; %i < %count; %i++)
+      call($TNB::WaitFn[%i], $TNB::WaitCtx[%i]);
+}
+
+function TNBSessionFailWaiters(%reason)
+{
+   %count = $TNB::WaitCount;
+   $TNB::WaitCount = 0;
+   for (%i = 0; %i < %count; %i++)
+      call($TNB::WaitFn[%i], $TNB::WaitCtx[%i], "error", %reason);
+}
+
+//-----------------------------------------------------------------------------
+// Negotiation
+//-----------------------------------------------------------------------------
+
+function TNBSessionStart()
+{
+   if (isEventPending($TNB::Schedule))
+      cancel($TNB::Schedule);
+   $TNB::Schedule = "";
+
+   %guid = TNBSessionGuid();
+   if (%guid $= "")
+   {
+      TNBSessionFail("You are not logged in to a TribesNext account.");
+      return;
+   }
+
+   %query = "guid=" @ %guid @ "&";
+
+   if ($TNB::UUID !$= "")
+      %query = %query @ "uuid=" @ $TNB::UUID;
+   else if ($TNB::Challenge $= "")
+      %query = %query @ "nonce=" @ TNBSessionMakeNonce();
+   else
+   {
+      %response = TNBSessionAnswerChallenge();
+      if (%response $= "")
+         return;                 // AnswerChallenge already restarted or failed
+      %query = %query @ "response=" @ %response;
+   }
+
+   TNBSessionSend(%query);
+}
+
+// A random hex nonce half the width of the modulus, so that nonce plus the
+// server's challenge still fits in one RSA block. The leading "1" keeps the
+// value from being truncated when it round-trips through a bignum that drops
+// leading zeros.
+function TNBSessionMakeNonce()
+{
+   %length = strlen(TNBSessionModulus()) / 2;
+   if (%length < 8)
+      %length = 8;
+
+   %nonce = "1";
+   for (%i = 1; %i < %length; %i++)
+      %nonce = %nonce @ getSubStr($TNBJson::HexDigits, getRandom(0, 15), 1);
+
+   $TNB::Nonce = %nonce;
+   return %nonce;
+}
+
+// Decrypt the stored challenge and extract the part to send back. Returns ""
+// if the challenge was unusable, having already scheduled a retry.
+function TNBSessionAnswerChallenge()
+{
+   %challenge = strlwr($TNB::Challenge);
+
+   // A challenge is pure hex. Anything else is the server trying to get
+   // arbitrary text into an interpreter argument, so drop it and start over --
+   // the same guard the stock client applies to server challenges.
+   for (%i = 0; %i < strlen(%challenge); %i++)
+   {
+      if (!isxdigit(getSubStr(%challenge, %i, 1)))
+      {
+         error("TNBrowser: non-hex challenge from server, discarding");
+         $TNB::Challenge = "";
+         TNBSessionRetry();
+         return "";
+      }
+   }
+
+   %decrypted = t2csri_rsa_decrypt(%challenge);
+
+   %replay = getSubStr(%decrypted, 0, strlen($TNB::Nonce));
+   if (%replay !$= $TNB::Nonce)
+   {
+      error("TNBrowser: challenge did not replay our nonce, discarding");
+      $TNB::Challenge = "";
+      TNBSessionRetry();
+      return "";
+   }
+
+   return getSubStr(%decrypted, strlen($TNB::Nonce), strlen(%decrypted));
+}
+
+function TNBSessionSend(%query)
+{
+   if (isObject(TNBSessionInterface))
+      TNBSessionInterface.delete();
+   new HTTPObject(TNBSessionInterface);
+
+   TNBSessionInterface.buffer = "";
+   TNBSessionInterface.handled = 0;
+   TNBSessionInterface.setHeader("Accept", "text/plain");
+
+   // The query has to be part of the request-URI: this build's HTTPObject
+   // ignores the third argument, which was verified against the live server --
+   // passing the query there produced "ERR: No GUID specified.".
+   TNBSessionInterface.get($TNB::Host, $TNB::LoginURI @ "?" @ %query, "");
+}
+
+//-----------------------------------------------------------------------------
+// Transport callbacks
+//-----------------------------------------------------------------------------
+
+function TNBSessionInterface::onLine(%this, %line)
+{
+   %line = trim(%line);
+   if (%line $= "")
+      return;                    // blank separator line before the body
+
+   %this.handled = 1;
+
+   if ($TNB::Debug)
+      echo("TNBrowser session <- " @ %line);
+
+   if (getSubStr(%line, 0, 11) $= "CHALLENGE: ")
+   {
+      $TNB::Errors = 0;
+      $TNB::Challenge = getSubStr(%line, 11, strlen(%line));
+      // Answer on the next tick rather than inline, so the decrypt does not
+      // happen inside the network callback.
+      $TNB::Schedule = schedule(200, 0, "TNBSessionStart");
+      return;
+   }
+
+   if (getSubStr(%line, 0, 6) $= "UUID: ")
+   {
+      $TNB::Errors = 0;
+      $TNB::UUID = getSubStr(%line, 6, strlen(%line));
+      $TNB::Challenge = "";
+      $TNB::Nonce = "";
+      echo("TNBrowser: session established");
+      $TNB::Schedule = schedule($TNB::SessionRefresh * 1000, 0, "TNBSessionStart");
+      TNBSessionFlushWaiters();
+      return;
+   }
+
+   if (getSubStr(%line, 0, 9) $= "REFRESHED")
+   {
+      $TNB::Errors = 0;
+      $TNB::Schedule = schedule($TNB::SessionRefresh * 1000, 0, "TNBSessionStart");
+      return;
+   }
+
+   if (getSubStr(%line, 0, 7) $= "TIMEOUT")
+   {
+      // The session lapsed; drop it and negotiate a fresh one.
+      $TNB::UUID = "";
+      $TNB::Challenge = "";
+      $TNB::Errors = 0;
+      $TNB::Schedule = schedule(200, 0, "TNBSessionStart");
+      return;
+   }
+
+   if (getSubStr(%line, 0, 5) $= "ERR: ")
+   {
+      TNBSessionFail(getSubStr(%line, 5, strlen(%line)));
+      return;
+   }
+}
+
+// This build's libcurl-backed HTTPObject does NOT call onConnectFailed or
+// onDNSFailed -- verified by pointing one at a dead port, where the only script
+// callback that fires is onDisconnect (libcurl prints its own diagnostic to the
+// console and closes). So a connection failure is "disconnected without having
+// understood a single line", and that is what has to be detected here.
+//
+// Without this the session simply never calls back: every queued request stays
+// parked behind a negotiation that will never finish, which looks exactly like
+// a hang.
+function TNBSessionInterface::onDisconnect(%this)
+{
+   if (%this.handled)
+      return;
+
+   TNBSessionFail("Could not reach the TribesNext community server.");
+}
+
+// Kept for completeness in case a future patch starts emitting them; they are
+// not the path that fires today.
+function TNBSessionInterface::onConnectFailed(%this)
+{
+   TNBSessionFail("Could not reach the TribesNext community server.");
+}
+
+function TNBSessionInterface::onDNSFailed(%this)
+{
+   TNBSessionFail("Could not resolve the TribesNext community server.");
+}
+
+//-----------------------------------------------------------------------------
+// Failure handling
+//-----------------------------------------------------------------------------
+
+function TNBSessionFail(%reason)
+{
+   error("TNBrowser: session error -- " @ %reason);
+
+   $TNB::UUID = "";
+   $TNB::Challenge = "";
+   $TNB::LastError = %reason;
+
+   TNBSessionFailWaiters(%reason);
+   TNBSessionRetry();
+}
+
+// Quadratic backoff, capped near fifteen minutes, matching the reference
+// client. Keeps a server-side outage from turning into a request flood.
+function TNBSessionRetry()
+{
+   $TNB::Errors++;
+   if ($TNB::Errors > 66)
+      $TNB::Errors = 66;
+
+   %delay = 200 * ($TNB::Errors * $TNB::Errors);
+   if (isEventPending($TNB::Schedule))
+      cancel($TNB::Schedule);
+   $TNB::Schedule = schedule(%delay, 0, "TNBSessionStart");
+}
+
+// Drop the session and stop all scheduled work. Used when the browser closes
+// and on shutdown.
+function TNBSessionEnd()
+{
+   if (isEventPending($TNB::Schedule))
+      cancel($TNB::Schedule);
+   $TNB::Schedule = "";
+   $TNB::UUID = "";
+   $TNB::Challenge = "";
+   $TNB::Nonce = "";
+   $TNB::Errors = 0;
+   $TNB::WaitCount = 0;
+}
+
+echo("TNBrowser: session.cs loaded");

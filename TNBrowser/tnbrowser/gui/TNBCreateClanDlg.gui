@@ -1,0 +1,231 @@
+// TNBrowser -- clan creation dialog
+//
+// Layout derived from the game's own CreateTribeDlg.gui so the screens keep
+// the stock geometry, control classes and shell profiles and read as part of
+// the game. Object names are TNB-prefixed and commands point at TNBrowser's
+// handlers, so the original (WON-backed, non-functional) GUI is left untouched
+// and the two can coexist.
+new GuiControl(TNBCreateClanDlg) {
+	profile = "DlgBackProfile";
+	horizSizing = "right";
+	vertSizing = "bottom";
+	position = "0 0";
+	extent = "640 480";
+	minExtent = "8 8";
+	visible = "1";
+	helpTag = "0";
+
+	new ShellPaneCtrl() {
+		profile = "ShellDlgPaneProfile";
+		horizSizing = "center";
+		vertSizing = "center";
+		position = "70 36";
+		extent = "500 408";
+		minExtent = "48 92";
+		visible = "1";
+		helpTag = "0";
+		text = "CREATE CLAN";
+		maxLength = "255";
+		noTitleBar = "0";
+
+		new GuiTextCtrl() {
+			profile = "ShellTextRightProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "18 38";
+			extent = "70 22";
+			minExtent = "8 8";
+			visible = "1";
+			helpTag = "0";
+			text = "Clan Name:";
+			maxLength = "255";
+		};
+		new GuiTextCtrl() {
+			profile = "ShellTextRightProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "18 68";
+			extent = "70 22";
+			minExtent = "8 8";
+			visible = "1";
+			helpTag = "0";
+			text = "Clan Tag:";
+			maxLength = "255";
+		};
+		new GuiTextCtrl() {
+			profile = "ShellTextRightProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "18 128";
+			extent = "70 22";
+			minExtent = "8 8";
+			visible = "1";
+			helpTag = "0";
+			text = "Description:";
+			maxLength = "255";
+		};
+		new ShellTextEditCtrl() {
+			profile = "NewTextEditProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "84 30";
+			extent = "260 38";
+			minExtent = "32 38";
+			visible = "1";
+			variable = "$TNB::NewClanName";
+			helpTag = "0";
+			maxLength = "24";
+			historySize = "0";
+			password = "0";
+			glowOffset = "9 9";
+         IRCName = true;
+		};
+		new ShellTextEditCtrl(TNBNewClanTag) {
+			profile = "NewTextEditProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "84 60";
+			extent = "107 38";
+			minExtent = "32 38";
+			visible = "1";
+			variable = "$TNB::NewClanTag";
+			command = "TNBUpdateTagPreview();";
+			helpTag = "0";
+			maxLength = "8";
+			historySize = "0";
+			password = "0";
+			glowOffset = "9 9";
+         IRCName = true;
+		};
+		new ShellToggleButton(TNBNewClanAppend) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "189 64";
+			extent = "146 30";
+			minExtent = "26 27";
+			visible = "1";
+			variable = "$TNB::NewClanAppend";
+			command = "TNBUpdateTagPreview();";
+			helpTag = "0";
+			text = "APPEND CLAN TAG";
+			maxLength = "255";
+		};
+		new ShellToggleButton(TNBNewClanRecruiting) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "308 95";
+			extent = "162 30";
+			minExtent = "26 27";
+			visible = "1";
+			variable = "$TNB::NewClanRecruiting";
+			helpTag = "0";
+			text = "RECRUITING";
+			maxLength = "255";
+		};
+		new GuiTextCtrl() {
+			profile = "ShellTextRightProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "18 98";
+			extent = "70 22";
+			minExtent = "8 8";
+			visible = "1";
+			helpTag = "0";
+			text = "Preview:";
+			maxLength = "255";
+		};
+		new ShellFieldCtrl() {
+			profile = "ShellFieldProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "93 97";
+			extent = "192 22";
+			minExtent = "16 18";
+			visible = "1";
+			helpTag = "0";
+
+			new GuiTextCtrl(TNBNewClanPreview) {
+				profile = "ShellAltTextCenterProfile";
+				horizSizing = "width";
+				vertSizing = "height";
+				position = "3 2";
+				extent = "186 20";
+				minExtent = "8 8";
+				visible = "1";
+				helpTag = "0";
+				maxLength = "255";
+			};
+		};
+		new ShellScrollCtrl() {
+			profile = "NewScrollCtrlProfile";
+			horizSizing = "right";
+			vertSizing = "height";
+			position = "26 143";
+			extent = "448 208";
+			minExtent = "24 52";
+			visible = "1";
+			helpTag = "0";
+			willFirstRespond = "1";
+			hScrollBar = "alwaysOff";
+			vScrollBar = "alwaysOn";
+			constantThumbHeight = "0";
+			defaultLineHeight = "15";
+			childMargin = "3 3";
+			fieldBase = "gui/shll_field";
+
+			new GuiScrollContentCtrl() {
+				profile = "GuiDefaultProfile";
+				horizSizing = "right";
+				vertSizing = "bottom";
+				position = "7 7";
+				extent = "418 194";
+				minExtent = "8 8";
+				visible = "1";
+				helpTag = "0";
+
+				new GuiMLTextEditCtrl(TNBNewClanDesc) {
+					profile = "ShellMessageTextProfile";
+					horizSizing = "right";
+					vertSizing = "bottom";
+					position = "0 0";
+					extent = "418 194";
+					minExtent = "8 8";
+					visible = "1";
+					helpTag = "0";
+					lineSpacing = "2";
+					allowColorChars = "0";
+					maxChars = "3600";
+				};
+			};
+		};
+		new ShellBitmapButton() {
+			profile = "ShellButtonProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "81 354";
+			extent = "128 38";
+			minExtent = "32 38";
+			visible = "1";
+			command = "Canvas.popDialog(TNBCreateClanDlg);";
+			accelerator = "escape";
+			helpTag = "0";
+			text = "CANCEL";
+			simpleStyle = "0";
+		};
+		new ShellBitmapButton(TNBCreateClanBtn) {
+			profile = "ShellButtonProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "291 354";
+			extent = "128 38";
+			minExtent = "32 38";
+			visible = "1";
+			command = "TNBCreateClanSubmit();";
+			helpTag = "0";
+			text = "CREATE";
+			simpleStyle = "0";
+		};
+	};
+};

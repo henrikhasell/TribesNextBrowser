@@ -1,0 +1,360 @@
+# TNBrowser — TribesNext community browser and mail for Tribes 2
+
+## What this is
+
+Tribes 2 shipped with in-game community screens: player profiles, clan ("tribe")
+pages with rosters and administration, a player/clan search, and tmail. They are
+still in every install — the BROWSER and EMAIL buttons on the launch shell open
+them — but they talk to Sierra's WON backend through the engine call
+`DatabaseQuery()`. WON shut down in 2003, so today those buttons lead to:
+
+> There was an error processing your request, please wait a few moments and try
+> again.
+
+TribesNext rebuilt that backend. This mod rebuilds the screens against it, so the
+community browser works again from inside the game.
+
+It ships as a drop-in `.vl2`. The stock scripts and GUIs are left completely
+untouched: everything here is `TNB`-prefixed and the shell's BROWSER and EMAIL
+buttons are re-pointed with a package, so `deactivatePackage(TNBrowser)` restores
+the original behaviour exactly.
+
+## Requirements
+
+- A **TribesNext-patched client**, which supplies the two things the mod cannot
+  work without: an `HTTPObject` reimplemented on libcurl that can speak HTTPS
+  (stock Torque's is plain HTTP only), and `t2csri_rsa_decrypt()` /
+  `$LoginCertificate` for the passwordless session.
+- You must be **logged in to a TribesNext account**. The session is negotiated
+  with your account's RSA key; no password is ever typed into the mod.
+
+## Installing
+
+```sh
+./tools/build-vl2.sh                                   # -> dist/TNBrowser.vl2
+cp dist/TNBrowser.vl2 <Tribes2>/GameData/MyMod/
+```
+
+then launch with `-mod MyMod`. The engine indexes a mod directory's `.vl2`
+archives alongside its loose files, so nothing needs unpacking — verified by
+running a mod directory containing only the archive. For development you can
+equally copy the `TNBrowser/` source tree into `GameData/` and use
+`-mod TNBrowser`.
+
+---
+
+## What is implemented
+
+### Player profiles
+Name and active tag, join date, online state, website, profile text, and clan
+memberships with rank and title. Clickable links move between players and clans.
+On your own profile: edit profile text and website, change which clan tag you
+wear, and view account history — the EDIT sub-tab opens the recreated player
+properties dialog.
+
+### Clans
+Profile, member roster with rank/title/online state, outstanding invitations,
+and clan history. Administration, gated by the rank the server enforces:
+
+- description, name, website, tag (with prepend/append side), recruiting toggle,
+  clan picture
+- invite a player, set a member's rank (0–4) and title, remove a member
+- authorise or withdraw a disband
+
+### Search
+Players and clans, also used to pick an invite target or a mail recipient.
+
+### Mail
+Inbox with unread markers, reading, delete, and a compose/reply window.
+
+### Coverage
+**All 26 documented browser API methods are implemented and reachable from the
+UI.** Two of them (`username`, and `userclan` in the sense of the tag actually
+showing) cannot presently succeed for server-side reasons explained below.
+
+### Screens recreated
+Each is derived from the shipped `.gui`, so geometry, control classes and shell
+profiles match the original and the screens read as part of the game:
+
+| Stock file | Recreated as |
+|---|---|
+| `TribeAndWarriorBrowserGui.gui` | `TNBrowserGui.gui` |
+| `TribePropertiesDlg.gui` | `TNBClanPropsDlg.gui` |
+| `TribeAdminMemberDlg.gui` | `TNBMemberAdminDlg.gui` |
+| `BrowserSearchDlg.gui` | `TNBSearchDlg.gui` |
+| `BrowserEditInfoDlg.gui` | `TNBEditInfoDlg.gui` |
+| `CreateTribeDlg.gui` | `TNBCreateClanDlg.gui` |
+| `EmailGui.gui` | `TNBMailGui.gui` |
+| `EmailComposeDlg.gui` | `TNBComposeDlg.gui` |
+| `WarriorPropertiesDlg.gui` | `TNBPlayerPropsDlg.gui` |
+| *(no stock equivalent)* | `TNBPromptDlg.gui`, a one-line input box |
+
+Every one is derived from the shipped file by renaming objects and re-pointing
+`command =` strings, never by re-laying-out. Every layout-bearing line
+(`position`, `extent`, `minExtent`, sizing, `profile`) is **identical to the
+original — zero differences across all nine.**
+
+The roster's right-click menu is recreated too (`TNBRosterPopup`): View Profile,
+Send Mail, and for officers Edit Rank and Title / Kick from Clan. Like the stock
+one it is built in script rather than shipped as a `.gui`. Buddy and block list
+entries are dropped — the API has neither.
+
+---
+
+## What is not implemented, and why
+
+Nothing below is an oversight. In most cases the backend has no equivalent.
+
+### Your clan tag appearing in your in-game name — blocked server-side
+
+Choosing which tag you wear (`userclan`) is only half the job, and this caught
+me out: game servers never talk to a central system, so the client has to hand
+them a signed **community certificate** issued by the DCE. That certificate is
+what annotates your account with the current name, clan and tag, and it is where
+`getAuthInfo()` — and therefore the name a server displays — gets them from.
+
+The shipped TribesNext client *sends* `$T2CSRI::CommunityCertificate` to servers
+(`t2csri/clientSide.cs`) but **never fetches it**; the only reference in
+`t2csri.vl2` is the read. Only the 2017 tournament client ever set it. So on a
+stock install that global is empty, `t2csri_sendCommunityCert()` returns early,
+and no tag can appear.
+
+`tnbrowser/cert.cs` implements the fetch, caches the DCE certificates, and
+refreshes before expiry. The response is tab-delimited lines (`DCE`, `CEC`,
+`ERR:`), and each certificate arrives as a *single* field with its own tabs
+escaped — which is why the reference client calls `collapseEscape` on it, and
+why a mock that emits real tabs looks right and parses wrong.
+
+It does not currently produce a tag, because the live
+DCE answers an authenticated request with:
+
+    ERR: Signer validity period has expired.
+
+Its signing certificate has lapsed. Confirmed with a valid session — the same
+session's `json_browser` calls return 200, and an unauthenticated request still
+answers `UNAUTHENTICATED`, so the error comes from the issuance path itself.
+
+**This is not the site's TLS certificate**, and relaxing TLS does not help: the
+error is byte-identical with strict verification, with `curl -k`, and over plain
+HTTP with no TLS at all. The host's Let's Encrypt certificate is valid and
+verifies cleanly. What has expired is the DCE's RSA *signing* certificate — the
+delegation cert the community system uses to sign community certificates, checked
+inside the application after authentication (the same trust chain
+`t2csri_verify_deleg_signature` exists for).
+
+**Nor can the failure be bypassed.** Game servers verify the whole chain
+themselves (`t2csri/serverSideClans.cs`): the DCE certificate's signature against
+the delegation root public key compiled into `IFC22.dll`, the DCE's own validity
+window, and then the community certificate's signature using the DCE key. The
+first two failures disconnect the client outright ("DCE is not signed by
+authoritative root", "Community cert is not signed by a known/valid DCE"). So
+there is nothing to ignore client-side — no certificate is ever issued — and a
+forged one would need the delegation private key and would still be rejected.
+
+What *is* safely ignorable is the failure itself, which is how this mod behaves:
+presenting no community certificate simply means you appear untagged, and nothing
+else is affected. `cert.cs` logs it and only shows a message when you explicitly
+asked to wear a tag. It starts working the day the signer is renewed.
+
+### Sending mail — refused by the server
+
+The compose and reply windows are fully built and wired, but **sending does not
+work, and cannot be made to work from the client.** About thirty payload and
+parameter spellings were tried against both mail endpoints, with a real
+authenticated session:
+
+- `json_mail.php` `send` → `500 Invalid Parameters`, for every shape
+- `robot_mail.php` `send` → `INVALID_RECIP`, for every shape
+
+The official TribesNext client patches also disable the EMAIL launch tab
+outright. The window is kept because receiving works, and because the code is
+correct the day the server accepts a send; compose reports whatever the server
+actually says rather than pretending the message went out.
+
+**FORWARD** and **REPLY ALL** are hidden for the same reason — both need a
+working send. `TNBMailForward` is implemented behind the hidden button.
+
+### Message field names are inferred
+
+The account inbox is empty and no message can be created without send, so the
+per-message field names could never be observed. `TNBMailField` accepts several
+plausible spellings for each field (`from`/`sender`/`name`, …) and degrades to a
+blank column rather than a broken screen. It is the one place to adjust if a real
+message ever arrives using different names.
+
+### Account rename (`username`) — refused by the server
+
+Wired to the CHANGE NAME button on the player properties dialog, exactly as the
+stock screen had it. The backend disables renames during the beta and answers
+with a refusal, which the dialog reports; it starts working the moment the
+server enables the method.
+
+### Mail block lists, sender tracking, Sent and Deleted folders
+
+Hidden. The stock EmailGui offers all of these; the TribesNext mail API exposes
+only `count`, `read`, `delete` and `send`. There is no folder concept at all —
+`count` ignores its folder parameter and always reports the inbox.
+
+### The clan properties SECURITY pane
+
+Hidden. In the original it configured which rank was allowed to perform which
+action. TribesNext ranks carry only a number (0–4) and a free-text title, and the
+server decides permissions itself, so the controls would have nothing to write
+to.
+
+### The player picture
+
+`WarriorPropertiesDlg` is recreated, but its GFX pane is hidden. The API has
+`clanpicture` and no user-picture equivalent, so those controls would have
+nothing to write to — the same reason the clan dialog's SECURITY pane is
+hidden.
+
+### Clan picture upload
+
+The original GFX pane uploaded a JPEG to WON, with size and dimension limits.
+`clanpicture` instead stores a path to an image the game already has, so the pane
+lists the shipped clan artwork rather than uploading.
+
+---
+
+## How authentication works
+
+No password is typed into the mod. It runs the RSA challenge/response against
+`/tn/robot/robot_login.php`: it sends its GUID and a random nonce, decrypts the
+challenge the server returns using the account key, checks that the leading bytes
+replay the nonce it sent (proving the server answered *this* request), and
+returns the remainder. The server issues a session UUID, which then authorises
+every call. The session refreshes every ten minutes and backs off quadratically
+on failure.
+
+That the same UUID also authorises the JSON APIs was the design's central
+assumption; it is confirmed live, below.
+
+## Verification
+
+**201 assertions, 0 failures** — 63 parser, 36 API/session, 70 GUI, 32 mail —
+run inside the real game against `tools/mockserver.py`.
+
+Confirmed against the live backend with a real account (`tools/live-check.sh`):
+
+- `LOGIN=SUCCESS`, real 1024-bit certificate
+- 32-character session UUID from the robot endpoint after the RSA exchange
+- `RESULT=ok` from `json_browser.php` — **a robot-issued UUID does authorise the
+  JSON API**, so the passwordless login and the documented methods compose, and
+  the tab-delimited `robot_browser.php` fallback is not needed
+
+The live backend differs from its documentation in three ways, each now covered
+by a regression test: absent strings come back as JSON `null` rather than `""`,
+`online` is a bare number rather than a quoted string, and the response body is
+prefixed with a blank line.
+
+The mail API is undocumented and its source is not published; its method set was
+established by probing the live server (unknown methods answer `501`, valid ones
+`200`):
+
+| method | behaviour |
+|---|---|
+| `count` | message count, as a JSON string |
+| `read` | no payload → the message list; `{"id":N}` → one message |
+| `delete` | `{"id":N}` |
+| `send` | refused, always |
+
+## Layout
+
+```
+TNBrowser/
+├── scripts/autoexec/tnbrowser.cs   entry point, package, menu overrides
+└── tnbrowser/
+    ├── settings.cs    endpoints and refresh interval
+    ├── json.cs        JSON parser (the engine has none), URL/JSON encoding
+    ├── session.cs     RSA challenge/response session
+    ├── api.cs         request queue + all 26 browser API methods
+    ├── cert.cs        community certificate (what carries a clan tag in-game)
+    ├── clanprops.cs   clan properties dialog
+    ├── playerprops.cs player properties dialog
+    ├── mail.cs        mail API + mail window
+    ├── panes.cs       browser GUI logic
+    └── gui/*.gui      screens, derived from the stock layouts
+tests/                 four suites, run inside the game
+tools/                 container, deploy, mock backend, test runner, packaging
+```
+
+## Developing and testing
+
+```sh
+./tools/run-tn-container.sh --mod ./TNBrowser 2325   # patched game in Docker
+./tools/run-tests.sh 2325                            # all four suites
+./tools/deploy.sh 2325                               # push changes, no restart
+./tools/live-check.sh                                # live RSA check; prompts for password
+./tools/build-vl2.sh                                 # package
+```
+
+`run-tn-container.sh` builds a TribesNext-capable container by injecting the
+patch files from a real patched install into the plugin's stock image — that
+image ships Sierra's original `IFC22.dll`, so without this it can do neither
+HTTPS nor RSA. Useful switches: `--login` (required for anything account-related,
+see the engine notes), `--keep` (survive a crash so `docker logs` still has the
+evidence), `--game-dir DIR` (bind-mount a real install instead of injecting).
+
+`mockserver.py` serves the documented JSON shapes over plain HTTP — including the
+write methods, permission failures, and the mail endpoint's refusal to send — so
+everything can be exercised offline. Point the mod at it with
+`$TNB::Host = "http://172.17.0.1:8099";`.
+
+To adjust a layout, open the game's own GUI editor from the console with
+`GuiEdit(0);`. It edits whatever screen is displayed, and **Save** writes the
+`.gui` back. No key is bound to it in this build
+(`bind(keyboard, F10, GuiEdit);` if you want one).
+
+## Notes on this engine
+
+Things that cost real time here and are easy to trip over again:
+
+- **`rebuildModPaths()` resets the mod path stack to just `base`**, silently
+  unloading the mod. Use `setModPaths("<mod>")` to refresh the resource index —
+  it rebuilds the index too and appends `base` itself.
+- **`.gui` files must not be exec'd from `scripts/autoexec`.** autoexec runs
+  before the shell control profiles exist. A control built against a missing
+  profile still constructs — `isObject()` returns 1 and every method works — but
+  renders with default styling: no pane frame, no title bar, collapsed buttons.
+  Load them on first open, and check each file individually, or a screen added
+  later never loads in a session where the first one already opened.
+- **`setValue(1)` on a `ShellRadioButton` fires that button's `command`.** A
+  handler that writes back to the radios calls itself forever and takes the
+  engine down. The stock `TAM_OnAction` is a one-liner for exactly this reason.
+- **Never start an HTTP request from inside another one's callback.** It sticks
+  in `Connecting` forever — libcurl's multi handle is mid-iteration on the
+  connection whose callback you are in. The identical request completes in half a
+  second when deferred by one `schedule()` tick.
+- **The libcurl `HTTPObject` never calls `onConnectFailed` or `onDNSFailed`.** A
+  failed connection surfaces only as `onDisconnect` with nothing received.
+- **`HTTPObject.get(addr, uri, query)` ignores its third argument.** The query
+  string has to be part of the request-URI.
+- **`-nologin` disables the whole TribesNext account subsystem**, not just the
+  login screen: the patch never registers its `t2csri_*` console functions, so no
+  certificate can be loaded. HTTPS and `sha1sum` still work, which makes it look
+  like the patch is fine.
+- **A missing function's return value is not empty.** Calling an undefined
+  function prints "Unable to find function", but an assignment from it still
+  yields a meaningless number — so a script that only inspects the value reports
+  a plausible-looking status for a call that never happened.
+- **`GuiEmailBrowser` is display-only.** `getRowText` returns `""`; rows cannot be
+  read back, which is why the stock client kept message text in a separate
+  `EmailMessageVector`. It also wants exactly four values after the row id, and
+  they land in the From/Subject/Received columns — the leading Status column is
+  the envelope icon, drawn from the fourth value. Pass three and no row is added
+  at all; pass a status string first and every column shifts one place left.
+- A GUI hosted by `LaunchTabView` must define `setKey`, or the shell aborts with
+  `Unknown command setKey` and the window never appears.
+
+Two more that are about the async request layer rather than the engine, but cost
+just as much time and were both caught by tests rather than by reading:
+
+- **Clear a queue before running its callbacks, not after.** Callbacks routinely
+  enqueue new work (a retry, the next step of a flow); resetting the indices
+  afterwards silently discards it, leaving a request that was accepted and never
+  sent.
+- **Register at most one "wait for session" callback.** A pump that runs on a
+  timer *and* on every enqueue will otherwise queue a waiter per pump, and the
+  session layer then calls back once per waiter — so the second callback wipes
+  the queue the first one just refilled.

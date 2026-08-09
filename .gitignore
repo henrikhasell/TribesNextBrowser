@@ -1,0 +1,7 @@
+# Compiled TorqueScript. The engine writes these next to the sources and only
+# recompiles when the source is newer, so a committed .dso would shadow the
+# script it was built from on someone else's checkout.
+*.dso
+
+# Screenshots taken by the container tooling land in the working directory.
+screenshot-*.png

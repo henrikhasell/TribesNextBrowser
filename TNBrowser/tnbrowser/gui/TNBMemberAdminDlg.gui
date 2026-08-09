@@ -1,0 +1,160 @@
+// TNBrowser -- clan member rank editor
+//
+// Layout derived from the game's own TribeAdminMemberDlg.gui, unchanged: the
+// geometry is identical to the original.
+//
+// Removing a member is deliberately NOT a button here. In the stock UI kicking
+// was an entry on the roster's right-click popup menu, not on this dialog, and
+// TNBRosterPopup in panes.cs recreates that menu -- so this dialog keeps the two
+// buttons it always had.
+new GuiControl(TNBMemberAdminDlg) {
+	profile = "DlgBackProfile";
+	horizSizing = "width";
+	vertSizing = "height";
+	position = "0 0";
+	extent = "640 480";
+	minExtent = "8 8";
+	visible = "1";
+	helpTag = "0";
+		vTribe = "T2 ADMINISTRATION";
+		vPerm = "4";
+		vPlayer = "QIX";
+
+	new ShellPaneCtrl() {
+		profile = "ShellDlgPaneProfile";
+		horizSizing = "center";
+		vertSizing = "center";
+		position = "167 110";
+		extent = "306 260";
+		minExtent = "48 92";
+		visible = "1";
+		helpTag = "0";
+		text = "MEMBER RANK";
+		maxLength = "255";
+		noTitleBar = "0";
+
+		new ShellTextEditCtrl(TNBRankTitle) {
+			profile = "NewTextEditProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "42 45";
+			extent = "221 38";
+			minExtent = "32 38";
+			visible = "1";
+			helpTag = "0";
+			maxLength = "16";
+			historySize = "0";
+			password = "0";
+			glowOffset = "9 9";
+		};
+		new GuiTextCtrl(TNBRankWho) {
+			profile = "ShellTopicTextProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "53 34";
+			extent = "197 22";
+			minExtent = "8 8";
+			visible = "1";
+			helpTag = "0";
+			text = "MEMBER TITLE";
+			maxLength = "255";
+		};
+		new ShellRadioButton(TNBRank4) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "47 83";
+			extent = "205 30";
+			minExtent = "26 27";
+			visible = "1";
+			command = "TNBRankSelect(4);";
+			helpTag = "0";
+			text = " RANK 4: Leader";
+			maxLength = "255";
+			groupNum = "1";
+		};
+		new ShellRadioButton(TNBRank3) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "47 103";
+			extent = "205 30";
+			minExtent = "26 27";
+			visible = "1";
+			command = "TNBRankSelect(3);";
+			helpTag = "0";
+			text = " RANK 3: Senior Admin";
+			maxLength = "255";
+			groupNum = "1";
+		};
+		new ShellRadioButton(TNBRank2) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "47 123";
+			extent = "205 30";
+			minExtent = "26 27";
+			visible = "1";
+			command = "TNBRankSelect(2);";
+			helpTag = "0";
+			text = " RANK 2: Officer";
+			maxLength = "255";
+			groupNum = "1";
+		};
+		new ShellRadioButton(TNBRank1) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "47 143";
+			extent = "205 30";
+			minExtent = "26 27";
+			visible = "1";
+			command = "TNBRankSelect(1);";
+			helpTag = "0";
+			text = " RANK 1: Member";
+			maxLength = "255";
+			groupNum = "1";
+		};
+		new ShellRadioButton(TNBRank0) {
+			profile = "ShellRadioProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "47 163";
+			extent = "205 30";
+			minExtent = "26 27";
+			visible = "1";
+			command = "TNBRankSelect(0);";
+			helpTag = "0";
+			text = "RANK 0: Recruit";
+			maxLength = "255";
+			groupNum = "1";
+		};
+		new ShellBitmapButton(TNBRankCancel) {
+			profile = "ShellButtonProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "43 195";
+			extent = "115 38";
+			minExtent = "32 38";
+			visible = "1";
+			command = "Canvas.popDialog(TNBMemberAdminDlg);";
+			accelerator = "escape";
+			helpTag = "0";
+			text = "CANCEL";
+			simpleStyle = "0";
+		};
+		new ShellBitmapButton(TNBRankUpdate) {
+			profile = "ShellButtonProfile";
+			horizSizing = "right";
+			vertSizing = "bottom";
+			position = "141 195";
+			extent = "121 38";
+			minExtent = "32 38";
+			visible = "1";
+			command = "TNBRankApply();";
+			helpTag = "0";
+			text = "UPDATE";
+			simpleStyle = "0";
+		};
+	};
+};
