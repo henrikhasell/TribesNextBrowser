@@ -17,10 +17,5 @@ $TNB::Host = "http://your-backend:8080";
 // session token it issues is what your backend verifies you by.
 // $TNB::AuthHost = "https://tribesnext.thyth.com";
 
-// Un-hide the things only a TNBrowser backend can serve: Sent and Deleted mail
-// folders, block lists, buddy lists, and mail sending that actually delivers.
-// Leave it 0 when pointing at TribesNext -- those controls would only fail.
-$TNB::FullFeatures = 1;
-
 // Log protocol chatter to the console while setting things up.
 // $TNB::Debug = 1;

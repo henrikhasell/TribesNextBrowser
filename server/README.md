@@ -66,11 +66,22 @@ Point the client at it from the game console:
 
 ```
 $TNB::Host = "http://your-host:8080";
-$TNB::FullFeatures = 1;
+```
+
+or bake it into the packages so installing is a single file copy:
+
+```sh
+../tools/build-vl2.sh --host "http://your-host:8080" \
+                      --server-host "http://your-host:8080" \
+                      --server-key "$TNB_SERVER_KEY"
 ```
 
 `$TNB::AuthHost` stays on TribesNext — that is where the account lives.
-`$TNB::FullFeatures` un-hides the controls only this backend can serve.
+
+The client offers every control the mail API has a counterpart for regardless of
+which backend is behind it. Against this one they all work; against TribesNext
+some are refused and the client says so, which is how it treats every other
+method.
 
 ## Transport
 

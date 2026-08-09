@@ -40,8 +40,9 @@ LOAD='exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
       exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");
       exec("tnbrowser/mail.cs");'
 
-# Point auth and data at different hosts, then override what the suites set.
-SPLIT="\$TNB::AuthHost = \"$AUTH\"; \$TNB::FullFeatures = 1;"
+# The suites set $TNB::Host themselves; auth stays on the mock, which mints
+# session tokens the way TribesNext's robot login does.
+SPLIT="\$TNB::AuthHost = \"$AUTH\";"
 
 echo
 echo "== api + session, against the Go backend =="
@@ -65,7 +66,7 @@ echo
 echo "== mail, against the Go backend =="
 reseed
 $CONSOLE "$LOAD" 'exec("tests/mail_test.cs");' \
-    "TNBMailSelfTest(\"$DATA\"); $SPLIT" \
+    "TNBMailSelfTest(\"$DATA\", 1); $SPLIT" \
     --until '$TNBMailTest::Done' --until-timeout 150 >/dev/null 2>&1
 $CONSOLE 'echo("CONFORMANCE-MAIL pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-MAIL|\(got |\(missing "

@@ -4,7 +4,12 @@
 // probing the live endpoint established, including the fact that send is
 // refused with "500 Invalid Parameters".
 //
-//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099");
+//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099", 0);
+//
+// The second argument says whether the backend under test can actually send
+// mail: a TNBrowser backend delivers, TribesNext refuses every payload shape.
+// That is a property of the server, not a client setting, so the test is told
+// rather than the client being put into a mode.
 
 function TNBMailTestEq(%name, %got, %want)
 {
@@ -39,8 +44,9 @@ function TNBMailTestHas(%name, %haystack, %needle)
    }
 }
 
-function TNBMailSelfTest(%host)
+function TNBMailSelfTest(%host, %sendWorks)
 {
+   $TNBMailTest::SendWorks = %sendWorks;
    $TNBMailTest::Pass = 0;
    $TNBMailTest::Fail = 0;
    $TNBMailTest::Done = 0;
@@ -86,14 +92,13 @@ function TNBMailStep2()
    TNBMailTestEq("cached body", $TNB::MailBody[1], "Good games last night.\n\n-- Ravage");
    TNBMailTestEq("second cached id", $TNB::MailId[1], "12");
 
-   // Controls follow what the backend can actually do: hidden against
-   // TribesNext, shown against a backend that serves folders and block lists.
-   TNBMailTestEq("block button follows capability",
-                 TNBMailBlockBtn.isVisible(), $TNB::FullFeatures ? 1 : 0);
-   TNBMailTestEq("sent folder follows capability",
-                 TNBMailTabSent.isVisible(), $TNB::FullFeatures ? 1 : 0);
-   if (!$TNB::FullFeatures)
-      TNBMailTestEq("inbox tab selected", TNBMailTabInbox.getValue(), 1);
+   // Every control the mail API has any counterpart for is offered, whichever
+   // backend is behind it. Only sender tracking stays hidden, having nothing to
+   // call at all.
+   TNBMailTestEq("block button offered", TNBMailBlockBtn.isVisible(), 1);
+   TNBMailTestEq("sent folder offered", TNBMailTabSent.isVisible(), 1);
+   TNBMailTestEq("deleted folder offered", TNBMailTabDeleted.isVisible(), 1);
+   TNBMailTestEq("sender tracking hidden", TNBMailTrackBtn.isVisible(), 0);
 
    // Selecting a row renders the message from the cached list entry.
    TNBMailList.setSelectedRow(0);
@@ -145,7 +150,7 @@ function TNBMailStepAfterSend()
    // The headline difference between the backends: TribesNext refuses every
    // send, a self-hosted backend delivers. Either way the client must report
    // what actually happened rather than assume.
-   if ($TNB::FullFeatures)
+   if ($TNBMailTest::SendWorks)
       TNBMailTestEq("send delivered", $TNBMailTest::SendStatus, "ok");
    else
       TNBMailTestEq("send reported as failure", $TNBMailTest::SendStatus, "error");

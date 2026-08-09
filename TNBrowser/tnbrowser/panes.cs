@@ -439,7 +439,7 @@ function TNBRenderPlayerProfile()
               "   <a:tnb\teditsite\t>[ Edit my website ]</a>";
    }
    %text = %text @ "\n<a:tnb\tuserhistory\t>[ View history ]</a>";
-   if (%isSelf && $TNB::FullFeatures)
+   if (%isSelf)
       %text = %text @ "   <a:tnb\tbuddies\t>[ Buddy list ]</a>";
 
    TNBSetPlayerText(%text);
