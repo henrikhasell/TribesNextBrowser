@@ -288,19 +288,9 @@ function TNBMailListLoaded(%ctx, %status, %result)
       $TNB::MailSubject[%i] = TNBMailSubject(%m);
       $TNB::MailBody[%i] = TNBMailBodyText(%m);
       $TNB::MailDate[%i] = TNBMailDate(%m);
+      $TNB::MailUnread[%i] = (TNBMailUnread(%m) ? 1 : 0);
 
-      %date = TNBMailDisplayDate($TNB::MailDate[%i]);
-
-      // GuiEmailBrowser wants exactly four values after the row id, and they
-      // land in the From, Subject and Received columns -- the leading Status
-      // column is the envelope icon, which the control draws itself from the
-      // fourth value. Passing three values adds no row at all; passing a
-      // status string first shifts every column one place left.
-      TNBMailList.addRow(%id,
-                         ($TNB::MailFrom[%i] $= "" ? "(unknown)" : $TNB::MailFrom[%i]),
-                         ($TNB::MailSubject[%i] $= "" ? "(no subject)" : $TNB::MailSubject[%i]),
-                         %date,
-                         (TNBMailUnread(%m) ? 1 : 0));
+      TNBMailAddRow(%i);
    }
 
    $TNB::MailCount = %count;
@@ -308,10 +298,52 @@ function TNBMailListLoaded(%ctx, %status, %result)
                   (%count == 1 ? "" : "s") @ " -- select one to read it.");
 }
 
-// Selecting a row shows the body. If the list entry already carried one there
-// is nothing to fetch; otherwise read the message by id.
+// One row, from the cached arrays. Split out because marking a message read has
+// to redraw the list: GuiEmailBrowser has no setRowById -- it is a
+// ShellFancyArray, not a GuiTextListCtrl -- so a row cannot be edited in place.
+function TNBMailAddRow(%i)
+{
+   // GuiEmailBrowser wants exactly four values after the row id, and they land
+   // in the From, Subject and Received columns -- the leading Status column is
+   // the envelope icon, which the control draws itself from the fourth value.
+   // Passing three values adds no row at all; passing a status string first
+   // shifts every column one place left.
+   TNBMailList.addRow($TNB::MailId[%i],
+                      ($TNB::MailFrom[%i] $= "" ? "(unknown)" : $TNB::MailFrom[%i]),
+                      ($TNB::MailSubject[%i] $= "" ? "(no subject)" : $TNB::MailSubject[%i]),
+                      TNBMailDisplayDate($TNB::MailDate[%i]),
+                      ($TNB::MailUnread[%i] ? 1 : 0));
+}
+
+// Rebuild every row and put the selection back where it was. Rows are added in
+// array order, so a message's row index is its cache index.
+function TNBMailRedraw()
+{
+   %selected = TNBMailList.getSelectedId();
+
+   $TNB::MailRedrawing = 1;
+   TNBMailList.clear();
+   for (%i = 0; %i < $TNB::MailCount; %i++)
+      TNBMailAddRow(%i);
+
+   if (%selected !$= "")
+   {
+      %row = TNBMailIndexOfId(%selected);
+      if (%row >= 0)
+         TNBMailList.setSelectedRow(%row);
+   }
+   $TNB::MailRedrawing = "";
+}
+
+// Selecting a row shows the body. If the list entry already carried one there is
+// nothing to fetch, so it renders from the cache; otherwise read by id.
 function TNBMailList::onSelect(%this, %id, %text)
 {
+   // TNBMailRedraw restores the selection, which makes the control call this
+   // again. Ignore that echo rather than re-running the whole path.
+   if ($TNB::MailRedrawing)
+      return;
+
    $TNB::MailCurrent = %id;
 
    %index = TNBMailIndexOfId(%id);
@@ -319,11 +351,41 @@ function TNBMailList::onSelect(%this, %id, %text)
    {
       TNBMailShow($TNB::MailFrom[%index], $TNB::MailSubject[%index],
                   $TNB::MailDate[%index], $TNB::MailBody[%index]);
+      TNBMailMarkRead(%index, %id);
       return;
    }
 
    TNBMailSetBody("<just:center>\n\nLoading message...");
    TNBMailApiRead(%id, "TNBMailReadLoaded", %id);
+}
+
+// Clearing the unread flag is a side effect of reading a message *by id*: that
+// is the only call the backend treats as "opened" (json_mail read with an id;
+// store.MailRead then does UPDATE mail SET unread = FALSE).
+//
+// The list arrives with bodies attached, so the cached path above answers
+// without a request and nothing would ever be marked read -- the envelope
+// stayed shut no matter how many times you opened a message. So send the read
+// for its side effect, and drop the envelope locally rather than refetching the
+// list to learn what we already know.
+function TNBMailMarkRead(%index, %id)
+{
+   if (!$TNB::MailUnread[%index])
+      return;
+
+   $TNB::MailUnread[%index] = 0;
+   TNBMailRedraw();
+
+   TNBMailApiRead(%id, "TNBMailMarkedRead", %id);
+}
+
+function TNBMailMarkedRead(%ctx, %status, %result)
+{
+   // Nothing to display -- the body is already on screen from the cache. A
+   // failure is worth a console line but not a dialog: the envelope simply
+   // comes back on the next refresh, which is the truth of it.
+   if (%status $= "error")
+      error("TNBrowser: could not mark message " @ %ctx @ " read -- " @ %result);
 }
 
 function TNBMailIndexOfId(%id)
@@ -361,6 +423,16 @@ function TNBMailReadLoaded(%id, %status, %result)
 
    TNBMailShow(TNBMailFrom(%m), TNBMailSubject(%m), TNBMailDate(%m),
                TNBMailBodyText(%m));
+
+   // This request marked it read server-side, so the row is stale. The reply
+   // still reports the message as it was when opened, which is why the local
+   // flag is cleared here rather than read back from %m.
+   %index = TNBMailIndexOfId(%id);
+   if (%index >= 0 && $TNB::MailUnread[%index])
+   {
+      $TNB::MailUnread[%index] = 0;
+      TNBMailRedraw();
+   }
 }
 
 function TNBMailShow(%from, %subject, %date, %body)

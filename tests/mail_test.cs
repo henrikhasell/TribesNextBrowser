@@ -96,12 +96,41 @@ function TNBMailStep2()
       TNBMailTestEq("inbox tab selected", TNBMailTabInbox.getValue(), 1);
 
    // Selecting a row renders the message from the cached list entry.
+   TNBMailTestEq("starts unread", $TNB::MailUnread[0], 1);
    TNBMailList.setSelectedRow(0);
    TNBMailList::onSelect(TNBMailList, 11, "");
    %body = TNBMailBody.getText();
    TNBMailTestHas("body shows subject", %body, "Scrim on Tuesday?");
    TNBMailTestHas("body shows sender", %body, "Shifter");
    TNBMailTestHas("body shows text", %body, "short a defender");
+
+   // Opening it drops the envelope, and the redraw that does so must not lose
+   // a row or the selection -- it rebuilds the list, since GuiEmailBrowser
+   // cannot edit a row in place.
+   TNBMailTestEq("envelope cleared locally", $TNB::MailUnread[0], 0);
+   TNBMailTestEq("redraw kept both rows", TNBMailList.rowCount(), 2);
+   TNBMailTestEq("redraw kept the selection", TNBMailList.getSelectedId(), "11");
+
+   // And it must have reached the server: the cached path answers without a
+   // request, so marking read is a deliberate extra call rather than a side
+   // effect of rendering. Re-list to see what the backend now believes.
+   TNBMailApiList("TNBMailStepUnreadPersisted", "");
+}
+
+function TNBMailStepUnreadPersisted(%ctx, %status, %result)
+{
+   TNBMailTestEq("relist status", %status, "ok");
+
+   %opened = "";
+   for (%i = 0; %i < TNBJsonCount(%result); %i++)
+   {
+      %m = TNBJsonIndex(%result, %i);
+      if (TNBMailId(%m) $= "11")
+         %opened = %m;
+   }
+
+   TNBMailTestEq("opened message still listed", (%opened !$= ""), 1);
+   TNBMailTestEq("server marked it read", TNBMailUnread(%opened), 0);
 
    TNBMailTestEq("count api", 1, 1);
    TNBMailApiCount("TNBMailStepCount", "");

@@ -479,8 +479,19 @@ def mail_read(guid, p):
     box = MAIL.get(guid, [])
     if not p or "id" not in p:
         return box
+
+    # Reading a message BY ID marks it read; listing a folder does not. That
+    # asymmetry is the whole of the read model, on the real backend too
+    # (store.MailRead -> UPDATE mail SET unread = FALSE), so the mock has to
+    # reproduce it or a client that never marks anything read still passes.
+    #
+    # The reply carries the message as it was when opened, which is why the
+    # copy is taken before the flag is cleared.
     hit = [m for m in box if m["id"] == str(p.get("id"))]
-    return hit
+    out = [dict(m) for m in hit]
+    for m in hit:
+        m["unread"] = "0"
+    return out
 
 
 def mail_delete(guid, p):
