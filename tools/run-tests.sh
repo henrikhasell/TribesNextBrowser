@@ -30,7 +30,10 @@ restart_mock() {
     sleep 1
 }
 
-LOAD='exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
+# Against the mock the client is in its TribesNext-compatible configuration:
+# auth and data are the same host, and the extras only a TNBrowser backend can
+# serve stay hidden.
+LOAD='$TNB::FullFeatures = 0; exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
       exec("tnbrowser/session.cs"); exec("tnbrowser/api.cs");
       exec("tnbrowser/panes.cs"); exec("tnbrowser/cert.cs");
       exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");
@@ -71,7 +74,7 @@ echo
 echo "== mail =="
 restart_mock
 $CONSOLE "$LOAD" 'exec("tests/mail_test.cs");' \
-    "TNBMailSelfTest(\"$HOST_ADDR\", 0);" \
+    "TNBMailSelfTest(\"$HOST_ADDR\");" \
     --until '$TNBMailTest::Done' --until-timeout 120 >/dev/null 2>&1
 
 $CONSOLE 'echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \

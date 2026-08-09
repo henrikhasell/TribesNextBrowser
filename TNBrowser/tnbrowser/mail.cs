@@ -30,6 +30,15 @@
 if ($TNB::MailURI $= "")
    $TNB::MailURI = "/tn/json/json_mail.php";
 
+// Whether the backend serves the WON-era extras: Sent/Deleted folders, block
+// lists, working send. TribesNext serves none of them, a self-hosted TNBrowser
+// backend serves all of them, so the controls follow this rather than being
+// hidden outright.
+//
+// Left off by default so pointing at TribesNext behaves exactly as before.
+if ($TNB::FullFeatures $= "")
+   $TNB::FullFeatures = 0;
+
 //-----------------------------------------------------------------------------
 // API
 //
@@ -160,30 +169,32 @@ function TNBMailGui::setKey(%this, %key) { %this.key = %key; }
 function TNBMailGui::onClose(%this, %key) { }
 function TNBMailGui::connectionTerminated(%this, %key) { }
 
-// Hide only what has no counterpart at all.
+// Show only what the backend behind us can actually do.
 //
-// Everything else is offered unconditionally. Against a TNBrowser backend it
-// all works; against TribesNext some of it will be refused by the server, and
-// the client reports that refusal rather than pretending the control was never
-// there. That is the same treatment every other method gets, and it avoids a
-// mode flag that has to be set correctly for the UI to be honest.
+// Against TribesNext the mail API is count/read/delete/send-that-refuses, with
+// no folders and no block list, so those controls stay hidden. Against a
+// TNBrowser backend they all work and are shown.
 function TNBMailHideUnsupported()
 {
-   // Set both ways, not just the hiding. GUI objects outlive a single open --
-   // they are created once and reused -- so a control this function does not
-   // explicitly show stays however it was last left, and anything hidden
-   // earlier in the session would never come back.
-   TNBMailBlockListBtn.setVisible(1);
-   TNBMailBlockBtn.setVisible(1);
-   TNBMailForwardBtn.setVisible(1);
-   TNBMailReplyAllBtn.setVisible(1);
-   TNBMailTabSent.setVisible(1);
-   TNBMailTabDeleted.setVisible(1);
+   %full = $TNB::FullFeatures;
 
-   // Sender tracking was a WON buddy-list shortcut. The buddy list itself lives
-   // on the player pane, so these two have nothing to call.
+   TNBMailBlockListBtn.setVisible(%full);
+   TNBMailBlockBtn.setVisible(%full);
+   TNBMailTabSent.setVisible(%full);
+   TNBMailTabDeleted.setVisible(%full);
+
+   // Forward and reply-all both need a working send, which only a TNBrowser
+   // backend has.
+   TNBMailForwardBtn.setVisible(%full);
+   TNBMailReplyAllBtn.setVisible(%full);
+
+   // Sender tracking was a WON buddy-list shortcut; the buddy list itself lives
+   // on the player pane, so this button stays retired either way.
    TNBMailTrackBtn.setVisible(0);
    TNBMailTrackListBtn.setVisible(0);
+
+   if (!%full)
+      TNBMailTabInbox.setValue(1);
 }
 
 // Folder tabs. INBOX/SENT/DELETED map to the folder argument the backend takes.

@@ -59,54 +59,6 @@ running a mod directory containing only the archive. For development you can
 equally copy the `TNBrowser/` source tree into `GameData/` and use
 `-mod TNBrowser`.
 
-### Configuring it
-
-Put a plain `autoexec.cs` in the mod directory, beside the archive:
-
-```
-GameData/MyMod/TNBrowser.vl2
-GameData/MyMod/autoexec.cs      <- your settings
-```
-
-```
-$TNB::Host = "http://your-backend:8080";
-```
-
-The game execs every mod's `scripts/autoexec/*.cs` first and `autoexec.cs` last
-(`base/console_end.cs`), so a plain assignment there overrides the mod's
-defaults. Nothing needs unpacking, and being a loose file it survives replacing
-the `.vl2` with a newer build.
-
-It must be inside the **mod** directory, not `GameData/` — `exec()` resolves
-through the mod path, so a file at the GameData root is never found. Both
-placements were tested; only the mod directory works.
-
-Copyable starting points are in `examples/`, for the client and the server mod.
-
-### Drop-in packaging
-
-For something you hand to someone else, bake the settings into the archive at
-build time instead. Then installing really is copying one file:
-
-```sh
-./tools/build-vl2.sh --host "http://your-backend:8080" \
-                     --server-host "http://your-backend:8080" \
-                     --server-key "$TNB_SERVER_KEY"
-```
-
-`cp dist/TNBrowserServer.vl2 <Tribes2>/GameData/<the active mod>/` is then the
-entire install — nothing to create, nothing to edit. Verified with a mod
-directory containing only the archive: it booted already configured and fetched
-a clan tag from the backend.
-
-Baking works from a copy, so the source tree is untouched, and the settings keep
-their `if empty` guard, so a loose `autoexec.cs` can still override a baked-in
-value later.
-
-A server archive built with `--server-key` contains that key, and the key speaks
-for every player rather than one account. Build your own rather than passing
-someone else's around.
-
 ---
 
 ## What is implemented
@@ -388,6 +340,7 @@ then in the game console:
 
 ```
 $TNB::Host = "http://your-host:8080";   # data from your backend
+$TNB::FullFeatures = 1;                  # un-hide folders, block lists, buddies
 ```
 
 `$TNB::AuthHost` stays on TribesNext: players still log in there with their RSA
