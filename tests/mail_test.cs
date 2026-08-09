@@ -134,6 +134,7 @@ function TNBMailStep2()
    // normally runs, so reply and block acted on nothing.
    TNBMailTestEq("cached open sets the target", $TNB::MailReplyTo, "4120041");
 
+   TNBMailTestEq("selection recorded", $TNB::MailCurrent, "11");
    TNBMailTestEq("envelope cleared locally", $TNB::MailUnread[0], 0);
    TNBMailTestEq("row kept after marking read", TNBMailList.rowCount(), 2);
    TNBMailTestEq("selection kept", TNBMailList.getSelectedId(), "11");
@@ -214,6 +215,11 @@ function TNBMailStepAfterSend()
 
 function TNBMailStepAfterDelete()
 {
+   // The list is rebuilt here, and clear() reports a selection while it is --
+   // with whatever id was there before. Acting on that left the app pointing at
+   // a message the user never chose, so the next delete hit the wrong one.
+   TNBMailTestEq("selection goes with the deleted message", $TNB::MailCurrent, "");
+
    TNBMailTestEq("inbox shrank after delete", TNBMailList.rowCount(), 1);
    TNBMailTestEq("remaining count", $TNB::MailCount, 1);
    TNBMailTestEq("remaining message", $TNB::MailSubject[0], "gg");
@@ -311,6 +317,47 @@ function TNBMailStepBuddyList(%ctx, %status, %result)
 // Reopening returns to the folder last used rather than snapping back to the
 // inbox. Left to the end because onWake refetches, and nothing after this
 // depends on the list.
+// A refresh rebuilds the list, and the selection must survive it when the
+// message did: folder switches and post-delete refreshes both go through here.
+function TNBMailCheckSelectionSurvives()
+{
+   $TNB::MailFolder = "inbox";
+   $TNB::MailListPending = "";
+   $TNB::MailCurrent = "";
+   TNBMailRefresh();
+   schedule(2500, 0, "TNBMailCheckSelectionSurvivesDone");
+}
+
+function TNBMailCheckSelectionSurvivesDone()
+{
+   if ($TNB::MailCount > 0)
+   {
+      // Select the first row, refresh, and it must still be selected.
+      %id = $TNB::MailId[0];
+      TNBMailList.setSelectedRow(0);
+      TNBMailList::onSelect(TNBMailList, %id, "");
+      $TNBMailTest::HeldId = %id;
+
+      $TNB::MailListPending = "";
+      TNBMailRefresh();
+      schedule(2500, 0, "TNBMailCheckSelectionHeld");
+      return;
+   }
+   TNBMailCheckFolderMemory();
+   TNBMailFinishReport();
+}
+
+function TNBMailCheckSelectionHeld()
+{
+   TNBMailTestEq("selection survives a rebuild",
+                 $TNB::MailCurrent, $TNBMailTest::HeldId);
+   TNBMailTestEq("and it is a row that exists",
+                 (TNBMailIndexOfId($TNB::MailCurrent) >= 0), 1);
+
+   TNBMailCheckFolderMemory();
+   TNBMailFinishReport();
+}
+
 function TNBMailCheckFolderMemory()
 {
    $TNB::MailFolder = "deleted";
@@ -329,7 +376,11 @@ function TNBMailCheckFolderMemory()
 
 function TNBMailFinish()
 {
-   TNBMailCheckFolderMemory();
+   TNBMailCheckSelectionSurvives();
+}
+
+function TNBMailFinishReport()
+{
 
    echo("");
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail);

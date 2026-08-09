@@ -346,11 +346,16 @@ function TNBMailListLoaded(%ctx, %status, %result)
    // every later refresh of that folder.
    $TNB::MailListPending = "";
 
+   %wasSelected = $TNB::MailCurrent;
+
+   $TNB::MailRebuilding = 1;
    TNBMailList.clear();
    $TNB::MailCount = 0;
 
    if (%status $= "error")
    {
+      $TNB::MailRebuilding = "";
+      $TNB::MailCurrent = "";
       TNBMailSetBody("<just:center>\n\nCould not fetch mail.\n\n" @ %result);
       return;
    }
@@ -358,6 +363,8 @@ function TNBMailListLoaded(%ctx, %status, %result)
    %count = TNBJsonCount(%result);
    if (%count == 0)
    {
+      $TNB::MailRebuilding = "";
+      $TNB::MailCurrent = "";
       TNBMailSetBody("<just:center>\n\nYour inbox is empty.");
       return;
    }
@@ -387,6 +394,19 @@ function TNBMailListLoaded(%ctx, %status, %result)
    }
 
    $TNB::MailCount = %count;
+
+   // Keep the selection across a refresh when the message survived it -- the
+   // list is rebuilt on every folder switch and after every delete, and losing
+   // the selection each time means the next action reports "select a message
+   // first" for a row still highlighted on screen.
+   %row = TNBMailIndexOfId(%wasSelected);
+   if (%wasSelected !$= "" && %row >= 0)
+      TNBMailList.setSelectedRow(%row);
+   else
+      $TNB::MailCurrent = "";
+
+   $TNB::MailRebuilding = "";
+
    TNBMailSetBody("<just:center>\n\n" @ %count @ " message" @
                   (%count == 1 ? "" : "s") @ " -- select one to read it.");
 }
@@ -415,6 +435,15 @@ function TNBMailAddRow(%i)
 // nothing to fetch, so it renders from the cache; otherwise read by id.
 function TNBMailList::onSelect(%this, %id, %text)
 {
+   // GuiEmailBrowser fires this while the list is being rebuilt -- clear() on a
+   // populated list reports a selection, with whatever id happened to be there
+   // before. Acting on that ran the whole open-a-message path against a stale
+   // row: after deleting a message, $TNB::MailCurrent came back pointing at a
+   // different one, so the next delete acted on a message the user never chose,
+   // and an emptied list left it pointing at nothing.
+   if ($TNB::MailRebuilding)
+      return;
+
    $TNB::MailCurrent = %id;
 
    %index = TNBMailIndexOfId(%id);
