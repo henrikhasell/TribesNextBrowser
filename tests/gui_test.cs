@@ -76,11 +76,21 @@ function TNBGuiSelfTest(%host, %isBackend)
 
    TNBrowserOpen();
    TNBOpenPlayer("4510186");
+
+   // The wait cursor goes up the moment something is queued, as the original
+   // screens did. The engine has no getCursor, so the flag the helper keeps is
+   // the only way to see it from here.
+   TNBGuiEq("wait cursor while a request is out", $TNB::CursorBusy, 1);
+
    schedule(2500, 0, "TNBGuiStep2");
 }
 
 function TNBGuiStep2()
 {
+   // ...and comes back down once the queue drains. The assertions below all
+   // depend on the response having arrived, so this is not a race.
+   TNBGuiEq("cursor restored once the queue drains", $TNB::CursorBusy, "");
+
    TNBGuiEq("own profile loaded", $TNB::PlayerName, "orange01");
    TNBGuiEq("title shows tagged name", TNBTitle.getValue(), "[TC]orange01");
    TNBGuiEq("player pane visible", TNBPlayerPane.isVisible(), 1);

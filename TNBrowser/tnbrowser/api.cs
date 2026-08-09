@@ -30,6 +30,47 @@ function TNBApiInit()
    $TNB::QTail = 0;
    $TNB::Busy = 0;
    $TNB::AwaitingSession = 0;
+   TNBApiCursorIdle();
+}
+
+// The wait cursor, as the original screens had it.
+//
+// Stock raised it at every query site and dropped it in the result handlers --
+// webbrowser.cs has 24 of the former against 7 of the latter, webemail.cs
+// :366 and :1106 -- which is exactly why it leaked: any path that returned
+// early left the hourglass up.
+//
+// This client has something stock did not: one queue that mail, the browser and
+// the robot login all pass through. So the same behaviour comes from two places
+// instead of thirty, and cannot be left behind. A chain of requests holds the
+// cursor for the whole chain rather than flickering between the links, because
+// the drop waits for the queue to empty rather than firing per response.
+//
+// The session keepalive is deliberately outside this: it re-runs TNBSessionStart
+// on a ten-minute timer over its own connection object (session.cs), and stock
+// only ever showed the cursor for a query the player had asked for.
+//
+// $TNB::CursorBusy is the state as well as the guard -- the engine has no
+// getCursor, so it is the only way to observe this from a test.
+function TNBApiCursorBusy()
+{
+   if ($TNB::CursorBusy)
+      return;
+   $TNB::CursorBusy = 1;
+
+   // Absent on a dedicated server, which loads this file but never calls it.
+   if (isObject(Canvas))
+      Canvas.setCursor(ArrowWaitCursor);
+}
+
+function TNBApiCursorIdle()
+{
+   if (!$TNB::CursorBusy)
+      return;
+   $TNB::CursorBusy = "";
+
+   if (isObject(Canvas))
+      Canvas.setCursor(DefaultCursor);
 }
 
 // Browser-API convenience wrapper. Mail goes through TNBApiEnqueueOn with the
@@ -71,6 +112,8 @@ function TNBApiEnqueueRawOn(%host, %uri, %method, %payload, %callback, %ctx, %us
    $TNB::QPost[%t] = %usePost;
    $TNB::QTail = %t + 1;
 
+   TNBApiCursorBusy();
+
    // Always deferred, never inline: callers routinely chain a second call from
    // inside the first one's callback (a clan edit re-reading the clan, say),
    // and starting a transfer from within a network callback wedges it. See
@@ -104,6 +147,7 @@ function TNBApiPump()
       // across a long session.
       $TNB::QHead = 0;
       $TNB::QTail = 0;
+      TNBApiCursorIdle();
       return;
    }
 
@@ -164,6 +208,10 @@ function TNBApiFailAll(%reason)
    $TNB::QHead = 0;
    $TNB::QTail = 0;
    $TNB::Busy = 0;
+
+   // Dropped before the callbacks, not after: one of them enqueuing a retry must
+   // be able to raise it again.
+   TNBApiCursorIdle();
 
    for (%i = 0; %i < %count; %i++)
       call($TNB::FailCb[%i], $TNB::FailCtx[%i], "error", %reason);
