@@ -12,6 +12,24 @@
 //                  "/tn/robot/robot_login.php?guid=...&nonce=...", "")
 // returns a CHALLENGE. Note the query string is part of the request-URI --
 // see TNBHttpRequest in api.cs for why the third argument is not used.
+//
+// Setting these without unpacking the .vl2
+// -----------------------------------------------------------------------------
+// Put a plain autoexec.cs in the mod directory, beside the archive:
+//
+//     GameData/MyMod/TNBrowser.vl2
+//     GameData/MyMod/autoexec.cs      <- your settings
+//
+// The game execs scripts/autoexec/*.cs from every mod first, then "autoexec.cs"
+// last (base/console_end.cs: loadCustomScripts(); exec("autoexec.cs")), so a
+// plain assignment there wins over the defaults below.
+//
+// It has to be inside the mod directory, not GameData/ -- exec() resolves
+// through the mod path, so a file at the GameData root is never found. Verified
+// both ways.
+//
+// Keeping it a loose file rather than putting it in the archive means it
+// survives replacing the .vl2 with a newer build.
 
 // Two hosts, because logging in and holding the data are separate concerns.
 //
