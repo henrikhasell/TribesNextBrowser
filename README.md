@@ -99,6 +99,17 @@ entire install — nothing to create, nothing to edit. Verified with a mod
 directory containing only the archive: it booted already configured and fetched
 a clan tag from the backend.
 
+The archive has to be in the mod the *server* runs. Installing it into one
+Tribes 2 directory and hosting from another is the obvious way to see no tags at
+all, because nothing then asks the backend and the game falls back to the dead
+WON path.
+
+It loads two ways, so it does not depend on any single boot path: once from
+`scripts/autoexec/tnbserver.cs` during console init, and again from
+`scripts/TNBrowserServerGame.cs`, which `CreateServer()` execs on every server
+start (`base/scripts/server.cs` scans `scripts/*Game.cs` across the mod path
+stack, archives included). Whichever fires first loads it; the other is a no-op.
+
 `--full-features` belongs with `--host`: pointing the client at your backend
 without it leaves the mail folders and block/buddy lists hidden, which is the
 right default for TribesNext and the wrong one for yours.

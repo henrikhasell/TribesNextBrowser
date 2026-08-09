@@ -236,6 +236,9 @@ package TNBrowserServer
    }
 };
 
-activatePackage(TNBrowserServer);
+// Guarded: this file is exec'd from two entry points (console autoexec and the
+// CreateServer scan), and activating twice is a console warning.
+if (!isActivePackage(TNBrowserServer))
+   activatePackage(TNBrowserServer);
 
 echo("TNBrowserServer: clan tag support active");
