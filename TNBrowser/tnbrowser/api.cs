@@ -51,7 +51,17 @@ function TNBApiEnqueueOn(%uri, %method, %payload, %callback, %ctx, %usePost)
 // interleave their bodies.
 function TNBApiEnqueueRaw(%uri, %method, %payload, %callback, %ctx, %usePost, %raw)
 {
+   TNBApiEnqueueRawOn("", %uri, %method, %payload, %callback, %ctx, %usePost, %raw);
+}
+
+// %host overrides the data host for one request. The session and the community
+// certificate live on TribesNext even when browser data is served from a
+// self-hosted backend, so those calls name their host explicitly; everything
+// else passes "" and follows $TNB::Host.
+function TNBApiEnqueueRawOn(%host, %uri, %method, %payload, %callback, %ctx, %usePost, %raw)
+{
    %t = $TNB::QTail;
+   $TNB::QHost[%t] = %host;
    $TNB::QRaw[%t] = %raw;
    $TNB::QUri[%t] = %uri;
    $TNB::QMethod[%t] = %method;
@@ -166,6 +176,9 @@ function TNBApiFailAll(%reason)
 function TNBApiSend()
 {
    %h = $TNB::QHead;
+   %host = $TNB::QHost[%h];
+   if (%host $= "")
+      %host = $TNB::Host;
    %uri = $TNB::QUri[%h];
    %method = $TNB::QMethod[%h];
    %payload = $TNB::QPayload[%h];
@@ -189,7 +202,7 @@ function TNBApiSend()
       // body. PHP reads both through $_REQUEST, so the split is invisible to
       // the server.
       TNBApiInterface.setHeader("Content-Type", "application/x-www-form-urlencoded");
-      TNBApiInterface.post($TNB::Host, %uri @ "?" @ %auth, "",
+      TNBApiInterface.post(%host, %uri @ "?" @ %auth, "",
                            "payload=" @ TNBUrlEncode(%payload));
    }
    else
@@ -197,7 +210,7 @@ function TNBApiSend()
       %full = %uri @ "?" @ %auth;
       if (%payload !$= "")
          %full = %full @ "&payload=" @ TNBUrlEncode(%payload);
-      TNBApiInterface.get($TNB::Host, %full, "");
+      TNBApiInterface.get(%host, %full, "");
    }
 
    if ($TNB::Debug)

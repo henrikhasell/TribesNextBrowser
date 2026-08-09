@@ -30,6 +30,15 @@
 if ($TNB::MailURI $= "")
    $TNB::MailURI = "/tn/json/json_mail.php";
 
+// Whether the backend serves the WON-era extras: Sent/Deleted folders, block
+// lists, working send. TribesNext serves none of them, a self-hosted TNBrowser
+// backend serves all of them, so the controls follow this rather than being
+// hidden outright.
+//
+// Left off by default so pointing at TribesNext behaves exactly as before.
+if ($TNB::FullFeatures $= "")
+   $TNB::FullFeatures = 0;
+
 //-----------------------------------------------------------------------------
 // API
 //
@@ -44,7 +53,11 @@ function TNBMailApiCount(%cb, %ctx)
 
 function TNBMailApiList(%cb, %ctx)
 {
-   TNBApiEnqueueOn($TNB::MailURI, "read", "", %cb, %ctx, 0);
+   // The folder is only meaningful to a TNBrowser backend; TribesNext ignores
+   // it, so sending it is harmless either way.
+   %folder = ($TNB::MailFolder $= "" ? "inbox" : $TNB::MailFolder);
+   TNBApiEnqueueOn($TNB::MailURI, "read",
+                   TNBJsonObject("folder", %folder), %cb, %ctx, 0);
 }
 
 function TNBMailApiRead(%id, %cb, %ctx)
@@ -156,19 +169,66 @@ function TNBMailGui::setKey(%this, %key) { %this.key = %key; }
 function TNBMailGui::onClose(%this, %key) { }
 function TNBMailGui::connectionTerminated(%this, %key) { }
 
-// Block lists, sender tracking and the Sent/Deleted folders have no counterpart
-// in the mail API, so their controls are hidden rather than left to fail.
+// Show only what the backend behind us can actually do.
+//
+// Against TribesNext the mail API is count/read/delete/send-that-refuses, with
+// no folders and no block list, so those controls stay hidden. Against a
+// TNBrowser backend they all work and are shown.
 function TNBMailHideUnsupported()
 {
-   TNBMailBlockListBtn.setVisible(0);
+   %full = $TNB::FullFeatures;
+
+   TNBMailBlockListBtn.setVisible(%full);
+   TNBMailBlockBtn.setVisible(%full);
+   TNBMailTabSent.setVisible(%full);
+   TNBMailTabDeleted.setVisible(%full);
+
+   // Forward and reply-all both need a working send, which only a TNBrowser
+   // backend has.
+   TNBMailForwardBtn.setVisible(%full);
+   TNBMailReplyAllBtn.setVisible(%full);
+
+   // Sender tracking was a WON buddy-list shortcut; the buddy list itself lives
+   // on the player pane, so this button stays retired either way.
    TNBMailTrackBtn.setVisible(0);
    TNBMailTrackListBtn.setVisible(0);
-   TNBMailBlockBtn.setVisible(0);
-   TNBMailReplyAllBtn.setVisible(0);
-   TNBMailForwardBtn.setVisible(0);
-   TNBMailTabSent.setVisible(0);
-   TNBMailTabDeleted.setVisible(0);
-   TNBMailTabInbox.setValue(1);
+
+   if (!%full)
+      TNBMailTabInbox.setValue(1);
+}
+
+// Folder tabs. INBOX/SENT/DELETED map to the folder argument the backend takes.
+function TNBMailShowFolder(%folder)
+{
+   $TNB::MailFolder = %folder;
+   TNBMailRefresh();
+}
+
+function TNBMailBlockSender()
+{
+   if ($TNB::MailReplyTo $= "")
+   {
+      MessageBoxOK("EMAIL", "Select a message first.");
+      return;
+   }
+   MessageBoxYesNo("BLOCK SENDER",
+      "Block mail from this player?", "TNBMailConfirmBlock();", "");
+}
+
+function TNBMailConfirmBlock()
+{
+   TNBApiEnqueue("blockadd", TNBJsonObject("to", $TNB::MailReplyTo),
+                 "TNBMailAfterBlock", "", 0);
+}
+
+function TNBMailAfterBlock(%ctx, %status, %result)
+{
+   if (%status $= "error")
+   {
+      MessageBoxOK("EMAIL", %result);
+      return;
+   }
+   MessageBoxOK("EMAIL", "Blocked. Their mail will no longer arrive.");
 }
 
 function TNBMailUnsupported()

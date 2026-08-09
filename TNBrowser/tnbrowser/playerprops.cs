@@ -27,6 +27,15 @@ function TNBPlayerPropsOpen()
    TNBPPGfxBtn.setVisible(0);
    TNBPPGfxPane.setVisible(0);
 
+   // Account renames are not implemented, by decision rather than omission: the
+   // account name belongs to TribesNext. Theirs disables the method during the
+   // beta, and a self-hosted backend only caches the name it learns when
+   // verifying a session, refreshing it on every request -- so a local change
+   // would be silently undone. The controls are hidden rather than left to
+   // report a refusal every time.
+   TNBPPChangeNameBtn.setVisible(0);
+   TNBPPNewName.setVisible(0);
+
    TNBPlayerPropsShowPane(0);
    TNBPlayerPropsRefresh();
 }
@@ -95,20 +104,16 @@ function TNBPlayerPropsChangeUrl()
 //-----------------------------------------------------------------------------
 // Account name
 //
-// Wired in full. The backend rejects renames during the beta, so in practice
-// this surfaces the server's refusal -- which is the point: the control is not
-// silently missing, and it starts working the day the method is enabled.
+// Not implemented. The name belongs to TribesNext -- see TNBPlayerPropsOpen for
+// why -- so the control is hidden and this handler only explains itself if the
+// button is somehow reached.
 //-----------------------------------------------------------------------------
 
 function TNBPlayerPropsChangeName()
 {
-   %name = trim(TNBPPNewName.getValue());
-   if (%name $= "")
-   {
-      TNBError("Enter the new name first.");
-      return;
-   }
-   TNBApiChangeName(%name, "TNBPlayerPropsChanged", "");
+   MessageBoxOK("PLAYER PROPERTIES",
+      "Your account name is managed by your TribesNext account and cannot be " @
+      "changed from here.");
 }
 
 //-----------------------------------------------------------------------------

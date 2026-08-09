@@ -35,6 +35,7 @@ function TNBApiSelfTest(%host)
    $TNBApiTest::Failures = "";
 
    $TNB::Host = %host;
+   $TNB::AuthHost = %host;
    $TNBApiTest::Host = %host;
    $TNB::GuidOverride = "4510186";   // pretend to be orange01
    TNBSessionEnd();
@@ -132,8 +133,11 @@ function TNBApiTestStep9(%ctx, %status, %result)
 
 function TNBApiTestStep10(%ctx, %status, %result)
 {
+   // Both backends refuse renames, for different reasons and in their own
+   // words -- TribesNext disables the method during the beta, a self-hosted
+   // backend does not own the name. Assert the refusal, not the wording.
    TNBApiTestEq("name change refused", %status, "error");
-   TNBApiTestEq("name change message", %result, "name changes are disabled");
+   TNBApiTestEq("name change explains itself", (%result !$= ""), 1);
 
    TNBApiUserInvites("TNBApiTestStep11", "");
 }

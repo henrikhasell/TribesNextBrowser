@@ -5,3 +5,7 @@
 
 # Screenshots taken by the container tooling land in the working directory.
 screenshot-*.png
+
+# Go build output. `go build` without -o drops the binary next to the source.
+/server/tnserver
+/server/**/*.test

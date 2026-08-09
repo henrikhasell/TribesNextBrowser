@@ -52,6 +52,7 @@ function TNBGuiSelfTest(%host)
    $TNBGuiTest::Failures = "";
 
    $TNB::Host = %host;
+   $TNB::AuthHost = %host;
    $TNB::GuidOverride = "4510186";
    TNBSessionEnd();
    TNBApiInit();
@@ -76,7 +77,7 @@ function TNBGuiSelfTest(%host)
 function TNBGuiStep2()
 {
    TNBGuiEq("own profile loaded", $TNB::PlayerName, "orange01");
-   TNBGuiEq("title shows tagged name", TNBTitle.getValue(), "[TN]orange01");
+   TNBGuiEq("title shows tagged name", TNBTitle.getValue(), "[TC]orange01");
    TNBGuiEq("player pane visible", TNBPlayerPane.isVisible(), 1);
    TNBGuiEq("clan pane hidden", TNBClanPane.isVisible(), 0);
 
@@ -157,7 +158,7 @@ function TNBGuiStep4()
 function TNBGuiStep5()
 {
    TNBGuiEq("search result rows", TNBSearchResults.rowCount(), 2);
-   TNBGuiEq("search first row", TNBSearchResults.getRowText(0), "[TN]orange01");
+   TNBGuiEq("search first row", TNBSearchResults.getRowText(0), "[TC]orange01");
    TNBGuiEq("search row id is guid", TNBSearchResults.getRowId(0), "4510186");
    Canvas.popDialog(TNBSearchDlg);
 

@@ -331,7 +331,7 @@ new GuiChunkedBitmapCtrl(TNBMailGui) {
 			visible = "1";
 			hideCursor = "0";
 			bypassHideCursor = "0";
-			command = "TNBMailUnsupported();";
+			command = "TNBMailBlockSender();";
 			helpTag = "0";
 			text = "BLOCK SENDER";
 			simpleStyle = "0";
@@ -361,7 +361,7 @@ new GuiChunkedBitmapCtrl(TNBMailGui) {
 			visible = "1";
 			hideCursor = "0";
 			bypassHideCursor = "0";
-			command = "TNBMailRefresh();";
+			command = "TNBMailShowFolder(\"inbox\");";
 			helpTag = "0";
 			text = "INBOX";
 			maxLength = "255";
@@ -377,6 +377,7 @@ new GuiChunkedBitmapCtrl(TNBMailGui) {
 			visible = "0";
 			hideCursor = "0";
 			bypassHideCursor = "0";
+			command = "TNBMailShowFolder(\"sent\");";
 			helpTag = "0";
 			text = "SENT MAIL";
 			maxLength = "255";
@@ -392,7 +393,7 @@ new GuiChunkedBitmapCtrl(TNBMailGui) {
 			visible = "1";
 			hideCursor = "0";
 			bypassHideCursor = "0";
-			command = "TNBMailRefresh();";
+			command = "TNBMailShowFolder(\"deleted\");";
 			helpTag = "0";
 			text = "DELETED MAIL";
 			maxLength = "255";

@@ -189,7 +189,9 @@ function TNBSessionSend(%query)
    // The query has to be part of the request-URI: this build's HTTPObject
    // ignores the third argument, which was verified against the live server --
    // passing the query there produced "ERR: No GUID specified.".
-   TNBSessionInterface.get($TNB::Host, $TNB::LoginURI @ "?" @ %query, "");
+   // AuthHost, not Host: the session is negotiated with TribesNext even when
+   // the browser data comes from somewhere else.
+   TNBSessionInterface.get($TNB::AuthHost, $TNB::LoginURI @ "?" @ %query, "");
 }
 
 //-----------------------------------------------------------------------------

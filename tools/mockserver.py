@@ -49,7 +49,7 @@ USERS = {
     "4510186": {
         "guid": "4510186",
         "name": "orange01",
-        "tag": "[TN]",
+        "tag": "[TC]",
         "append": "0",
         "creation": str(NOW - 400 * 86400),
         "website": "www.tribesnext.com",
@@ -117,7 +117,7 @@ CLANS = {
         "picture": "",
         "active": "1",
         "members": [
-            {"guid": "4510186", "name": "orange01", "tag": "[TN]",
+            {"guid": "4510186", "name": "orange01", "tag": "[TC]",
              "append": "0", "rank": "4", "title": "Leader", "online": "1"},
             {"guid": "4120041", "name": "Shifter", "tag": "[TC]",
              "append": "0", "rank": "2", "title": "Officer", "online": "0"},
@@ -135,7 +135,7 @@ CLANS = {
         "picture": "",
         "active": "1",
         "members": [
-            {"guid": "4510186", "name": "orange01", "tag": "[TN]",
+            {"guid": "4510186", "name": "orange01", "tag": "[TC]",
              "append": "0", "rank": "1", "title": "Member", "online": "1"},
             {"guid": "4300777", "name": "orangeade", "tag": "-CA-",
              "append": "1", "rank": "0", "title": "Recruit", "online": "0"},

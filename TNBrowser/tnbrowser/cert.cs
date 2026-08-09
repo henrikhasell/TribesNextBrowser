@@ -43,8 +43,8 @@ function TNBCertFetch(%announce)
       cancel($TNB::CertSchedule);
    $TNB::CertSchedule = "";
 
-   TNBApiEnqueueRaw($TNB::RobotBrowserURI, "cert", "", "TNBCertLoaded",
-                    %announce, 0, 1);
+   TNBApiEnqueueRawOn($TNB::AuthHost, $TNB::RobotBrowserURI, "cert", "",
+                      "TNBCertLoaded", %announce, 0, 1);
 }
 
 function TNBCertLoaded(%announce, %status, %body)

@@ -13,11 +13,24 @@
 // returns a CHALLENGE. Note the query string is part of the request-URI --
 // see TNBHttpRequest in api.cs for why the third argument is not used.
 
-// Scheme-qualified host. Everything below is appended to this.
+// Two hosts, because logging in and holding the data are separate concerns.
+//
+// $TNB::AuthHost is always TribesNext: that is where the account lives and
+// where the RSA challenge/response happens, and it is what makes the resulting
+// session token meaningful to anyone else.
+//
+// $TNB::Host is wherever the browser, clan and mail data lives. Point it at a
+// self-hosted TNBrowser backend to use your own community; leave it at
+// TribesNext to use theirs. A custom backend verifies the token by asking
+// TribesNext about it, so identity is the same either way.
+if ($TNB::AuthHost $= "")
+   $TNB::AuthHost = "https://tribesnext.thyth.com";
+
 if ($TNB::Host $= "")
    $TNB::Host = "https://tribesnext.thyth.com";
 
 // Robot session endpoint: RSA challenge/response, no password required.
+// Always relative to $TNB::AuthHost.
 if ($TNB::LoginURI $= "")
    $TNB::LoginURI = "/tn/robot/robot_login.php";
 

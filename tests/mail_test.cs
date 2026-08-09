@@ -47,6 +47,7 @@ function TNBMailSelfTest(%host)
    $TNBMailTest::Failures = "";
 
    $TNB::Host = %host;
+   $TNB::AuthHost = %host;
    $TNB::GuidOverride = "4510186";
    TNBSessionEnd();
    TNBApiInit();
@@ -85,10 +86,14 @@ function TNBMailStep2()
    TNBMailTestEq("cached body", $TNB::MailBody[1], "Good games last night.\n\n-- Ravage");
    TNBMailTestEq("second cached id", $TNB::MailId[1], "12");
 
-   // Unsupported controls must be hidden, not left to fail.
-   TNBMailTestEq("block button hidden", TNBMailBlockBtn.isVisible(), 0);
-   TNBMailTestEq("sent folder hidden", TNBMailTabSent.isVisible(), 0);
-   TNBMailTestEq("inbox tab selected", TNBMailTabInbox.getValue(), 1);
+   // Controls follow what the backend can actually do: hidden against
+   // TribesNext, shown against a backend that serves folders and block lists.
+   TNBMailTestEq("block button follows capability",
+                 TNBMailBlockBtn.isVisible(), $TNB::FullFeatures ? 1 : 0);
+   TNBMailTestEq("sent folder follows capability",
+                 TNBMailTabSent.isVisible(), $TNB::FullFeatures ? 1 : 0);
+   if (!$TNB::FullFeatures)
+      TNBMailTestEq("inbox tab selected", TNBMailTabInbox.getValue(), 1);
 
    // Selecting a row renders the message from the cached list entry.
    TNBMailList.setSelectedRow(0);
@@ -137,7 +142,13 @@ function TNBMailStepRead(%ctx, %status, %result)
 
 function TNBMailStepAfterSend()
 {
-   TNBMailTestEq("send reported as failure", $TNBMailTest::SendStatus, "error");
+   // The headline difference between the backends: TribesNext refuses every
+   // send, a self-hosted backend delivers. Either way the client must report
+   // what actually happened rather than assume.
+   if ($TNB::FullFeatures)
+      TNBMailTestEq("send delivered", $TNBMailTest::SendStatus, "ok");
+   else
+      TNBMailTestEq("send reported as failure", $TNBMailTest::SendStatus, "error");
 
    // Delete removes the message and refreshes the list.
    $TNB::MailCurrent = 11;

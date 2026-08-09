@@ -30,7 +30,10 @@ restart_mock() {
     sleep 1
 }
 
-LOAD='exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
+# Against the mock the client is in its TribesNext-compatible configuration:
+# auth and data are the same host, and the extras only a TNBrowser backend can
+# serve stay hidden.
+LOAD='$TNB::FullFeatures = 0; exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
       exec("tnbrowser/session.cs"); exec("tnbrowser/api.cs");
       exec("tnbrowser/panes.cs"); exec("tnbrowser/cert.cs");
       exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");

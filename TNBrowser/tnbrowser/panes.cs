@@ -439,7 +439,44 @@ function TNBRenderPlayerProfile()
               "   <a:tnb\teditsite\t>[ Edit my website ]</a>";
    }
    %text = %text @ "\n<a:tnb\tuserhistory\t>[ View history ]</a>";
+   if (%isSelf && $TNB::FullFeatures)
+      %text = %text @ "   <a:tnb\tbuddies\t>[ Buddy list ]</a>";
 
+   TNBSetPlayerText(%text);
+}
+
+// Buddy list, restored from the WON-era browser. Only offered when the backend
+// can serve it -- TribesNext has no buddy concept.
+function TNBRenderBuddies()
+{
+   TNBApiEnqueue("buddylist", "", "TNBBuddiesLoaded", "", 0);
+}
+
+function TNBBuddiesLoaded(%ctx, %status, %result)
+{
+   if (%status $= "error")
+   {
+      TNBSetPlayerText("<just:center>\n\nCould not load your buddy list.\n\n" @ %result);
+      return;
+   }
+
+   %count = TNBJsonCount(%result);
+   %text = "<font:Univers Bold:16>Buddies<font:Univers:14>\n\n";
+   if (%count == 0)
+      %text = %text @ "<spush><color:808080>Nobody on your list yet.<spop>\n";
+
+   for (%i = 0; %i < %count; %i++)
+   {
+      %b = TNBJsonIndex(%result, %i);
+      %guid = TNBJsonStr(%b, "guid");
+      %text = %text @ "  <a:tnb\tplayer\t" @ %guid @ ">" @
+              TNBTaggedName(TNBJsonStr(%b, "name"), TNBJsonStr(%b, "tag"),
+                            TNBJsonBool(%b, "append")) @ "</a>" @
+              (TNBJsonBool(%b, "online") ? "   (online)" : "") @
+              "   <a:tnb\tunbuddy\t" @ %guid @ ">[ remove ]</a>\n";
+   }
+
+   %text = %text @ "\n<a:tnb\taddbuddy\t>[ Add a buddy ]</a>";
    TNBSetPlayerText(%text);
 }
 
@@ -925,6 +962,16 @@ function TNBHandleLink(%action, %arg)
          TNBSetClanText("<just:center>\n\nLoading history...");
          TNBApiClanHistory($TNB::CurrentClan, "TNBHistoryLoaded", "clan");
 
+      case "buddies":
+         TNBRenderBuddies();
+
+      case "addbuddy":
+         TNBSearchOpen("buddy");
+
+      case "unbuddy":
+         TNBApiEnqueue("buddyremove", TNBJsonObject("to", %arg),
+                       "TNBAfterBuddyChange", "", 0);
+
       case "userhistory":
          TNBSetPlayerText("<just:center>\n\nLoading history...");
          TNBApiUserHistory($TNB::CurrentPlayer, "TNBHistoryLoaded", "player");
@@ -1117,6 +1164,9 @@ function TNBSearchAccept()
       TNBTabView.view(%label, "clan", %id);
    else if ($TNB::SearchMode $= "invite")
       TNBApiInvitePlayer($TNB::CurrentClan, %id, "TNBAfterClanChange", "");
+   else if ($TNB::SearchMode $= "buddy")
+      TNBApiEnqueue("buddyadd", TNBJsonObject("to", %id),
+                    "TNBAfterBuddyChange", "", 0);
    else if ($TNB::SearchMode $= "mailto")
       TNBComposeTo.setValue(%id);      // the compose dialog wants a GUID
    else
@@ -1144,6 +1194,16 @@ function TNBEditApply()
       TNBApiSetClanInfo($TNB::EditClanId, %text, "TNBAfterClanChange", "");
    else
       TNBApiSetInfo(%text, "TNBAfterProfileChange", "");
+}
+
+function TNBAfterBuddyChange(%ctx, %status, %result)
+{
+   if (%status $= "error")
+   {
+      TNBError(%result);
+      return;
+   }
+   TNBRenderBuddies();
 }
 
 function TNBAfterProfileChange(%ctx, %status, %result)

@@ -19,6 +19,24 @@ untouched: everything here is `TNB`-prefixed and the shell's BROWSER and EMAIL
 buttons are re-pointed with a package, so `deactivatePackage(TNBrowser)` restores
 the original behaviour exactly.
 
+## Three parts
+
+| | what it is | who needs it |
+|---|---|---|
+| `TNBrowser/` | the client mod: the community screens | every player |
+| `server/` | a Go backend serving browser, clan and mail data | whoever hosts the community |
+| `TNBrowserServer/` | a server-side mod that puts clan tags in player names | game-server operators |
+
+The client works against TribesNext on its own — that is the default, and the
+three server-side limitations below are why the backend exists. Running your own
+backend removes all of them and restores the WON-era features TribesNext dropped
+(buddy lists, block lists, Sent/Deleted mail folders, working mail send).
+
+Identity stays with TribesNext either way: players log in there with their RSA
+key as they always have, and a self-hosted backend verifies the resulting session
+token by asking TribesNext about it. No passwords, no key extraction, no second
+account system. See `server/README.md`.
+
 ## Requirements
 
 - A **TribesNext-patched client**, which supplies the two things the mod cannot
@@ -103,7 +121,20 @@ entries are dropped — the API has neither.
 
 ## What is not implemented, and why
 
-Nothing below is an oversight. In most cases the backend has no equivalent.
+Most of what follows is a limitation of **TribesNext's** backend, not of this
+mod, and running your own backend (see below) removes it:
+
+| | against TribesNext | against your own backend |
+|---|---|---|
+| send mail | refused by the server | **works** |
+| clan tag in your name | impossible (expired signing certificate) | **works**, with `TNBrowserServer` |
+| Sent / Deleted folders | no folder concept exists | **works** |
+| buddy list, block list | no such methods | **works** |
+| account rename | disabled during the beta | deliberately not implemented |
+| player picture | no method | no method |
+
+Only the last two are genuine "will not" rather than "cannot". The detail
+follows.
 
 ### Your clan tag appearing in your in-game name — blocked server-side
 
@@ -182,12 +213,16 @@ plausible spellings for each field (`from`/`sender`/`name`, …) and degrades to
 blank column rather than a broken screen. It is the one place to adjust if a real
 message ever arrives using different names.
 
-### Account rename (`username`) — refused by the server
+### Account rename (`username`) — deliberately not implemented
 
-Wired to the CHANGE NAME button on the player properties dialog, exactly as the
-stock screen had it. The backend disables renames during the beta and answers
-with a refusal, which the dialog reports; it starts working the moment the
-server enables the method.
+The control is hidden and the method refuses, on both backends and by decision
+rather than omission.
+
+Your account name belongs to your TribesNext account. Theirs disables renames
+during the beta; a self-hosted backend only *caches* the name it learns while
+verifying a session, and refreshes it on every request, so a local change would
+be silently undone within the minute. A button that could only ever mislead is
+worse than no button.
 
 ### Mail block lists, sender tracking, Sent and Deleted folders
 
@@ -232,8 +267,18 @@ assumption; it is confirmed live, below.
 
 ## Verification
 
-**201 assertions, 0 failures** — 63 parser, 36 API/session, 70 GUI, 32 mail —
-run inside the real game against `tools/mockserver.py`.
+Two suites, both run inside the real game with the real client:
+
+- **against the mock** (`./tools/run-tests.sh`) — the TribesNext-shaped backend,
+  with the extras hidden as they are for a player using thyth's server.
+  **201 assertions, 0 failures**: 63 parser, 36 API/session, 70 GUI, 32 mail.
+- **against the Go backend** (`./tools/run-conformance.sh`) — **137 assertions,
+  0 failures**: 36 API/session, 70 GUI, 31 mail. The same suites, the same
+  fixtures, a different server. A failure here is a real behavioural difference
+  between the two backends, which is exactly what it is for.
+
+Plus `go test ./...` in `server/`, which runs against a real PostgreSQL because
+what is worth testing there is the SQL: rank gates, cascades, transactions.
 
 Confirmed against the live backend with a real account (`tools/live-check.sh`):
 
@@ -278,6 +323,30 @@ TNBrowser/
 tests/                 four suites, run inside the game
 tools/                 container, deploy, mock backend, test runner, packaging
 ```
+
+## Running your own backend
+
+`server/` is a Go service that serves the browser, clan and mail data, and
+`TNBrowserServer/` is a server-side mod that puts clan tags in players' names.
+Together they remove every limitation listed above except the ones that are
+TribesNext's to own.
+
+```sh
+cd server && go build -o tnserver ./cmd/tnserver
+./tnserver -dsn "postgres://..." -server-key "$(openssl rand -hex 16)"
+```
+
+then in the game console:
+
+```
+$TNB::Host = "http://your-host:8080";   # data from your backend
+$TNB::FullFeatures = 1;                  # un-hide folders, block lists, buddies
+```
+
+`$TNB::AuthHost` stays on TribesNext: players still log in there with their RSA
+key, and the backend verifies the resulting session token by asking TribesNext
+about it. No passwords, no key extraction, no second account system. Full detail
+in `server/README.md`.
 
 ## Developing and testing
 
