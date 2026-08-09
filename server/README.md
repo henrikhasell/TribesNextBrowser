@@ -77,6 +77,23 @@ or bake both into the packages so installing is a single file copy:
 `$TNB::AuthHost` stays on TribesNext — that is where the account lives.
 `$TNB::FullFeatures` un-hides the controls only this backend can serve.
 
+## Logs
+
+One line per request on stderr, `slog` text format:
+
+```
+level=INFO msg=request verb=GET path=/tn/json/json_browser.php status=200 bytes=135 dur=6ms remote=127.0.0.1:35650 api=userview guid=4510186
+level=WARN msg=request verb=GET path=/tn/json/json_browser.php status=401 bytes=56 dur=0s remote=127.0.0.1:35656
+```
+
+`api` is the `method` parameter, so a browser or mail call says which one it was.
+4xx logs at WARN and 5xx at ERROR, because a 401 here is routine -- the client
+treats it as "session expired" and logs in again -- while a 500 is a bug.
+
+The `uuid` is never logged. It is a bearer credential that works against
+TribesNext itself, not only here, so a log holding one would be as sensitive as
+a password store. The `guid` is logged: it names a player but grants nothing.
+
 ## Transport
 
 Plain HTTP by default, which works immediately on a LAN. For anything

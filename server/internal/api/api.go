@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
 	"github.com/henrik/tnbrowser-server/internal/model"
@@ -70,7 +71,7 @@ func truthy(s string) bool {
 // {"status":"error","msg":...}; any other error is a fault and becomes a 500.
 type handler func(ctx context.Context, guid string, p payload) (any, error)
 
-func (s *Server) Routes() *http.ServeMux {
+func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/tn/json/json_browser.php", s.dispatch(s.browserMethods()))
 	mux.HandleFunc("/tn/json/json_mail.php", s.dispatch(s.mailMethods()))
@@ -80,7 +81,81 @@ func (s *Server) Routes() *http.ServeMux {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
-	return mux
+	return s.logRequests(mux)
+}
+
+// logRequests writes one line per request: what was asked, by whom, what came
+// back, and how long it took.
+//
+// The uuid is deliberately never logged. It is a bearer credential that works
+// against TribesNext itself and not just here, so a log file holding one would
+// be as sensitive as a password store -- and logs get pasted into bug reports.
+// The guid is logged: it identifies the player but grants nothing, and without
+// it a log cannot answer "did that player's request arrive?".
+func (s *Server) logRequests(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+
+		next.ServeHTTP(rec, r)
+
+		// Read the form only after the handler has run. Calling ParseForm here
+		// would consume a POST body and, because ParseForm caches, would stop
+		// dispatch's own call from ever reporting a malformed one as 400.
+		// r.Form is populated by then; the query string covers requests that
+		// failed before it was.
+		field := func(k string) string {
+			if r.Form != nil {
+				return r.Form.Get(k)
+			}
+			return r.URL.Query().Get(k)
+		}
+
+		attrs := []any{
+			"verb", r.Method,
+			"path", r.URL.Path,
+			"status", rec.status,
+			"bytes", rec.bytes,
+			"dur", time.Since(start).Round(time.Millisecond).String(),
+			"remote", r.RemoteAddr,
+		}
+		if m := field("method"); m != "" {
+			attrs = append(attrs, "api", m)
+		}
+		if g := field("guid"); g != "" {
+			attrs = append(attrs, "guid", g)
+		}
+
+		// A 5xx is ours to fix; a 4xx is the caller's and is routine here --
+		// the client treats 401 as "session expired" and re-logs in.
+		switch {
+		case rec.status >= 500:
+			s.Log.Error("request", attrs...)
+		case rec.status >= 400:
+			s.Log.Warn("request", attrs...)
+		default:
+			s.Log.Info("request", attrs...)
+		}
+	})
+}
+
+// statusRecorder remembers what the handler actually sent. net/http offers no
+// way to read back a status once written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+	bytes  int
+}
+
+func (w *statusRecorder) WriteHeader(code int) {
+	w.status = code
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusRecorder) Write(b []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += n
+	return n, err
 }
 
 // dispatch is the shared front door: parse, verify the session, run the method.
