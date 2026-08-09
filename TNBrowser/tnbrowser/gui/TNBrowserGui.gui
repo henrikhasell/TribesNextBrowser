@@ -299,7 +299,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "INVITES";
 					maxLength = "255";
-					groupNum = "5";
+					groupNum = "4";
 				};
 				new ShellRadioButton(TNBClanTabProfile) {
 					profile = "ShellRadioProfile";
@@ -331,7 +331,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "ROSTER";
 					maxLength = "255";
-					groupNum = "5";
+					groupNum = "4";
 				};
 				new ShellRadioButton(TNBClanTabOptions) {
 					profile = "ShellRadioProfile";
@@ -571,7 +571,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "INVITES";
 					maxLength = "255";
-					groupNum = "5";
+					groupNum = "4";
 				};
 				new ShellRadioButton(TNBPlayerTabProfile) {
 					profile = "ShellRadioProfile";
@@ -619,7 +619,7 @@ new GuiChunkedBitmapCtrl(TNBrowserGui) {
 					helpTag = "0";
 					text = "CLANS";
 					maxLength = "255";
-					groupNum = "5";
+					groupNum = "4";
 				};
 			};
 			new GuiTextCtrl(TNBTitle) {

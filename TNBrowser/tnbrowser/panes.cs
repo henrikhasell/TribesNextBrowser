@@ -291,7 +291,7 @@ function TNBOpenPlayer(%guid)
 {
    $TNB::CurrentPlayer = %guid;
    TNBShowPlayerPane();
-   TNBPlayerTabProfile.setValue(1);
+   TNBPlayerTabsLight(0);
    $TNB::PlayerTab = 0;
 
    TNBSetPlayerText("<just:center>\n\nLoading profile...");
@@ -359,8 +359,52 @@ function TNBTabView::addTabFor(%this, %label, %type, %key)
    %this.tabKey[%index] = %key;
 }
 
+// The five tab buttons are one strip, so exactly one is lit -- whether the user
+// clicked it or the code selected it.
+//
+// setValue on these radios FIRES the button's own command: measured, with a
+// package counting entries into selectTab, and it reported [sel 0] for a bare
+// TNBPlayerTabProfile.setValue(1). (The mail folder tabs measured the opposite,
+// which is why this is written down rather than assumed either way.) So lighting
+// five buttons raises up to five selectTab calls; the guard swallows those,
+// leaving the caller's own pass to do the work.
+function TNBPlayerTabsLight(%tab)
+{
+   if ($TNB::TabLighting)
+      return;
+   $TNB::TabLighting = 1;
+
+   TNBPlayerTabProfile.setValue(%tab == 0);
+   TNBPlayerTabHistory.setValue(%tab == 1);
+   TNBPlayerTabClans.setValue(%tab == 2);
+   TNBPlayerTabInvites.setValue(%tab == 3);
+   TNBPlayerTabEdit.setValue(%tab == 4);
+
+   $TNB::TabLighting = "";
+}
+
+function TNBClanTabsLight(%tab)
+{
+   if ($TNB::TabLighting)
+      return;
+   $TNB::TabLighting = 1;
+
+   TNBClanTabProfile.setValue(%tab == 0);
+   TNBClanTabRoster.setValue(%tab == 1);
+   TNBClanTabOptions.setValue(%tab == 2);
+   TNBClanTabInvites.setValue(%tab == 3);
+   TNBClanTabAdmin.setValue(%tab == 4);
+
+   $TNB::TabLighting = "";
+}
+
 function TNBPlayerPane::selectTab(%this, %tab)
 {
+   // Raised by our own setValue while lighting the strip, not by the user.
+   if ($TNB::TabLighting)
+      return;
+
+   TNBPlayerTabsLight(%tab);
    $TNB::PlayerTab = %tab;
 
    if (%tab == 3)
@@ -377,9 +421,12 @@ function TNBPlayerPane::selectTab(%this, %tab)
    }
    if (%tab == 4)
    {
+      // EDIT is an action, not a tab: open the dialog and leave the strip on
+      // PROFILE. Rendered explicitly rather than by re-entering selectTab.
       TNBPlayerPropsOpen();
-      TNBPlayerTabProfile.setValue(1);
+      TNBPlayerTabsLight(0);
       $TNB::PlayerTab = 0;
+      TNBRenderPlayerTab();
       return;
    }
    TNBRenderPlayerTab();
@@ -583,7 +630,7 @@ function TNBOpenClan(%clanId)
 {
    $TNB::CurrentClan = %clanId;
    TNBShowClanPane();
-   TNBClanTabProfile.setValue(1);
+   TNBClanTabsLight(0);
    $TNB::ClanTab = 0;
 
    TNBSetClanText("<just:center>\n\nLoading clan...");
@@ -636,6 +683,10 @@ function TNBClanLoaded(%clanId, %status, %result)
 
 function TNBClanPane::selectTab(%this, %tab)
 {
+   if ($TNB::TabLighting)
+      return;
+
+   TNBClanTabsLight(%tab);
    $TNB::ClanTab = %tab;
 
    if (%tab == 3)

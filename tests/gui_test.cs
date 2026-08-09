@@ -8,6 +8,23 @@
 //
 //   exec("tests/gui_test.cs"); TNBGuiSelfTest("http://172.17.0.1:8099");
 
+// The five tab buttons on each pane are one strip, so exactly one is lit at a
+// time. They came from the stock GUI split across two radio groups (4 and 5),
+// which meant one from each group stayed lit and two read as selected at once.
+function TNBGuiPlayerTabsLit()
+{
+   return TNBPlayerTabProfile.getValue() + TNBPlayerTabHistory.getValue()
+        + TNBPlayerTabClans.getValue() + TNBPlayerTabInvites.getValue()
+        + TNBPlayerTabEdit.getValue();
+}
+
+function TNBGuiClanTabsLit()
+{
+   return TNBClanTabProfile.getValue() + TNBClanTabRoster.getValue()
+        + TNBClanTabOptions.getValue() + TNBClanTabInvites.getValue()
+        + TNBClanTabAdmin.getValue();
+}
+
 function TNBGuiEq(%name, %got, %want)
 {
    if (%got $= %want)
@@ -97,6 +114,8 @@ function TNBGuiStep2()
    // CLANS sub-tab fills the side list.
    TNBPlayerPane.selectTab(2);
    TNBGuiEq("clan list rows", TNBPlayerClans.rowCount(), 2);
+   TNBGuiEq("one player tab lit on CLANS", TNBGuiPlayerTabsLit(), 1);
+   TNBGuiEq("and it is CLANS", TNBPlayerTabClans.getValue(), 1);
 
    TNBOpenClan("7");
    schedule(2000, 0, "TNBGuiStep3");
@@ -117,12 +136,15 @@ function TNBGuiStep3()
    // ROSTER sub-tab.
    TNBClanPane.selectTab(1);
    TNBGuiEq("roster rows", TNBRoster.rowCount(), 2);
+   TNBGuiEq("one clan tab lit on ROSTER", TNBGuiClanTabsLit(), 1);
+   TNBGuiEq("and it is ROSTER", TNBClanTabRoster.getValue(), 1);
    TNBGuiEq("roster first member", getField(TNBRoster.getRowText(0), 0), "orange01");
    TNBGuiEq("roster title column", getField(TNBRoster.getRowText(1), 1), "Officer");
    TNBGuiEq("roster rank column", getField(TNBRoster.getRowText(1), 2), "2");
 
    // ADMIN sub-tab: we are the leader, so the dangerous options appear.
    TNBClanPane.selectTab(4);
+   TNBGuiEq("one clan tab lit on ADMIN", TNBGuiClanTabsLit(), 1);
    %admin = TNBClanText.getText();
    TNBGuiHas("admin offers invite", %admin, "Invite a player");
    TNBGuiHas("admin offers properties", %admin, "Clan properties");
@@ -200,6 +222,7 @@ function TNBGuiStep7()
 function TNBGuiStep8()
 {
    TNBPlayerPane.selectTab(3);
+   TNBGuiEq("one player tab lit on INVITES", TNBGuiPlayerTabsLit(), 1);
    schedule(2000, 0, "TNBGuiStep9");
 }
 
