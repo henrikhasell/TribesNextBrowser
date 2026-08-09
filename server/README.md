@@ -69,6 +69,14 @@ $TNB::Host = "http://your-host:8080";
 $TNB::FullFeatures = 1;
 ```
 
+or bake both into the packages so installing is a single file copy:
+
+```sh
+../tools/build-vl2.sh --host "http://your-host:8080" --full-features \
+                      --server-host "http://your-host:8080" \
+                      --server-key "$TNB_SERVER_KEY"
+```
+
 `$TNB::AuthHost` stays on TribesNext — that is where the account lives.
 `$TNB::FullFeatures` un-hides the controls only this backend can serve.
 
