@@ -444,11 +444,10 @@ function TNBRenderPlayerProfile()
       %text = %text @ $TNB::PlayerInfo @ "\n";
    }
 
-   if (%isSelf)
-   {
-      %text = %text @ "\n<a:tnb\teditinfo\t>[ Edit my profile ]</a>" @
-              "   <a:tnb\teditsite\t>[ Edit my website ]</a>";
-   }
+   // No edit links here. Editing your description and your website are both
+   // actions on the ADMIN dialog, and stock reached them only that way -- W_Text
+   // was filled with the profile and nothing else. Offering them a second time
+   // from the body meant two routes into one editor.
    %text = %text @ "\n<a:tnb\tuserhistory\t>[ View history ]</a>";
    // The buddy list has its own button on the strip, where stock put it.
    // Invitations do not: the original player pane had none, so they hang off
@@ -738,10 +737,9 @@ function TNBRenderClanProfile()
    else
       %text = %text @ $TNB::ClanInfo;
 
-   %rank = TNBMyRankInCurrentClan();
-   if (%rank >= $TNB::RankToEditInfo)
-      %text = %text @ "\n\n<a:tnb\teditclaninfo\t>[ Edit clan profile ]</a>";
-
+   // Editing the description belongs to the properties dialog, which the ADMIN
+   // tab already offers -- see TNBRenderPlayerProfile for why it is not repeated
+   // here.
    TNBSetClanText(%text);
 }
 
@@ -1002,17 +1000,8 @@ function TNBHandleLink(%action, %arg)
       case "web":
          gotoWebPage(%arg);
 
-      case "editinfo":
-         TNBEditOpen("userinfo", "");
-
-      case "editclaninfo":
-         TNBEditOpen("claninfo", $TNB::CurrentClan);
-
       case "clanprops":
          TNBClanPropsOpen();
-
-      case "editsite":
-         TNBPromptOpen("My website", $TNB::PlayerSite, "TNBApplyUserSite");
 
       case "clanpicture":
          TNBPromptOpen("Clan picture path", $TNB::ClanPicture, "TNBApplyClanPicture");
@@ -1472,11 +1461,6 @@ function TNBApplyClanSite(%value)
 function TNBApplyClanPicture(%value)
 {
    TNBApiSetClanPicture($TNB::CurrentClan, %value, "TNBAfterClanChange", "");
-}
-
-function TNBApplyUserSite(%value)
-{
-   TNBApiSetWebsite(%value, "TNBAfterProfileChange", "");
 }
 
 echo("TNBrowser: panes.cs loaded");

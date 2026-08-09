@@ -91,7 +91,11 @@ function TNBGuiStep2()
    TNBGuiHas("profile shows website", %text, "www.tribesnext.com");
    TNBGuiHas("profile shows clan", %text, "Test Clan");
    TNBGuiHas("profile shows body", %text, "Testing the in-game browser.");
-   TNBGuiHas("own profile offers edit", %text, "Edit my profile");
+   // The body carries no edit affordances: stock's did not, and editing has one
+   // route, through ADMIN. Asserted as an absence so a second one cannot creep
+   // back in unnoticed.
+   TNBGuiEq("profile body offers no edit link",
+            (strstr(%text, "Edit my") >= 0) ? 1 : 0, 0);
 
    TNBGuiEq("cached clan count", $TNB::PlayerClanCount, 2);
    TNBGuiEq("cached own rank", $TNB::MyRank[7], 4);
@@ -120,7 +124,8 @@ function TNBGuiStep3()
    TNBGuiHas("clan profile name", %text, "Test Clan");
    TNBGuiHas("clan profile recruiting", %text, "Currently recruiting");
    TNBGuiHas("clan profile members", %text, "2 members");
-   TNBGuiHas("leader offered edit", %text, "Edit clan profile");
+   TNBGuiEq("clan body offers no edit link",
+            (strstr(%text, "Edit clan profile") >= 0) ? 1 : 0, 0);
 
    // ROSTER sub-tab.
    TNBClanPane.selectTab(1);
