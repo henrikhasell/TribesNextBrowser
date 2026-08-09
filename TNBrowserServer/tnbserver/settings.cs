@@ -4,9 +4,13 @@
 // server) and gives connecting players their clan tag, which the stock
 // server.cs then renders into their displayed name.
 //
-// Point it at a TNBrowser backend. The lookup it uses needs no credential: a
-// name and a clan tag are public, visible on the scoreboard of every server the
-// player joins.
+// Point it at your TNBrowser backend -- normally one central server that every
+// participating game server and every player's client talks to, so the default
+// below is a development convenience rather than a useful guess. Set it at
+// build time (tools/build-vl2.sh --host) or in the autoexec.cs described below.
+//
+// The lookup it uses needs no credential: a name and a clan tag are public,
+// visible on the scoreboard of every server the player joins.
 //
 // Setting these without unpacking the .vl2
 // -----------------------------------------------------------------------------
@@ -27,7 +31,7 @@
 // survives replacing the .vl2 with a newer build.
 
 if ($TNBS::Host $= "")
-   $TNBS::Host = "http://127.0.0.1:8080";
+   $TNBS::Host = "http://localhost:8080";
 
 if ($TNBS::AuthInfoURI $= "")
    $TNBS::AuthInfoURI = "/tn/server/authinfo";

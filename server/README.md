@@ -15,9 +15,14 @@ the Sent/Deleted mail folders.
 
 This server holds no passwords, no keys and no account records of its own.
 
-A player proves who they are to TribesNext exactly as before — the RSA
-challenge/response the client already performs, with no password typed — and
-sends the resulting `(guid, uuid)` pair here. This server then asks TribesNext
+This is the *only* thing the client still asks TribesNext for. A player proves
+who they are there exactly as before — the RSA challenge/response the client
+already performs, with no password typed — and sends the resulting `(guid, uuid)`
+pair here. Browser, clan and mail traffic goes nowhere near TribesNext.
+
+The deployment this assumes: **one backend, many game servers**. Players' clients
+and every participating Tribes 2 server point at the same address, which is why
+`tools/build-vl2.sh --host` bakes it into both packages at once. This server then asks TribesNext
 whether that pair is a live session:
 
 ```
@@ -70,8 +75,7 @@ $TNB::FullFeatures = 1;
 or bake both into the packages so installing is a single file copy:
 
 ```sh
-../tools/build-vl2.sh --host "http://your-host:8080" --full-features \
-                      --server-host "http://your-host:8080"
+../tools/build-vl2.sh --host "http://your-host:8080" --full-features
 ```
 
 `$TNB::AuthHost` stays on TribesNext — that is where the account lives.

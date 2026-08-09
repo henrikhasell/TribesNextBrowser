@@ -10,11 +10,14 @@
 // over the mod's defaults. Leave it out entirely and the mod talks to
 // TribesNext, which is the default.
 
-// Where the browser, clan and mail data comes from.
+// Where the browser, clan and mail data comes from -- your central backend.
+// Normally baked in at build time (tools/build-vl2.sh --host); set it here to
+// override a build, or when running the mod straight from source.
 $TNB::Host = "http://your-backend:8080";
 
-// Where you log in. Leave this alone: your account lives at TribesNext, and the
-// session token it issues is what your backend verifies you by.
+// Where you log in, and the only thing this mod ever asks TribesNext for. Leave
+// it alone: your account lives there, and the session token it issues is what
+// your backend verifies you by.
 // $TNB::AuthHost = "https://tribesnext.thyth.com";
 
 // Un-hide the things only a TNBrowser backend can serve: Sent and Deleted mail

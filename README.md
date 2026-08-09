@@ -27,10 +27,16 @@ the original behaviour exactly.
 | `server/` | a Go backend serving browser, clan and mail data | whoever hosts the community |
 | `TNBrowserServer/` | a server-side mod that puts clan tags in player names | game-server operators |
 
-The client works against TribesNext on its own — that is the default, and the
-three server-side limitations below are why the backend exists. Running your own
-backend removes all of them and restores the WON-era features TribesNext dropped
-(buddy lists, block lists, Sent/Deleted mail folders, working mail send).
+The client reads and writes its data through the backend, and contacts
+TribesNext for exactly one thing: the RSA login that proves who you are. That
+split is why the backend exists — the three server-side limitations below are
+TribesNext's, and owning the data removes all of them while restoring the WON-era
+features TribesNext dropped (buddy lists, block lists, Sent/Deleted mail folders,
+working mail send).
+
+`$TNB::Host` defaults to `http://localhost:8080` and is normally baked to your
+central backend's address at build time; `$TNB::AuthHost` stays TribesNext and is
+used by nothing but the login.
 
 Identity stays with TribesNext either way: players log in there with their RSA
 key as they always have, and a self-hosted backend verifies the resulting session
@@ -90,9 +96,14 @@ For something you hand to someone else, bake the settings into the archive at
 build time instead, so installing is copying one file:
 
 ```sh
-./tools/build-vl2.sh --host "http://your-backend:8080" --full-features \
-                     --server-host "http://your-backend:8080"
+./tools/build-vl2.sh --host "http://your-backend:8080" --full-features
 ```
+
+One `--host` covers both packages: the client reads its data there and the game
+servers look clans up there, because in a normal deployment that is one central
+machine. If your game servers must reach it at a different address than players
+do, set `$TNBS::Host` in the game server's `autoexec.cs` — the baked value keeps
+its `if empty` guard, so the override still wins.
 
 Then `cp dist/TNBrowserServer.vl2 <Tribes2>/GameData/<the active mod>/` is the
 entire install — nothing to create, nothing to edit. Verified with a mod
@@ -187,6 +198,7 @@ mod, and running your own backend (see below) removes it:
 |---|---|---|
 | send mail | refused by the server | **works** |
 | clan tag in your name | impossible (expired signing certificate) | **works**, with `TNBrowserServer` |
+| where clan/mail writes go | TribesNext | your backend — TribesNext is only asked to log you in |
 | Sent / Deleted folders | no folder concept exists | **works** |
 | buddy list, block list | no such methods | **works** |
 | account rename | disabled during the beta | deliberately not implemented |
@@ -209,14 +221,10 @@ The shipped TribesNext client *sends* `$T2CSRI::CommunityCertificate` to servers
 stock install that global is empty, `t2csri_sendCommunityCert()` returns early,
 and no tag can appear.
 
-`tnbrowser/cert.cs` implements the fetch, caches the DCE certificates, and
-refreshes before expiry. The response is tab-delimited lines (`DCE`, `CEC`,
-`ERR:`), and each certificate arrives as a *single* field with its own tabs
-escaped — which is why the reference client calls `collapseEscape` on it, and
-why a mock that emits real tabs looks right and parses wrong.
-
-It does not currently produce a tag, because the live
-DCE answers an authenticated request with:
+This mod does **not** try. It used to: `tnbrowser/cert.cs` fetched the
+certificate from `/tn/robot/robot_browser.php`, cached the DCE certificates and
+refreshed before expiry. It was removed, because the live DCE answers an
+authenticated request with:
 
     ERR: Signer validity period has expired.
 
@@ -241,10 +249,18 @@ authoritative root", "Community cert is not signed by a known/valid DCE"). So
 there is nothing to ignore client-side — no certificate is ever issued — and a
 forged one would need the delegation private key and would still be rejected.
 
-What *is* safely ignorable is the failure itself, which is how this mod behaves:
-presenting no community certificate simply means you appear untagged, and nothing
-else is affected. `cert.cs` logs it and only shows a message when you explicitly
-asked to wear a tag. It starts working the day the signer is renewed.
+**`TNBrowserServer` solves it without certificates.** A game server running that
+mod asks your backend for the record directly
+(`/tn/server/authinfo?guid=<player>`) and writes it into
+`%client.t2csri_authInfo` itself, which is where the stock `server.cs` reads the
+tag from. No signing, no chain, nothing for an expired certificate to break.
+Verified end to end: a real logged-in client hosting a listen server produced
+`cached tag for 4510186 [[TC]]` then `applied late tag to orange01`.
+
+That leaves one honest limitation: servers *not* running `TNBrowserServer` show
+you untagged, exactly as a stock TribesNext client is. The certificate was the
+only mechanism that would have federated, and it has not been issuable since its
+signer expired.
 
 ### Sending mail — refused by the server
 
@@ -373,7 +389,6 @@ TNBrowser/
     ├── json.cs        JSON parser (the engine has none), URL/JSON encoding
     ├── session.cs     RSA challenge/response session
     ├── api.cs         request queue + all 26 browser API methods
-    ├── cert.cs        community certificate (what carries a clan tag in-game)
     ├── clanprops.cs   clan properties dialog
     ├── playerprops.cs player properties dialog
     ├── mail.cs        mail API + mail window

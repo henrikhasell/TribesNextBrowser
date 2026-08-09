@@ -35,7 +35,7 @@ restart_mock() {
 # serve stay hidden.
 LOAD='$TNB::FullFeatures = 0; exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
       exec("tnbrowser/session.cs"); exec("tnbrowser/api.cs");
-      exec("tnbrowser/panes.cs"); exec("tnbrowser/cert.cs");
+      exec("tnbrowser/panes.cs");
       exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");
       exec("tnbrowser/mail.cs");'
 

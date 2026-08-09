@@ -31,21 +31,28 @@
 // Keeping it a loose file rather than putting it in the archive means it
 // survives replacing the .vl2 with a newer build.
 
-// Two hosts, because logging in and holding the data are separate concerns.
+// Two hosts, because proving who you are and holding the data are separate
+// concerns.
 //
-// $TNB::AuthHost is always TribesNext: that is where the account lives and
-// where the RSA challenge/response happens, and it is what makes the resulting
-// session token meaningful to anyone else.
+// $TNB::AuthHost is always TribesNext, and is used for exactly one thing: the
+// RSA challenge/response login below. That is where the account lives, and it
+// is what makes the resulting session token meaningful to anyone else. Nothing
+// else in this mod contacts it -- grep for AuthHost and you should find this
+// block and session.cs, nowhere more.
 //
-// $TNB::Host is wherever the browser, clan and mail data lives. Point it at a
-// self-hosted TNBrowser backend to use your own community; leave it at
-// TribesNext to use theirs. A custom backend verifies the token by asking
-// TribesNext about it, so identity is the same either way.
+// $TNB::Host is the TNBrowser backend holding the browser, clan and mail data:
+// one central server that players' clients and game servers both talk to. It
+// verifies your session by asking TribesNext about the token, so identity is
+// TribesNext's either way, while the data is yours.
+//
+// The default suits a backend on the same machine, which is the development
+// case. A real deployment bakes its own address in at build time
+// (tools/build-vl2.sh --host), or sets it in a loose autoexec.cs as above.
 if ($TNB::AuthHost $= "")
    $TNB::AuthHost = "https://tribesnext.thyth.com";
 
 if ($TNB::Host $= "")
-   $TNB::Host = "https://tribesnext.thyth.com";
+   $TNB::Host = "http://localhost:8080";
 
 // Robot session endpoint: RSA challenge/response, no password required.
 // Always relative to $TNB::AuthHost.

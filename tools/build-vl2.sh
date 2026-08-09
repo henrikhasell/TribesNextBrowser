@@ -24,38 +24,38 @@
 #
 # Baking settings in
 # -----------------------------------------------------------------------------
-# With no options the archives carry their defaults, and a deployment is
-# configured with a loose autoexec.cs beside the .vl2 (see examples/).
-#
-# Passing the options below writes the values into the packaged settings.cs
-# instead, so the archive is self-contained: dropping it into the active mod
-# directory is the whole install, with nothing else to create or edit. That is
-# the sane way to hand a server mod to someone else.
+# The backend address is written into the packaged settings.cs, so the archive
+# is self-contained: dropping it into the active mod directory is the whole
+# install, with nothing else to create or edit. That is the sane way to hand
+# either package to someone else.
 #
 # The source tree is never modified -- packing happens from a copy.
 #
 # Usage: ./tools/build-vl2.sh [options] [output-dir]
 #
-#   --host URL          backend the client reads browser/clan/mail data from
+#   --host URL          the TNBrowser backend, baked into BOTH packages:
+#                       $TNB::Host for the client and $TNBS::Host for the
+#                       game-server mod. They are the same central server in
+#                       every normal deployment, which is why this is one flag.
+#                       Default http://localhost:8080.
 #   --full-features     turn on the controls only a TNBrowser backend can serve
-#                       (mail folders, block and buddy lists). Pair it with
-#                       --host: pointing the client at your backend without this
-#                       leaves those controls hidden, which is right for
-#                       TribesNext and wrong for yours.
-#   --server-host URL   backend the game-server mod looks clans up in
+#                       (mail folders, block and buddy lists).
+#
+# If your game servers must reach the backend at a different address than
+# players do -- an internal hostname, or split-horizon DNS -- set $TNBS::Host in
+# the game server's autoexec.cs. The baked value keeps its `if empty` guard, so
+# that override still wins.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLIENT_HOST=""
+HOST="http://localhost:8080"
 FULL_FEATURES=""
-SERVER_HOST=""
 OUTDIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --host)        CLIENT_HOST="${2:?--host needs a URL}"; shift 2 ;;
+        --host)        HOST="${2:?--host needs a URL}"; shift 2 ;;
         --full-features) FULL_FEATURES=1; shift ;;
-        --server-host) SERVER_HOST="${2:?--server-host needs a URL}"; shift 2 ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) OUTDIR="$1"; shift ;;
     esac
@@ -106,7 +106,7 @@ pack() {
 
     case "$moddir" in
         TNBrowser)
-            bake "$stage/tnbrowser/settings.cs" "TNB::Host" "$CLIENT_HOST"
+            bake "$stage/tnbrowser/settings.cs" "TNB::Host" "$HOST"
             if [ -n "$FULL_FEATURES" ]; then
                 # This one is a number, not a quoted string, so it needs its own
                 # rewrite rather than the bake() helper.
@@ -117,7 +117,7 @@ pack() {
                 echo "  baked \$TNB::FullFeatures = 1" >&2
             fi ;;
         TNBrowserServer)
-            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$SERVER_HOST" ;;
+            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$HOST" ;;
     esac
 
     cd "$stage"

@@ -177,39 +177,13 @@ function TNBApiTestUnreachable(%ctx, %status, %result)
    TNBApiTestEq("unreachable host errors", %status, "error");
    echo("   (error was: " @ %result @ ")");
 
-   // Community certificate: the piece that carries a clan tag into the game.
-   $TNB::Host = $TNBApiTest::Host;
-   TNBSessionEnd();
-   TNBApiInit();
-   $T2CSRI::CommunityCertificate = "";
-   $TNB::RobotBrowserURI = "/tn/robot/robot_browser.php";
-   TNBCertFetch(0);
-   schedule(3000, 0, "TNBApiTestCertOk");
-}
-
-function TNBApiTestCertOk()
-{
-   TNBApiTestEq("community certificate stored",
-                ($T2CSRI::CommunityCertificate !$= ""), 1);
-   TNBApiTestEq("certificate is for our guid",
-                getField($T2CSRI::CommunityCertificate, 3), "4510186");
-   TNBApiTestEq("DCE certificate cached",
-                (getField($T2CSRI::ClientDCESupport::DCECert[1], 0) $= "TestDCE"), 1);
-   TNBApiTestEq("refresh scheduled",
-                isEventPending($TNB::CertSchedule), 1);
-
-   // And the failure the live DCE actually returns today.
-   cancel($TNB::CertSchedule);
-   $TNB::CertLastError = "";
-   $TNB::RobotBrowserURI = "/tn/robot/robot_browser_fail.php";
-   TNBCertFetch(0);
-   schedule(3000, 0, "TNBApiTestCertFail");
-}
-
-function TNBApiTestCertFail()
-{
-   TNBApiTestEq("signer expiry reported", $TNB::CertLastError,
-                "Signer validity period has expired.");
+   // TribesNext is the identity provider and nothing else. The login is the
+   // only URI that may be resolved against $TNB::AuthHost; everything else --
+   // browser, clan, mail -- belongs to the backend. Asserted here because it is
+   // a rule about the whole client rather than any one call, and the community
+   // certificate that used to break it was removed for exactly this reason.
+   TNBApiTestEq("login is the only AuthHost URI",
+                $TNB::LoginURI, "/tn/robot/robot_login.php");
 
    echo("");
    echo("TNBAPIRESULT pass=" @ $TNBApiTest::Pass @ " fail=" @ $TNBApiTest::Fail);

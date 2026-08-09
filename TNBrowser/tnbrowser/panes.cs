@@ -983,10 +983,10 @@ function TNBHandleLink(%action, %arg)
          TNBApiRejectInvite(%arg, "TNBAfterInviteAction", "declined");
 
       case "weartag":
-         TNBApiSetActiveClan(%arg, "TNBAfterTagChange", "");
+         TNBApiSetActiveClan(%arg, "TNBAfterTagChange", "wear");
 
       case "cleartag":
-         TNBApiSetActiveClan(-1, "TNBAfterTagChange", "");
+         TNBApiSetActiveClan(-1, "TNBAfterTagChange", "clear");
 
       case "leave":
          MessageBoxYesNo("LEAVE CLAN",
@@ -1060,8 +1060,13 @@ function TNBAfterInviteAction(%what, %status, %result)
 
 // Anything that changes clan or membership state re-reads the affected view so
 // the GUI reflects what the server actually did rather than what we assumed.
-// Changing which tag you wear records the choice on the community server; the
-// tag only reaches game servers via a fresh community certificate, so fetch one.
+//
+// Which tag you wear is a property of your profile on the backend, and a game
+// server reads it from there through the TNBrowserServer mod. Say so rather
+// than claiming the tag will show everywhere: on a server without that mod
+// there is no way to carry it, and never was -- the TribesNext route needed a
+// signed community certificate its DCE has not been able to issue since its
+// signing certificate expired.
 function TNBAfterTagChange(%ctx, %status, %result)
 {
    if (%status $= "error")
@@ -1069,7 +1074,14 @@ function TNBAfterTagChange(%ctx, %status, %result)
       TNBError(%result);
       return;
    }
-   TNBCertFetch(1);
+
+   if (%ctx $= "clear")
+      MessageBoxOK("CLAN TAG", "You are no longer wearing a clan tag.");
+   else
+      MessageBoxOK("CLAN TAG",
+         "Your clan tag is saved. It shows in your name on servers running " @
+         "the TNBrowserServer mod.");
+
    TNBAfterClanChange(%ctx, %status, %result);
 }
 

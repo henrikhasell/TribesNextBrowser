@@ -548,8 +548,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._browser(get)
         if parsed.path.endswith("json_mail.php"):
             return self._mail(get)
-        if "robot_browser" in parsed.path:
-            return self._robot_browser(parsed.path, get)
         return self._deny(404, "<h1>Not Found</h1>")
 
     # -- session -----------------------------------------------------------
@@ -623,37 +621,6 @@ class Handler(BaseHTTPRequestHandler):
         with STATE_LOCK:
             result = fn(guid, payload)
         return self._send(json.dumps(result))
-
-    # The robot browser endpoint is tab-delimited, not JSON. Only the "cert"
-    # method matters here: it is what carries a clan tag into the game.
-    #
-    # Community certificate format, per t2csri/clientSideClans.cs:
-    #   DCENum  IssuedEpoch  ExpireEpoch  IssuedForGUID  HexBlob  Sig
-    def _robot_browser(self, path, get):
-        guid, uuid, method = get("guid"), get("uuid"), get("method")
-
-        with STATE_LOCK:
-            authorised = SESSIONS.get(uuid) == guid or self.server.open_auth
-        if not authorised:
-            return self._send("\nERR\tBROWSER\tUNAUTHENTICATED\n")
-
-        if method != "cert":
-            return self._send("\nERR\tBROWSER\tUNKNOWN_METHOD\n")
-
-        # The _fail variant reproduces what the live DCE returns today, so the
-        # client's error path is exercised rather than assumed.
-        if "_fail" in path:
-            return self._send("\nERR: Signer validity period has expired.\n")
-
-        # The certificate travels as ONE field with its own tabs escaped -- which
-        # is why the reference client calls collapseEscape on it. Emitting real
-        # tabs here would spread it across fields and getField(line, 1) would
-        # return just its first component.
-        issued, expires = NOW, NOW + 1800
-        dce = "\\t".join(["TestDCE", "1", str(issued), str(expires),
-                           "0", "0", "10001", "abcdef", "sig"])
-        cec = "\\t".join(["1", str(issued), str(expires), guid, "beef", "sig"])
-        return self._send("\nDCE\t%s\nCEC\t%s\n" % (dce, cec))
 
     def _mail(self, get):
         guid, uuid, method = get("guid"), get("uuid"), get("method")

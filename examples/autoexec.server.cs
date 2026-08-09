@@ -9,7 +9,10 @@
 //
 // then launch the server with -mod MyMod.
 
-// Your TNBrowser backend, reachable from the game server.
+// Your TNBrowser backend, reachable from this game server. Normally baked in at
+// build time (tools/build-vl2.sh --host, which sets it for both packages); set
+// it here when this server reaches the backend at a different address than
+// players do, or to override a build without rebuilding.
 $TNBS::Host = "http://your-backend:8080";
 
 // How long a looked-up clan record stays good, in seconds. Clan membership
