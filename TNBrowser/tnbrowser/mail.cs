@@ -298,9 +298,7 @@ function TNBMailListLoaded(%ctx, %status, %result)
                   (%count == 1 ? "" : "s") @ " -- select one to read it.");
 }
 
-// One row, from the cached arrays. Split out because marking a message read has
-// to redraw the list: GuiEmailBrowser has no setRowById -- it is a
-// ShellFancyArray, not a GuiTextListCtrl -- so a row cannot be edited in place.
+// One row, from the cached arrays.
 function TNBMailAddRow(%i)
 {
    // GuiEmailBrowser wants exactly four values after the row id, and they land
@@ -308,42 +306,22 @@ function TNBMailAddRow(%i)
    // the envelope icon, which the control draws itself from the fourth value.
    // Passing three values adds no row at all; passing a status string first
    // shifts every column one place left.
+   //
+   // That fourth value is the READ flag, not an unread flag: stock
+   // webemail.cs stores it as record 2 and does `if (!getRecord(%text, 2))` to
+   // mean "not yet read", then sets it to 1 on opening. Sending `unread` there
+   // draws every envelope backwards -- which is exactly what this used to do.
    TNBMailList.addRow($TNB::MailId[%i],
                       ($TNB::MailFrom[%i] $= "" ? "(unknown)" : $TNB::MailFrom[%i]),
                       ($TNB::MailSubject[%i] $= "" ? "(no subject)" : $TNB::MailSubject[%i]),
                       TNBMailDisplayDate($TNB::MailDate[%i]),
-                      ($TNB::MailUnread[%i] ? 1 : 0));
-}
-
-// Rebuild every row and put the selection back where it was. Rows are added in
-// array order, so a message's row index is its cache index.
-function TNBMailRedraw()
-{
-   %selected = TNBMailList.getSelectedId();
-
-   $TNB::MailRedrawing = 1;
-   TNBMailList.clear();
-   for (%i = 0; %i < $TNB::MailCount; %i++)
-      TNBMailAddRow(%i);
-
-   if (%selected !$= "")
-   {
-      %row = TNBMailIndexOfId(%selected);
-      if (%row >= 0)
-         TNBMailList.setSelectedRow(%row);
-   }
-   $TNB::MailRedrawing = "";
+                      ($TNB::MailUnread[%i] ? 0 : 1));
 }
 
 // Selecting a row shows the body. If the list entry already carried one there is
 // nothing to fetch, so it renders from the cache; otherwise read by id.
 function TNBMailList::onSelect(%this, %id, %text)
 {
-   // TNBMailRedraw restores the selection, which makes the control call this
-   // again. Ignore that echo rather than re-running the whole path.
-   if ($TNB::MailRedrawing)
-      return;
-
    $TNB::MailCurrent = %id;
 
    %index = TNBMailIndexOfId(%id);
@@ -374,7 +352,10 @@ function TNBMailMarkRead(%index, %id)
       return;
 
    $TNB::MailUnread[%index] = 0;
-   TNBMailRedraw();
+
+   // setRowFlags(id, 1) is how the stock client updates the envelope without
+   // rebuilding the list, and it takes the same read flag addRow does.
+   TNBMailList.setRowFlags(%id, 1);
 
    TNBMailApiRead(%id, "TNBMailMarkedRead", %id);
 }
@@ -431,7 +412,7 @@ function TNBMailReadLoaded(%id, %status, %result)
    if (%index >= 0 && $TNB::MailUnread[%index])
    {
       $TNB::MailUnread[%index] = 0;
-      TNBMailRedraw();
+      TNBMailList.setRowFlags(%id, 1);
    }
 }
 

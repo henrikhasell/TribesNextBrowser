@@ -104,12 +104,11 @@ function TNBMailStep2()
    TNBMailTestHas("body shows sender", %body, "Shifter");
    TNBMailTestHas("body shows text", %body, "short a defender");
 
-   // Opening it drops the envelope, and the redraw that does so must not lose
-   // a row or the selection -- it rebuilds the list, since GuiEmailBrowser
-   // cannot edit a row in place.
+   // Opening it drops the envelope, updated in place with setRowFlags the way
+   // the stock client does it, so the list keeps its rows and its selection.
    TNBMailTestEq("envelope cleared locally", $TNB::MailUnread[0], 0);
-   TNBMailTestEq("redraw kept both rows", TNBMailList.rowCount(), 2);
-   TNBMailTestEq("redraw kept the selection", TNBMailList.getSelectedId(), "11");
+   TNBMailTestEq("row kept after marking read", TNBMailList.rowCount(), 2);
+   TNBMailTestEq("selection kept", TNBMailList.getSelectedId(), "11");
 
    // And it must have reached the server: the cached path answers without a
    // request, so marking read is a deliberate extra call rather than a side
