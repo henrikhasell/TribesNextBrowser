@@ -8,7 +8,7 @@ name: server
 
 on:
   push:
-    branches: [main]
+    branches: [won-ordinals]
     paths:
       - 'server/**'
       - '.do/app.yaml'
@@ -73,7 +73,7 @@ jobs:
 
   deploy:
     needs: test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: github.ref == 'refs/heads/won-ordinals' && github.event_name == 'push'
     runs-on: ubuntu-latest
 
     steps:
