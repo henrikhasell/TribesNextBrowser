@@ -71,7 +71,7 @@ jobs:
 
     github:
       repo: henrikhasell/TribesNextBrowser
-      branch: won-ordinals
+      branch: main
       deploy_on_push: false
 
     instance_count: 1
