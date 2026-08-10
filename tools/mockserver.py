@@ -1116,6 +1116,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._cert(get)
         if parsed.path == "/tn/server/authinfo":
             return self._authinfo(get)
+        if parsed.path.endswith("json_browser.php"):
+            return self._oracle(get)
         if parsed.path == "/healthz":
             return self._send("ok\n", "text/plain")
         return self._deny(404, "<h1>Not Found</h1>")
@@ -1207,6 +1209,25 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
                                    "Authentication Required</h2>")
         return self._json({"cert": certificate(guid)})
+
+    def _oracle(self, get):
+        """TribesNext's own verification endpoint, which this mock also stands
+        in for.
+
+        The mod no longer speaks this protocol -- it speaks ordinals -- but the
+        Go backend still calls it on TribesNext to ask whether a (guid, uuid)
+        pair is live, and gets the authoritative display name back in the same
+        round trip. That is a third-party oracle, not a protocol we serve to
+        players, and it is why the conformance run needs this route.
+        """
+        guid = self._authorised(get)
+        if guid is None:
+            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
+                                   "Authentication Required</h2>")
+        u = USERS[guid]
+        return self._json({"guid": guid, "name": u["name"],
+                           "tag": u["tag"], "append": u["append"],
+                           "online": u["online"], "memberships": []})
 
     def _authinfo(self, get):
         # Deliberately unauthenticated: a warrior name and a clan tag are on
