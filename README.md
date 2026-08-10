@@ -147,6 +147,12 @@ Everything the two rendering panes can reach:
 - **Search** for warriors and tribes, from the browser and the mail address
   book.
 
+The first time an account authenticates against the backend it is greeted by
+mail, from a reserved `TNBrowser` sender that the warrior search leaves out.
+Mail is the only channel the shipped screens give a server for saying something
+unprompted — and an empty inbox on a fresh install is indistinguishable from a
+backend that is not answering.
+
 Three of the five panes — **News**, **Forums** and **Web Links** — have no
 controls in a retail install. `NewsGui`, `ForumsGui` and `weblinksmenu` are
 driven by shipped scripts but defined in no `.vl2` and no loose file, so the
@@ -251,6 +257,11 @@ Things that cost real time here and are easy to trip over again:
 - **`GuiEmailBrowser` is display-only** — `getRowText` returns `""`. That is why
   the shipped client keeps message text in a separate `EmailMessageVector`, and
   why the mail tests read that instead.
+- **`EmailGui.cacheFile` does not switch the mail cache off.** `getCache` reads
+  `webcache/<guid>/email1` on every wake regardless; setting `cacheFile` only
+  takes the branch that skips the GUID check (`webemail.cs:1203`). A suite that
+  wants an empty mailbox has to truncate the file — otherwise it passes once and
+  then inherits its own previous run.
 - **`$PlayerGfx` and `$TribeGfx` are read and never assigned** by any shipped
   script, so a profile that carries no graphic renders permanently blank. The
   server sends the default each shipped dialog names for itself.

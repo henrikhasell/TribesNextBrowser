@@ -127,14 +127,23 @@ func (s *Store) note(ctx context.Context, q pgx.Tx, subjectType, subjectID, even
 //
 // Called on every verified request, so a player exists here as soon as they log
 // in once -- there is no separate registration step.
-func (s *Store) EnsureAccount(ctx context.Context, guid, name string) error {
-	_, err := s.pool.Exec(ctx, `
+//
+// Reports whether THIS call created the account, which is what makes the
+// welcome mail exactly-once: of two concurrent first requests, one INSERTs and
+// the other takes the DO UPDATE branch, so only one sees xmax = 0. The cost of
+// claiming it here rather than after a successful delivery is that a failed
+// welcome is never retried -- acceptable for a greeting that must never stop a
+// new player from using the service.
+func (s *Store) EnsureAccount(ctx context.Context, guid, name string) (bool, error) {
+	var created bool
+	err := s.pool.QueryRow(ctx, `
 		INSERT INTO accounts (guid, name, created, last_seen)
 		VALUES ($1, $2, $3, $3)
 		ON CONFLICT (guid) DO UPDATE
-		   SET name = EXCLUDED.name, last_seen = EXCLUDED.last_seen`,
-		guid, name, s.now())
-	return err
+		   SET name = EXCLUDED.name, last_seen = EXCLUDED.last_seen
+		RETURNING (xmax = 0)`,
+		guid, name, s.now()).Scan(&created)
+	return created, err
 }
 
 // Online reports whether a player is currently on a game server.

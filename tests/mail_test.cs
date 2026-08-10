@@ -84,18 +84,18 @@ function TNBMailCertLoaded(%ctx, %status, %result)
    EmailGui.checkingEmail = "";
    EmailGui.soundPlayed = false;
 
-   // Stop onWake reloading the mailbox this suite persisted last time.
+   // Start from an empty mailbox ON DISK as well as in memory.
    //
-   // EmailGui::getCache reads webcache/<guid>/email1 when EmailGui.cacheFile is
-   // empty, and accepts it when the file's first line matches
-   // getField(WONGetAuthInfo(), 3). That check used to fail -- the mod answered
-   // "" until the community certificate arrived -- so the cache was silently
-   // rejected and every run started clean by accident. Now that
-   // WONGetAuthInfo falls back to the account certificate, the GUID matches and
-   // the cache loads, which is correct behaviour and leaves the previous run's
-   // messages in the list. Setting cacheFile is what dumpCache does, and it is
-   // what makes getCache skip the read.
-   EmailGui.cacheFile = $EmailFileName;
+   // EmailGui::getCache reads webcache/<guid>/email1 on every wake. Setting
+   // EmailGui.cacheFile does NOT skip that read -- it only takes the branch
+   // that skips the GUID check (webemail.cs:1203) -- so the previous run's
+   // messages come back, including the deleted-folder one step 3 pushes into
+   // the vector and a later dumpCache persists. That made this suite poison its
+   // own next run: green once, then three messages where two were expected.
+   //
+   // Truncating the file to a valid empty cache is the fix, and it has to be
+   // the real path, since $EmailCachePath is derived from the certificate.
+   TNBMailClearCache();
 
    Canvas.setContent(EmailGui);
 
@@ -105,6 +105,24 @@ function TNBMailCertLoaded(%ctx, %status, %result)
    // makes.
    schedule(1000, 0, "TNBMailFetch");
    schedule(4000, 0, "TNBMailStep1");
+}
+
+// A valid cache with no messages in it: the GUID the client will compare
+// against, a count of zero, and nothing after. Both of getCache's branches then
+// load nothing, whatever EmailGui.cacheFile happens to be left over as.
+function TNBMailClearCache()
+{
+   %file = new FileObject();
+   if (%file.openForWrite($EmailCachePath @ $EmailFileName))
+   {
+      %file.writeLine(getField(WONGetAuthInfo(), 3));
+      %file.writeLine("0");
+      %file.close();
+   }
+   %file.delete();
+
+   EmailGui.cacheFile = "";
+   EmailGui.messageCount = 0;
 }
 
 function TNBMailFetch()

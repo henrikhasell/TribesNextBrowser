@@ -366,14 +366,17 @@ func (s *Store) WarriorTribes(ctx context.Context, guid string) ([]TribeRow, err
 	return out, rows.Err()
 }
 
+// SearchWarriors answers the warrior search, minus the account this backend
+// sends its own mail from: it is not a warrior, and the pane accepts an empty
+// query, which would otherwise list it alongside everybody else.
 func (s *Store) SearchWarriors(ctx context.Context, q string, start, count int) ([]Quad, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT a.guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE)
 		  FROM accounts a
 		  LEFT JOIN clans c ON c.id = a.active_clan
-		 WHERE a.name ILIKE '%' || $1 || '%'
+		 WHERE a.name ILIKE '%' || $1 || '%' AND a.guid <> $4
 		 ORDER BY a.name
-		 OFFSET $2 LIMIT $3`, q, start, count)
+		 OFFSET $2 LIMIT $3`, q, start, count, SystemGUID)
 	if err != nil {
 		return nil, err
 	}

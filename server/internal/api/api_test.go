@@ -118,6 +118,27 @@ func db(t *testing.T, ts *httptest.Server, guid, form, ordinal, args string) map
 	return out
 }
 
+// account creates a player and returns the high-water mark just after they
+// joined.
+//
+// A first authentication is greeted with one message (store.WelcomeMail), so a
+// test that polls array 1 from 0 sees it. Polling from this mark instead is
+// both the fix and a truer statement of what these tests mean: the mail their
+// own actions produced.
+func account(t *testing.T, ts *httptest.Server, guid string) string {
+	t.Helper()
+
+	// Any ordinal will do -- the account is created by authenticating, not by
+	// what is asked for afterwards.
+	db(t, ts, guid, "scalar", "5", "")
+
+	mark := "0"
+	for _, row := range rows(t, db(t, ts, guid, "array", "1", "0")) {
+		mark = strings.SplitN(row, "\t", 2)[0]
+	}
+	return mark
+}
+
 func statusCode(answer map[string]any) string {
 	s, _ := answer["status"].(string)
 	return strings.SplitN(s, "\t", 2)[0]
@@ -202,6 +223,51 @@ func TestCertificateLayout(t *testing.T) {
 	}
 }
 
+// The first time a GUID authenticates it is greeted by mail, because mail is
+// the only channel the shipped screens give this backend for saying something
+// unprompted -- and an empty inbox on a fresh install is indistinguishable from
+// a server that is not answering.
+func TestFirstAuthenticationDeliversWelcomeMail(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	db(t, ts, "1001", "scalar", "5", "") // first contact
+	got := rows(t, db(t, ts, "1001", "array", "1", "0"))
+	if len(got) != 1 {
+		t.Fatalf("a new player has %d messages, want the welcome: %v", len(got), got)
+	}
+
+	fields := strings.Split(got[0], "\t")
+	if fields[1] != store.SystemName {
+		t.Errorf("sender name is %q, want %q", fields[1], store.SystemName)
+	}
+	if fields[4] != store.SystemGUID {
+		t.Errorf("sender GUID is %q, want %q", fields[4], store.SystemGUID)
+	}
+	if fields[12] != "0" {
+		t.Errorf("the welcome arrived read (field 12 = %q); nothing marks it bold",
+			fields[12])
+	}
+	if !strings.Contains(fields[15], "Browser and mail") {
+		t.Errorf("subject is %q, want the welcome subject", fields[15])
+	}
+
+	// Once, not once per request. The claim is the INSERT itself, so a second
+	// authentication cannot take it.
+	mark := strings.SplitN(got[0], "\t", 2)[0]
+	if again := rows(t, db(t, ts, "1001", "array", "1", mark)); len(again) != 0 {
+		t.Errorf("a second authentication delivered %d more: %v", len(again), again)
+	}
+
+	// And it is not a warrior: the pane accepts an empty query, which would
+	// otherwise list the sender alongside everybody else.
+	for _, row := range rows(t, db(t, ts, "1001", "array", "3", "\t0\t50")) {
+		if strings.Contains(row, store.SystemName) {
+			t.Errorf("the system account showed up in a warrior search: %q", row)
+		}
+	}
+}
+
 // The mail sequence argument is a high-water mark and filtering on it is not
 // optional: the pane caches what it is handed and polls again with the highest
 // id it has, so an unfiltered server makes the inbox grow without bound.
@@ -209,12 +275,12 @@ func TestMailHonoursTheHighWaterMark(t *testing.T) {
 	st := testStore(t)
 	ts := newServer(t, st)
 
-	db(t, ts, "1001", "scalar", "5", "") // create the account
-	db(t, ts, "1002", "scalar", "5", "") // and the recipient
+	account(t, ts, "1001")         // create the account
+	mark := account(t, ts, "1002") // and the recipient
 	db(t, ts, "1001", "scalar", "5",
 		"warrior-1002\t\tFirst\tHello.")
 
-	first := rows(t, db(t, ts, "1002", "array", "1", "0"))
+	first := rows(t, db(t, ts, "1002", "array", "1", mark))
 	if len(first) != 1 {
 		t.Fatalf("first poll returned %d rows, want 1", len(first))
 	}
@@ -235,8 +301,8 @@ func TestBlockingIsSilentAndCounted(t *testing.T) {
 	st := testStore(t)
 	ts := newServer(t, st)
 
-	db(t, ts, "1001", "scalar", "5", "")
-	db(t, ts, "1002", "scalar", "5", "")
+	account(t, ts, "1001")
+	mark := account(t, ts, "1002")
 
 	if got := statusCode(db(t, ts, "1002", "scalar", "9", "warrior-1001")); got != "0" {
 		t.Fatalf("blocking failed: %v", got)
@@ -246,7 +312,7 @@ func TestBlockingIsSilentAndCounted(t *testing.T) {
 		t.Errorf("a blocked send reported failure to the sender: %v", got)
 	}
 
-	if got := rows(t, db(t, ts, "1002", "array", "1", "0")); len(got) != 0 {
+	if got := rows(t, db(t, ts, "1002", "array", "1", mark)); len(got) != 0 {
 		t.Errorf("blocked mail was delivered: %v", got)
 	}
 
@@ -290,14 +356,14 @@ func TestInvitationArrivesAsMailWithAWorkingLink(t *testing.T) {
 	ts := newServer(t, st)
 
 	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
-	db(t, ts, "1002", "scalar", "5", "")
+	mark := account(t, ts, "1002")
 
 	if got := statusCode(db(t, ts, "1001", "scalar", "27",
 		"Big Sucka Fishes\twarrior-1002")); got != "0" {
 		t.Fatalf("invite failed: %v", got)
 	}
 
-	got := rows(t, db(t, ts, "1002", "array", "1", "0"))
+	got := rows(t, db(t, ts, "1002", "array", "1", mark))
 	if len(got) != 1 {
 		t.Fatalf("the invited warrior has %d messages, want 1", len(got))
 	}

@@ -204,10 +204,20 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 		return nil, false
 	}
 
-	if err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name); err != nil {
+	created, err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name)
+	if err != nil {
 		s.Log.Error("ensure account", "err", err, "guid", id.GUID)
 		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
 		return nil, false
+	}
+
+	// First sighting: tell them the community screens work again. Logged and
+	// not fatal -- a greeting that fails must not lock a new player out of the
+	// service it is greeting them to.
+	if created {
+		if err := s.Store.WelcomeMail(r.Context(), id.GUID); err != nil {
+			s.Log.Error("welcome mail", "err", err, "guid", id.GUID)
+		}
 	}
 
 	return &dbproxy.Ctx{
