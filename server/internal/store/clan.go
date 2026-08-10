@@ -107,9 +107,20 @@ func (s *Store) ClanHistory(ctx context.Context, id int64) ([]model.HistoryEntry
 }
 
 // CreateClan founds a clan with the caller as its leader.
+//
+// The tag keeps its surrounding whitespace; only the name is trimmed. Every
+// place a tag meets a name concatenates the two with nothing between them --
+// server.cs:689 renders the in-game name, and webstuff.cs:12 and :29 the
+// browser's link and text forms -- so the separator, if a clan wants one, has
+// to be part of the tag. The shipped screens are built for that: the create
+// dialog and the tribe properties pane both show a live preview of
+// tag-plus-name while you type (webbrowser.cs:677, :2457) and send the field
+// unmodified (:167, :2413), trimming only to test it for blankness. Trimming
+// here silently deleted the one character a player typed to fix the very thing
+// they were previewing.
 func (s *Store) CreateClan(ctx context.Context, guid, name, tag string, append_ bool) error {
-	name, tag = strings.TrimSpace(name), strings.TrimSpace(tag)
-	if name == "" || tag == "" {
+	name = strings.TrimSpace(name)
+	if name == "" || strings.TrimSpace(tag) == "" {
 		return refuse("a new clan needs both a name and a tag")
 	}
 
@@ -201,9 +212,10 @@ func (s *Store) SetClanRecruiting(ctx context.Context, guid string, id int64, on
 	})
 }
 
+// SetClanTag changes the tag, and keeps its whitespace for the reason
+// CreateClan gives.
 func (s *Store) SetClanTag(ctx context.Context, guid string, id int64, tag string, append_ bool) error {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
+	if strings.TrimSpace(tag) == "" {
 		return refuse("a clan needs a tag")
 	}
 	return s.tx(ctx, func(tx pgx.Tx) error {

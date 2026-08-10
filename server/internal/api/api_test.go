@@ -280,6 +280,60 @@ func TestCertificateLayout(t *testing.T) {
 	}
 }
 
+// A tag's own whitespace is the only separator there is.
+//
+// Nothing between a tag and a name is ever inserted for you: server.cs:689
+// builds the in-game name as tag-then-colour-code-then-name, and
+// webstuff.cs:12 and :29 do the same for the browser's two link forms. So a
+// clan that wants "orange01 [BSF]" registers " [BSF]", with the leading space,
+// and the shipped create dialog previews exactly that while they type
+// (webbrowser.cs:677) before sending the field unmodified (:167).
+//
+// Trimming it server-side made that impossible, and invisibly: the tag came
+// back one character shorter than the one the player had just been shown.
+func TestTagKeepsItsSpacing(t *testing.T) {
+	ts := newServer(t, testStore(t))
+
+	// Leading, because append is set and the tag therefore follows the name.
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t [BSF]\t1")
+	// Founding a clan does not wear its tag; scalar 25 does, and it is the
+	// worn one that record 0 carries into the game.
+	db(t, ts, "1001", "scalar", "25", "Big Sucka Fishes")
+
+	if got := certField(t, ts, "1001", 1); got != " [BSF]" {
+		t.Errorf("worn tag = %q, want %q -- the space was trimmed", got, " [BSF]")
+	}
+
+	// And again through the edit path, which is a separate call site.
+	db(t, ts, "1001", "scalar", "30", "Big Sucka Fishes\t [bsf]")
+
+	if got := certField(t, ts, "1001", 1); got != " [bsf]" {
+		t.Errorf("edited tag = %q, want %q -- the space was trimmed", got, " [bsf]")
+	}
+}
+
+// certField returns one field of record 0 of the certificate -- the quad the
+// shipped screens read the player's own name and tag out of.
+func certField(t *testing.T, ts *httptest.Server, guid string, i int) string {
+	t.Helper()
+
+	resp, err := ts.Client().PostForm(ts.URL+"/cert", url.Values{
+		"guid": {guid}, "uuid": {"session-" + guid},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	var out struct {
+		Cert string `json:"cert"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	return strings.Split(strings.Split(out.Cert, "\n")[0], "\t")[i]
+}
+
 // The first time a GUID authenticates it is greeted by mail, because mail is
 // the only channel the shipped screens give this backend for saying something
 // unprompted -- and an empty inbox on a fresh install is indistinguishable from
