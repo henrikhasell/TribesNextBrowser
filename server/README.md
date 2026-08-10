@@ -131,9 +131,28 @@ doctl apps update <app-id> --spec .do/app.yaml   # afterwards
 ```
 
 That arrangement answers Transport above without a reverse proxy to run: App
-Platform terminates TLS with a Let's Encrypt certificate, and a Let's Encrypt
-chain is already known to verify cleanly against the patched client's
-`curl-ca-bundle.crt`.
+Platform terminates TLS and renews the certificate itself.
+
+Do not assume which CA that is. The note above about Let's Encrypt verifying
+cleanly was written against the TribesNext host; App Platform issues from
+**Google Trust Services** instead -- `GTS WE1`, under `GTS Root R4`, itself
+cross-signed by `GlobalSign Root CA`. That only works here because the shipped
+`curl-ca-bundle.crt` carries `GTS Root R4` directly (119 roots, including the
+ISRG pair and three GTS roots), so the chain validates without leaning on the
+cross-signature.
+
+It is checked, not reasoned about, because there is no client-side way to
+relax it -- an unverifiable certificate would lock every player out at once:
+
+```
+new HTTPObject(Probe);
+Probe.get("https://tnb.k8s.henrik.si", "/tn/server/authinfo?guid=987654321", "");
+-> (unknown)		1	987654321
+```
+
+`authinfo` rather than `/healthz` on purpose: the edge will serve a cached
+`/healthz` without ever troubling the origin, so a 200 from it proves the
+handshake and nothing else. The line above came back through Go and Postgres.
 
 Three things it depends on that live outside this repository, and none of which
 fail loudly if they are wrong:

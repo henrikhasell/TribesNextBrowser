@@ -114,12 +114,19 @@ databases:
 
 domains:
   # The zone k8s.henrik.si is already managed in DigitalOcean DNS, so the CNAME
-  # is created automatically and Let's Encrypt issues once it resolves.
+  # is created automatically and the certificate issues once it resolves. It
+  # comes from Google Trust Services, not Let's Encrypt -- see the Deploying
+  # section of server/README.md for why that had to be verified against the
+  # game client rather than assumed.
   #
-  # If that zone is driven by external-dns from a Kubernetes cluster, confirm
-  # the policy is upsert-only before deploying. A sync policy deletes records it
-  # does not recognise, which would silently remove this one and take the
-  # backend offline for every player at once.
+  # external-dns does run on this zone, but it uses a TXT registry and so only
+  # deletes records it created; the record App Platform adds has no registry
+  # entry and is left alone. What would collide is a Kubernetes Ingress
+  # claiming this same hostname.
+  #
+  # Note the zone also has a wildcard A record pointing at the k8s ingress, so
+  # this name always resolves to something. A missing or wrong CNAME here fails
+  # by quietly serving the wrong backend rather than by not resolving.
   - domain: tnb.k8s.henrik.si
     type: PRIMARY
     zone: k8s.henrik.si
