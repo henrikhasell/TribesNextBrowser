@@ -262,6 +262,12 @@ def flag(b):
     return "1" if b else "0"
 
 
+def quoted(s):
+    """Name a thing inside a sentence the client will show, with a phrase
+    rather than an empty pair of quotes when it has no name."""
+    return '"%s"' % s if (s or "").strip() else "(no subject)"
+
+
 def date(unix):
     if not unix:
         return ""
@@ -295,16 +301,35 @@ def ml_link(label, verb, *args):
     return "<a:" + "\n".join((verb,) + args) + ">" + label + "</a>"
 
 
-def ok_status(*extra):
-    return tab("0", "OK", *extra)
+def ok_status(msg="", *extra):
+    """A success. msg is field 1 -- the sentence the client shows.
+
+    It shows it in seven places (webbrowser.cs:927, :1725, :1781, :1784, :1808,
+    webemail.cs:704, :706), each putting getField(%status,1) straight into a
+    MessageBoxOK with no wording of its own. This was the literal word "OK",
+    which is what those dialogs then read. Extras follow from field 2, where the
+    profile ordinals and the deleted-mail notice keep their payloads.
+
+    The blank fallback is for the array forms, whose status nothing displays --
+    but field 1 must still be non-empty, because the client tests it.
+    """
+    return tab("0", msg or "OK", *extra)
 
 
 def ok_rows(rows):
     return {"status": ok_status(), "result": str(len(rows)), "rows": rows}
 
 
-def ok_result(result):
-    return {"status": ok_status(), "result": result, "rows": []}
+def ok_message(msg):
+    """A write that changes something and returns no data. The sentence goes in
+    both places a pane might read it."""
+    return {"status": ok_status(msg), "result": msg, "rows": []}
+
+
+def ok_result(msg, result):
+    """A payload where an array form would put a count, with its own sentence in
+    the status beside it."""
+    return {"status": ok_status(msg), "result": result, "rows": []}
 
 
 def ok_with(status, result):
@@ -402,7 +427,8 @@ def get_tribe_profile(guid, args):
     c = clan_by_name(field(args, 0))
     if c is None:
         return fail("There is no tribe by that name.")
-    status = ok_status(c["id"], c["name"], c["tag"], c["append"],
+    status = ok_status("The profile for " + c["name"] + " follows.",
+                       c["id"], c["name"], c["tag"], c["append"],
                        c["recruiting"], graphic_or(c["picture"], DEFAULT_TRIBE_GFX))
     return ok_with(status, c["info"])
 
@@ -413,7 +439,8 @@ def get_warrior_profile(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     gfx = graphic_or(u["graphic"], DEFAULT_PLAYER_GFX)
-    status = ok_status(u["name"], u["tag"], u["append"], u["guid"],
+    status = ok_status("The profile for " + u["name"] + " follows.",
+                       u["name"], u["tag"], u["append"], u["guid"],
                        date(u["creation"]), u["online"], u["website"], gfx)
     return ok_with(status, u["info"])
 
@@ -562,7 +589,7 @@ def _clan_write(guid, args, message, min_rank=2):
         return fail("There is no tribe by that name.")
     if rank_in(c, guid) < min_rank:
         return fail("You do not have the rank to do that.")
-    return ok_result(message)
+    return ok_message(message)
 
 
 @on("scalar", 15)
@@ -573,7 +600,7 @@ def set_tribe_description(guid, args):
     if rank_in(c, guid) < 2:
         return fail("You do not have the rank to do that.")
     c["info"] = "\n".join(fields(args)[2:])
-    return ok_result("The tribe description has been updated.")
+    return ok_message("The description for " + c["name"] + " has been updated.")
 
 
 @on("scalar", 16)
@@ -614,13 +641,18 @@ def create_tribe(guid, args):
     USERS[guid]["memberships"].append(
         {"id": new_id, "name": name, "rank": "4", "title": "Leader",
          "tag": CLANS[new_id]["tag"], "append": CLANS[new_id]["append"]})
-    return ok_result(name)
+    return ok_result("The tribe " + name + " has been founded, with you as "
+                     "its leader.", name)
 
 
 @on("scalar", 17)
 def set_warrior_description(guid, args):
     USERS[guid]["info"] = "" if args == "NONE" else args
-    return ok_result("Your description has been updated.")
+    if args == "NONE":
+        return ok_message("The description on " + USERS[guid]["name"] +
+                          " has been cleared.")
+    return ok_message("The description on " + USERS[guid]["name"] +
+                      " has been updated.")
 
 
 @on("scalar", 18)
@@ -639,7 +671,7 @@ def delete_tribe(guid, args):
                 "Tribe disbanded: " + c["name"],
                 USERS[guid]["name"] + " has disbanded " + c["name"] +
                 ". You are no longer a member of it.")
-    return ok_result("Your disband authorisation has been recorded.")
+    return ok_message("The tribe " + c["name"] + " has been disbanded.")
 
 
 @on("scalar", 19)
@@ -651,10 +683,12 @@ def kick_member(guid, args):
         return fail("You do not have the rank to do that.")
 
     u = user_by_name(field(args, 0))
-    if u is not None:
-        _notify(u["guid"], guid, "Removed from " + c["name"],
-                USERS[guid]["name"] + " has removed you from " + c["name"] + ".")
-    return ok_result("That warrior has been removed from the tribe.")
+    if u is None:
+        return fail("There is no warrior by that name.")
+    _notify(u["guid"], guid, "Removed from " + c["name"],
+            USERS[guid]["name"] + " has removed you from " + c["name"] + ".")
+    return ok_message("Player " + u["name"] + " has been kicked from " +
+                      c["name"] + ".")
 
 
 @on("scalar", 20)
@@ -663,13 +697,18 @@ def toggle_tribe_flag(guid, args):
     c = clan_by_name(field(args, 1))
     if c is None:
         return fail("There is no tribe by that name.")
+    on = field(args, 2) in ("1", "yes", "true")
     if what == "recruiting":
-        c["recruiting"] = flag(field(args, 2) in ("1", "yes", "true"))
+        c["recruiting"] = flag(on)
+        msg = ("%s is now recruiting." if on else
+               "%s is no longer recruiting.") % c["name"]
     elif what == "appending":
-        c["append"] = flag(field(args, 2) in ("1", "yes", "true"))
+        c["append"] = flag(on)
+        msg = ("The tag %s now goes %s the name of every %s member."
+               % (c["tag"], "after" if on else "before", c["name"]))
     else:
         return fail('"%s" is not a tribe flag this server knows.' % what)
-    return ok_result("Done.")
+    return ok_message(msg)
 
 
 @on("scalar", 21)
@@ -697,9 +736,13 @@ def set_member_profile(guid, args):
             _notify(u["guid"], guid, "Rank changed in " + c["name"],
                     "%s has %s you to %s in %s."
                     % (USERS[guid]["name"], verb, title, c["name"]))
-        break
+        if rank == before:
+            return ok_message("%s is now titled %s in %s."
+                              % (u["name"], title, c["name"]))
+        return ok_message("Player %s is now %s in %s, at admin level %d."
+                          % (u["name"], title, c["name"], rank))
 
-    return ok_result("That member's profile has been updated.")
+    return ok_message("That warrior is not a member of " + c["name"] + ".")
 
 
 @on("scalar", 24)
@@ -710,24 +753,24 @@ def leave_tribe(guid, args):
 
     _notify_all(_admins_except(c, guid), guid, "Member left " + c["name"],
                 USERS[guid]["name"] + " has left " + c["name"] + ".")
-    return ok_result("You have left the tribe.")
+    return ok_message("You have left " + c["name"] + ".")
 
 
 @on("scalar", 25)
 def set_primary_tribe(guid, args):
     arg = field(args, 0)
     if arg in ("", "0", "-1"):
-        return ok_result("")
+        return ok_result("You are now a free agent, wearing no tribe's tag.", "")
     c = clan_by_name(arg)
     if c is None:
         return fail("There is no tribe by that name.")
-    return ok_result(c["name"])
+    return ok_result(c["name"] + " is now your primary tribe.", c["name"])
 
 
 @on("scalar", 26)
 def clear_buddy(guid, args):
     BUDDIES[guid] = []
-    return ok_result("Your buddy list has been cleared.")
+    return ok_message("Your buddy list has been cleared.")
 
 
 @on("scalar", 27)
@@ -750,7 +793,9 @@ def invite_to_tribe(guid, args):
         ml_link("Reject", "rejectinvite", c["name"], u["name"]),
     ])
     _deliver(u["guid"], guid, "Tribe invitation: " + c["name"], body)
-    return ok_result(c["name"])
+    return ok_result("Player " + u["name"] + " has been invited to join " +
+                     c["name"] + ". The invitation is in their mail.",
+                     c["name"])
 
 
 @on("scalar", 28)
@@ -773,11 +818,13 @@ def answer_invitation(guid, args):
     box = CLAN_INVITES.get(c["id"], [])
     inv = next((i for i in box if i["guid"] == subject), None)
     if inv is None:
-        return ok_result(c["name"])
+        return ok_result("There is no outstanding invitation to " + c["name"] +
+                         " to answer.", c["name"])
     box.remove(inv)
 
     if verb == "cancel":
-        return ok_result(c["name"])
+        return ok_result("That invitation to " + c["name"] +
+                         " has been withdrawn.", c["name"])
 
     # Whoever raised it hears how it ended. Nothing else would tell them: no
     # client query lists answered invitations, so from the other side an
@@ -791,7 +838,14 @@ def answer_invitation(guid, args):
             "%s has %s your %s %s."
             % (USERS[guid]["name"], outcome, what, c["name"]))
 
-    return ok_result(c["name"])
+    if request:
+        said = ("That warrior's request to join %s has been %s."
+                % (c["name"], outcome))
+    elif verb == "accept":
+        said = "You have joined %s." % c["name"]
+    else:
+        said = "You have declined the invitation to join %s." % c["name"]
+    return ok_result(said, c["name"])
 
 
 @on("scalar", 29)
@@ -802,7 +856,7 @@ def set_tribe_graphic(guid, args):
     if rank_in(c, guid) < 2:
         return fail("You do not have the rank to do that.")
     c["picture"] = field(args, 1)
-    return ok_result("The tribe graphic has been updated.")
+    return ok_message("The graphic for " + c["name"] + " has been updated.")
 
 
 @on("scalar", 30)
@@ -813,19 +867,24 @@ def set_tribe_tag(guid, args):
     if rank_in(c, guid) < 3:
         return fail("You do not have the rank to do that.")
     c["tag"] = field(args, 1)
-    return ok_result("The tribe tag has been updated.")
+    return ok_message("The tag for " + c["name"] + " is now " + c["tag"] + ".")
 
 
 @on("scalar", 31)
 def set_player_graphic(guid, args):
     USERS[guid]["graphic"] = field(args, 0)
-    return ok_result("Your graphic has been updated.")
+    return ok_message("The graphic on " + USERS[guid]["name"] +
+                      " has been updated.")
 
 
 @on("scalar", 32)
 def set_player_url(guid, args):
     USERS[guid]["website"] = field(args, 0)
-    return ok_result("Your web address has been updated.")
+    if not USERS[guid]["website"]:
+        return ok_message("The web address on " + USERS[guid]["name"] +
+                          " has been cleared.")
+    return ok_message("The web address on " + USERS[guid]["name"] + " is now " +
+                      USERS[guid]["website"] + ".")
 
 
 @on("scalar", 33)
@@ -856,9 +915,8 @@ def request_invite(guid, args):
             _deliver(m["guid"], guid, "Join request: " + c["name"], body)
 
     # Status field 1 goes straight into a MessageBoxOK (webbrowser.cs:1446).
-    return {"status": ok_status("Your request has been sent to the tribe's "
-                                "administrators."),
-            "result": c["name"], "rows": []}
+    return ok_result("Your request to join " + c["name"] + " has been sent to "
+                     "its administrators.", c["name"])
 
 
 @on("scalar", 63)
@@ -891,7 +949,10 @@ def get_deleted_mail(guid, args):
     rows = [mail_row(m) for m in MAIL.get(guid, [])
             if m["folder"] == "deleted"]
     if not rows:
-        return {"status": ok_status("Your deleted folder is empty."),
+        # Twice over: field 1 is the sentence every pane shows, field 2 the
+        # one this pane reads.
+        return {"status": ok_status("Your deleted folder is empty.",
+                                    "Your deleted folder is empty."),
                 "result": "0", "rows": []}
     return ok_rows(rows)
 
@@ -922,7 +983,8 @@ def send_mail(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     _deliver(u["guid"], guid, field(args, 2), "\n".join(fields(args)[3:]))
-    return ok_result("Your message has been sent.")
+    return ok_message("Your message " + quoted(field(args, 2)) +
+                      " has been sent to " + to + ".")
 
 
 @on("scalar", 6)
@@ -931,7 +993,8 @@ def delete_mail(guid, args):
     for m in MAIL.get(guid, []):
         if m["id"] == mid:
             m["folder"] = "deleted"
-            return ok_result("Message deleted.")
+            return ok_message("Message %d has been moved to your deleted "
+                              "folder." % mid)
     return fail("No such message.")
 
 
@@ -939,7 +1002,7 @@ def delete_mail(guid, args):
 def remove_mail_permanently(guid, args):
     mid = num(field(args, 0))
     MAIL[guid] = [m for m in MAIL.get(guid, []) if m["id"] != mid]
-    return ok_result("Message removed.")
+    return ok_message("Message %d has been deleted for good." % mid)
 
 
 @on("scalar", 7)
@@ -950,7 +1013,7 @@ def mark_mail_read(guid, args):
     for m in MAIL.get(guid, []):
         if m["id"] == mid:
             m["read"] = True
-    return ok_result("1")
+    return ok_result("Message %d has been marked as read." % mid, "1")
 
 
 @on("scalar", 9)
@@ -961,9 +1024,8 @@ def add_block(guid, args):
     box = BLOCKS.setdefault(guid, [])
     if not any(b["guid"] == u["guid"] for b in box):
         box.append({"guid": u["guid"], "hits": "0"})
-    return {"status": ok_status("Mail from that warrior will no longer "
-                                "reach you."),
-            "result": "1", "rows": []}
+    return ok_result("Mail from " + u["name"] + " will no longer reach you.",
+                     "1")
 
 
 @on("scalar", 8)
@@ -972,8 +1034,8 @@ def remove_block(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     BLOCKS[guid] = [b for b in BLOCKS.get(guid, []) if b["guid"] != u["guid"]]
-    return {"status": ok_status("That warrior is no longer blocked."),
-            "result": "1", "rows": []}
+    return ok_result(u["name"] + " is no longer blocked. Their mail will "
+                     "reach you again.", "1")
 
 
 @on("scalar", 10)
@@ -984,8 +1046,7 @@ def add_buddy(guid, args):
     box = BUDDIES.setdefault(guid, [])
     if not any(b["guid"] == u["guid"] for b in box):
         box.append({"guid": u["guid"], "since": NOW})
-    return {"status": ok_status("Added to your buddy list."),
-            "result": "1", "rows": []}
+    return ok_result(u["name"] + " has been added to your buddy list.", "1")
 
 
 @on("scalar", 11)
@@ -994,14 +1055,16 @@ def drop_buddy(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     BUDDIES[guid] = [b for b in BUDDIES.get(guid, []) if b["guid"] != u["guid"]]
-    return {"status": ok_status("Removed from your buddy list."),
-            "result": "1", "rows": []}
+    return ok_result(u["name"] + " has been removed from your buddy list.",
+                     "1")
 
 
 @on("scalar", 69)
 def get_online_status(guid, args):
     # A fixed-width bitmap indexed by character position, not a field list.
-    return ok_result("".join(USERS.get(g, {}).get("online", "0")
+    return ok_result("Online status for %d warriors follows."
+                     % len(fields(args)),
+                     "".join(USERS.get(g, {}).get("online", "0")
                              for g in fields(args)))
 
 
@@ -1015,7 +1078,7 @@ MOTD = ["Welcome to the local TNBrowser stand-in."]
 
 @on("scalar", 0)
 def get_motd(guid, args):
-    return ok_result(MOTD[0])
+    return ok_result("The message of the day follows.", MOTD[0])
 
 
 @on("scalar", 4)
@@ -1032,7 +1095,7 @@ def news_row(a):
 
 def _news_feed(category):
     rows = [news_row(a) for a in NEWS if not category or a["category"] == category]
-    return {"status": ok_status(str(len(rows)), "0"),
+    return {"status": ok_status("", str(len(rows)), "0"),
             "result": str(len(rows)), "rows": rows}
 
 
@@ -1103,7 +1166,9 @@ def get_post_updates(guid, args):
                    flag(p["deleted"]), p["subject"])
         rows.append(with_body(head, p["body"]))
     # Status field 2 is the per-forum flag the client caches as ForumsGui.bflag.
-    return {"status": ok_status("0"), "result": str(len(rows)), "rows": rows}
+    # Field 2 is the per-forum flag the client caches as ForumsGui.bflag, so
+    # the sentence in field 1 goes in front of it rather than over it.
+    return {"status": ok_status("", "0"), "result": str(len(rows)), "rows": rows}
 
 
 @on("scalar", 12)
@@ -1114,7 +1179,11 @@ def post_topic_or_reply(guid, args):
                   "subject": field(args, 3),
                   "body": "\n".join(fields(args)[4:]),
                   "created": NOW, "deleted": False})
-    return ok_result("Posted.")
+    if num(field(args, 1)):
+        return ok_message("Your reply " + quoted(field(args, 3)) +
+                          " has been posted.")
+    return ok_message("Your topic " + quoted(field(args, 3)) +
+                      " has been posted.")
 
 
 @on("scalar", 13)
@@ -1126,7 +1195,8 @@ def edit_post(guid, args):
                 return fail("That is not your post.")
             p["subject"] = field(args, 1)
             p["body"] = "\n".join(fields(args)[2:])
-            return ok_result("Updated.")
+            return ok_message("Your post %s (%d) has been updated."
+                              % (quoted(field(args, 1)), pid))
     return fail("No such post.")
 
 
@@ -1142,18 +1212,20 @@ def post_news_or_delete_post(guid, args):
             if p["author"] != guid:
                 return fail("That is not your post.")
             p["deleted"] = True
-            return ok_result("Deleted.")
+            return ok_message("Post %d has been deleted." % pid)
     return fail("No such post.")
 
 
 @on("scalar", 60)
 def request_topic_review(guid, args):
-    return ok_result("A moderator has been notified.")
+    return ok_message("Topic %d has been reported to the moderators."
+                      % num(field(args, 0)))
 
 
 @on("scalar", 61)
 def request_post_review(guid, args):
-    return ok_result("A moderator has been notified.")
+    return ok_message("Post %d has been reported to the moderators."
+                      % num(field(args, 0)))
 
 
 @on("scalar", 62)

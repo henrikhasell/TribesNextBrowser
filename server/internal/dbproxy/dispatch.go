@@ -121,14 +121,33 @@ func Dispatch(c *Ctx, form, ordinal, args string) (Answer, error) {
 // Status and row helpers
 //-----------------------------------------------------------------------------
 
-// okStatus is a well-formed success. Field 1 gets a real word because several
-// handlers show it on the success path too (EMailBlockDlg, AddressDlg).
-func okStatus(extra ...string) string {
-	return strings.Join(append([]string{"0", "OK"}, extra...), "\t")
+// okStatus is a well-formed success, and msg is field 1: the sentence the
+// client shows on the success path.
+//
+// It shows it on quite a few of them -- webbrowser.cs:927, :1725, :1781, :1784,
+// :1808 and webemail.cs:704, :706 all put getField(%status,1) straight into a
+// MessageBoxOK with no wording of their own. This used to be the literal word
+// "OK", which is how confirming an invitation, a graphic, a web address or a
+// buddy each produced a dialog reading "OK" and nothing else. A message that
+// names what happened, and to whom, costs the same bytes.
+//
+// Any extra fields follow from field 2, which is where the two profile ordinals
+// and the deleted-mail notice put their payloads -- so the sentence never
+// displaces one.
+//
+// The blank fallback is for the array forms. Their status is never displayed
+// (the pane goes straight to the row count) and inventing prose per list would
+// be words nobody reads, but field 1 must still be non-empty: the client tests
+// it, and so does the sweep.
+func okStatus(msg string, extra ...string) string {
+	if msg == "" {
+		msg = "OK"
+	}
+	return strings.Join(append([]string{"0", msg}, extra...), "\t")
 }
 
 func ok(rows ...string) Answer {
-	return Answer{Status: okStatus(), Result: strconv.Itoa(len(rows)), Rows: rows}
+	return Answer{Status: okStatus(""), Result: strconv.Itoa(len(rows)), Rows: rows}
 }
 
 // okRows keeps an explicit result string, for the array ordinals whose count
@@ -137,13 +156,25 @@ func okRows(rows []string) Answer {
 	if rows == nil {
 		rows = []string{}
 	}
-	return Answer{Status: okStatus(), Result: strconv.Itoa(len(rows)), Rows: rows}
+	return Answer{Status: okStatus(""), Result: strconv.Itoa(len(rows)), Rows: rows}
+}
+
+// okMessage answers with a sentence and nothing else -- the shape of every
+// write that changes something and returns no data.
+//
+// The sentence goes in the result as well as the status because that is where
+// it has always been, and a handful of ordinals are read one way rather than
+// the other depending on which of the shipped panes issued them.
+func okMessage(msg string) Answer {
+	return Answer{Status: okStatus(msg), Result: msg, Rows: []string{}}
 }
 
 // okResult is the shape the scalars that overload resultString need: a payload
-// where an array form would put a count.
-func okResult(result string) Answer {
-	return Answer{Status: okStatus(), Result: result, Rows: []string{}}
+// where an array form would put a count, and the sentence in the status beside
+// it. Both matter -- the payload is data the pane parses, the sentence is what
+// it shows the player.
+func okResult(msg, result string) Answer {
+	return Answer{Status: okStatus(msg), Result: result, Rows: []string{}}
 }
 
 // okWith replaces the whole status, for the two profile ordinals that carry

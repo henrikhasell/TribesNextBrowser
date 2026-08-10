@@ -110,11 +110,11 @@ func addBuddy(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.BuddyAdd(c.Ctx, c.GUID, target); err != nil {
 		return userError(err)
 	}
-	return Answer{
-		Status: okStatus("Added to your buddy list."),
-		Result: "1",
-		Rows:   []string{},
-	}, nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	return okResult(who.Name+" has been added to your buddy list.", "1"), nil
 }
 
 func dropBuddy(c *Ctx, args string) (Answer, error) {
@@ -125,11 +125,11 @@ func dropBuddy(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.BuddyRemove(c.Ctx, c.GUID, target); err != nil {
 		return userError(err)
 	}
-	return Answer{
-		Status: okStatus("Removed from your buddy list."),
-		Result: "1",
-		Rows:   []string{},
-	}, nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	return okResult(who.Name+" has been removed from your buddy list.", "1"), nil
 }
 
 // scalar 69. The reply is a fixed-width bitmap, not a field list: the handler
@@ -153,5 +153,7 @@ func getOnlineStatus(c *Ctx, args string) (Answer, error) {
 	for _, on := range flags {
 		b.WriteString(boolField(on))
 	}
-	return okResult(b.String()), nil
+	// The bitmap is the payload; the sentence beside it says what it counts.
+	return okResult("Online status for "+itoa(len(ids))+" warriors follows.",
+		b.String()), nil
 }

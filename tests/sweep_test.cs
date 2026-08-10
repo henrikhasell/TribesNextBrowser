@@ -232,6 +232,7 @@ function TNBSweepCheck()
    %wellFormed = 0;
    %unimplemented = "";
    %lastFlagWrong = "";
+   %bareOK = "";
 
    for (%i = 0; %i < $TNBSweep::Count; %i++)
    {
@@ -249,6 +250,20 @@ function TNBSweepCheck()
       if (strstr(%status, "does not implement") >= 0)
          %unimplemented = %unimplemented @ %what @ " ";
 
+      // Field 1 of a success is the sentence seven shipped handlers put
+      // straight into a MessageBoxOK with no wording of their own
+      // (webbrowser.cs:927, :1725, :1781, :1784, :1808, webemail.cs:704,
+      // :706). It was the literal word "OK", so confirming an invitation, a
+      // graphic, a web address or a buddy each produced a dialog reading "OK"
+      // and nothing else.
+      //
+      // Scalars only: an array's status is never displayed -- the pane goes to
+      // the row count -- and inventing prose per list would be words nobody
+      // reads, so those keep the bare fallback deliberately.
+      if ($TNBSweep::Form[%i] $= "scalar" && getField(%status, 0) == 0 &&
+          getField(%status, 1) $= "OK")
+         %bareOK = %bareOK @ %what @ " ";
+
       // isLast marks the end of a result set, so it must fire exactly once for
       // anything that returned rows -- and not at all for anything that did
       // not, which is what the shipped client does.
@@ -262,6 +277,8 @@ function TNBSweepCheck()
    TNBSweepEq("every answer carries a code and a message",
               %wellFormed, $TNBSweep::Count);
    TNBSweepEq("no ordinal is unimplemented", %unimplemented, "");
+   TNBSweepEq("no scalar answers a bare OK where a sentence is shown",
+              %bareOK, "");
    TNBSweepEq("isLast fires exactly once per non-empty result",
               %lastFlagWrong, "");
 

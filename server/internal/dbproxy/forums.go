@@ -2,6 +2,7 @@ package dbproxy
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
@@ -89,8 +90,10 @@ func getPostUpdates(c *Ctx, args string) (Answer, error) {
 		rows = append(rows, withBody(head, p.Body))
 	}
 
+	// Field 2 is the per-forum flag the client caches as ForumsGui.bflag, so
+	// the sentence in field 1 goes in front of it rather than over it.
 	return Answer{
-		Status: okStatus("0"),
+		Status: okStatus("", "0"),
 		Result: strconv.Itoa(len(rows)),
 		Rows:   rows,
 	}, nil
@@ -100,22 +103,28 @@ func getPostUpdates(c *Ctx, args string) (Answer, error) {
 // sends both through this one ordinal and distinguishes them only by whether it
 // has a topic id yet (webforums.cs:482, :510).
 func postTopicOrReply(c *Ctx, args string) (Answer, error) {
+	topic := atoi(field(args, 1))
+	subject := field(args, 3)
 	err := c.Store.PostTopic(c.Ctx, c.GUID,
-		atoi(field(args, 0)), atoi(field(args, 1)), atoi(field(args, 2)),
-		field(args, 3), fieldsFrom(args, 4))
+		atoi(field(args, 0)), topic, atoi(field(args, 2)),
+		subject, fieldsFrom(args, 4))
 	if err != nil {
 		return userError(err)
 	}
-	return okResult("Posted."), nil
+	if topic == 0 {
+		return okMessage("Your topic " + quoted(subject) + " has been posted."), nil
+	}
+	return okMessage("Your reply " + quoted(subject) + " has been posted."), nil
 }
 
 func editPost(c *Ctx, args string) (Answer, error) {
-	err := c.Store.EditPost(c.Ctx, c.GUID, atoi(field(args, 0)),
-		field(args, 1), fieldsFrom(args, 2))
+	id := atoi(field(args, 0))
+	err := c.Store.EditPost(c.Ctx, c.GUID, id, field(args, 1), fieldsFrom(args, 2))
 	if err != nil {
 		return userError(err)
 	}
-	return okResult("Updated."), nil
+	return okMessage("Your post " + quoted(field(args, 1)) +
+		" (" + itoa64(id) + ") has been updated."), nil
 }
 
 // scalar 14 is genuinely ambiguous, and this is the one place the server has to
@@ -140,13 +149,15 @@ func postNewsOrDeletePost(c *Ctx, args string) (Answer, error) {
 			field(args, 1), fieldsFrom(args, 2)); err != nil {
 			return userError(err)
 		}
-		return okResult("Posted."), nil
+		return okMessage("The news article " + quoted(field(args, 1)) +
+			" has been posted."), nil
 	}
 
-	if err := c.Store.DeletePost(c.Ctx, c.GUID, atoi(field(args, 0))); err != nil {
+	id := atoi(field(args, 0))
+	if err := c.Store.DeletePost(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
 	}
-	return okResult("Deleted."), nil
+	return okMessage("Post " + itoa64(id) + " has been deleted."), nil
 }
 
 // scalar 60 and 61 flag something for a moderator's attention. The shipped
@@ -156,14 +167,16 @@ func requestTopicReview(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 60, 0, args); err != nil {
 		return Answer{}, err
 	}
-	return okResult("A moderator has been notified."), nil
+	return okMessage("Topic " + itoa64(atoi(field(args, 0))) +
+		" has been reported to the moderators."), nil
 }
 
 func requestPostReview(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 61, 0, args); err != nil {
 		return Answer{}, err
 	}
-	return okResult("A moderator has been notified."), nil
+	return okMessage("Post " + itoa64(atoi(field(args, 0))) +
+		" has been reported to the moderators."), nil
 }
 
 // scalar 62. The browser issues it with an eight-way selector in field 0 and
@@ -176,32 +189,38 @@ func removeTopic(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 62, selector, args); err != nil {
 		return Answer{}, err
 	}
-	if err := c.Store.RemoveTopic(c.Ctx, c.GUID, atoi(field(args, 1))); err != nil {
+	topic := atoi(field(args, 1))
+	if err := c.Store.RemoveTopic(c.Ctx, c.GUID, topic); err != nil {
 		return userError(err)
 	}
-	return okResult("Removed."), nil
+	return okMessage("Topic " + itoa64(topic) + " has been removed."), nil
 }
 
 func lockTopic(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, atoi(field(args, 0)), true); err != nil {
+	topic := atoi(field(args, 0))
+	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, topic, true); err != nil {
 		return userError(err)
 	}
-	return okResult("Locked."), nil
+	return okMessage("Topic " + itoa64(topic) + " is now locked. Nobody can " +
+		"reply to it."), nil
 }
 
 func unlockTopic(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, atoi(field(args, 0)), false); err != nil {
+	topic := atoi(field(args, 0))
+	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, topic, false); err != nil {
 		return userError(err)
 	}
-	return okResult("Unlocked."), nil
+	return okMessage("Topic " + itoa64(topic) + " is now unlocked, and open " +
+		"for replies."), nil
 }
 
 func moveTopic(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.MoveTopic(c.Ctx, c.GUID,
-		atoi(field(args, 0)), atoi(field(args, 1))); err != nil {
+	topic, forum := atoi(field(args, 0)), atoi(field(args, 1))
+	if err := c.Store.MoveTopic(c.Ctx, c.GUID, topic, forum); err != nil {
 		return userError(err)
 	}
-	return okResult("Moved."), nil
+	return okMessage("Topic " + itoa64(topic) + " has been moved to forum " +
+		itoa64(forum) + "."), nil
 }
 
 //-----------------------------------------------------------------------------
@@ -224,3 +243,15 @@ func staffRefusal(err error) (Answer, error) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func itoa64(n int64) string { return strconv.FormatInt(n, 10) }
+
+// quoted names a thing inside a sentence the client will show, and falls back
+// to a phrase rather than an empty pair of quotes -- several of these ordinals
+// carry a subject line that is allowed to be blank.
+func quoted(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "(no subject)"
+	}
+	return `"` + s + `"`
+}

@@ -53,11 +53,28 @@ func TestEveryOrdinalCitesItsCallSite(t *testing.T) {
 // after it has to be a sentence: webemail.cs:551, webbrowser.cs:927 and
 // webbrowser.cs:1446 all put field 1 straight into a MessageBoxOK.
 func TestStatusShape(t *testing.T) {
-	if got := okStatus(); got != "0\tOK" {
-		t.Errorf("okStatus() = %q, want %q", got, "0\tOK")
+	// The fallback, for the array forms whose status nothing displays. Field 1
+	// still has to be non-empty: the client tests it and so does the sweep.
+	if got := okStatus(""); got != "0\tOK" {
+		t.Errorf("okStatus(\"\") = %q, want %q", got, "0\tOK")
 	}
-	if got := okStatus("9001", "Big Sucka Fishes"); got != "0\tOK\t9001\tBig Sucka Fishes" {
+
+	// The message is field 1 and the payload follows it, so a handler with
+	// something to say never displaces a field the pane parses.
+	if got := okStatus("Player Harabec has been kicked from Big Sucka Fishes."); got !=
+		"0\tPlayer Harabec has been kicked from Big Sucka Fishes." {
+		t.Errorf("okStatus with a message = %q", got)
+	}
+	if got := okStatus("Here it is.", "9001", "Big Sucka Fishes"); got !=
+		"0\tHere it is.\t9001\tBig Sucka Fishes" {
 		t.Errorf("okStatus with payload = %q", got)
+	}
+
+	// okMessage puts the same sentence in both places a pane might read it.
+	m := okMessage("You have left Big Sucka Fishes.")
+	if m.Status != "0\tYou have left Big Sucka Fishes." ||
+		m.Result != "You have left Big Sucka Fishes." {
+		t.Errorf("okMessage = %+v", m)
 	}
 
 	f := fail("There is no tribe by that name.")

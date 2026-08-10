@@ -39,7 +39,7 @@ func getMOTD(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return Answer{}, err
 	}
-	return okResult(text), nil
+	return okResult("The message of the day follows.", text), nil
 }
 
 func setMOTD(c *Ctx, args string) (Answer, error) {
@@ -49,7 +49,7 @@ func setMOTD(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.SetMOTD(c.Ctx, args); err != nil {
 		return userError(err)
 	}
-	return okResult("The message of the day has been updated."), nil
+	return okMessage("The message of the day is now " + quoted(args) + "."), nil
 }
 
 // newsRow lays out the schema array 0 and array 100 share:
@@ -98,7 +98,7 @@ func newsFeed(c *Ctx, category int64) (Answer, error) {
 	}
 
 	return Answer{
-		Status: okStatus(itoa(len(rows)), boolField(staff)),
+		Status: okStatus("", itoa(len(rows)), boolField(staff)),
 		Result: itoa(len(rows)),
 		Rows:   rows,
 	}, nil
@@ -112,7 +112,8 @@ func postNewsArticle(c *Ctx, args string) (Answer, error) {
 		field(args, 1), fieldsFrom(args, 2)); err != nil {
 		return userError(err)
 	}
-	return okResult("Posted."), nil
+	return okMessage("The news article " + quoted(field(args, 1)) +
+		" has been posted."), nil
 }
 
 func editNewsArticle(c *Ctx, args string) (Answer, error) {
@@ -123,7 +124,8 @@ func editNewsArticle(c *Ctx, args string) (Answer, error) {
 		field(args, 2), fieldsFrom(args, 3)); err != nil {
 		return userError(err)
 	}
-	return okResult("Updated."), nil
+	return okMessage("The news article " + quoted(field(args, 2)) +
+		" has been updated."), nil
 }
 
 // scalar 3. The caller assembles the fields itself and the shipped script does
@@ -133,10 +135,11 @@ func deleteNewsArticle(c *Ctx, args string) (Answer, error) {
 	if err := requireStaff(c); err != nil {
 		return staffRefusal(err)
 	}
-	if err := c.Store.DeleteNews(c.Ctx, atoi(field(args, 0))); err != nil {
+	id := atoi(field(args, 0))
+	if err := c.Store.DeleteNews(c.Ctx, id); err != nil {
 		return userError(err)
 	}
-	return okResult("Deleted."), nil
+	return okMessage("News article " + itoa64(id) + " has been deleted."), nil
 }
 
 // array 15. Field 0 is a per-row status and the client accepts the row only

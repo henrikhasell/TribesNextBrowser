@@ -95,6 +95,7 @@ func getTribeProfile(c *Ctx, args string) (Answer, error) {
 	}
 
 	status := okStatus(
+		"The profile for "+p.Name+" follows.",
 		strconv.FormatInt(p.ID, 10),
 		p.Name,
 		p.Tag,
@@ -118,6 +119,7 @@ func getWarriorProfile(c *Ctx, args string) (Answer, error) {
 	}
 
 	status := okStatus(
+		"The profile for "+p.Q.Name+" follows.",
 		p.Q.Name,
 		p.Q.Tag,
 		boolField(p.Q.Append),
@@ -241,10 +243,14 @@ func setTribeDescription(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
 	if err := c.Store.SetClanInfo(c.Ctx, c.GUID, id, fieldsFrom(args, 2)); err != nil {
 		return userError(err)
 	}
-	return okResult("The tribe description has been updated."), nil
+	return okMessage("The description for " + p.Name + " has been updated."), nil
 }
 
 // scalar 16. Six fields, not three: the create dialog sends the recruiting flag
@@ -263,7 +269,7 @@ func createTribe(c *Ctx, args string) (Answer, error) {
 		recruiting, info); err != nil {
 		return userError(err)
 	}
-	return okResult(name), nil
+	return okResult("The tribe "+name+" has been founded, with you as its leader.", name), nil
 }
 
 func deleteTribe(c *Ctx, args string) (Answer, error) {
@@ -286,7 +292,11 @@ func deleteTribe(c *Ctx, args string) (Answer, error) {
 	c.notifyAll(told, "Tribe disbanded: "+p.Name,
 		c.Name+" has disbanded "+p.Name+". You are no longer a member of it.")
 
-	return okResult("Your disband authorisation has been recorded."), nil
+	if len(told) > 0 {
+		return okMessage("The tribe " + p.Name + " has been disbanded."), nil
+	}
+	return okMessage("Your authorisation to disband " + p.Name +
+		" has been recorded. It disbands once every leader has authorised it."), nil
 }
 
 // scalar 19. Named from LinkKickMember and the state it sets, not from the
@@ -313,7 +323,11 @@ func kickMember(c *Ctx, args string) (Answer, error) {
 	c.notify(target, "Removed from "+p.Name,
 		c.Name+" has removed you from "+p.Name+".")
 
-	return okResult("That warrior has been removed from the tribe."), nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	return okMessage("Player " + who.Name + " has been kicked from " + p.Name + "."), nil
 }
 
 // scalar 20. "Recruiting" and "Appending" are the only two words any of the
@@ -326,23 +340,35 @@ func toggleTribeFlag(c *Ctx, args string) (Answer, error) {
 	}
 	on := truthy(field(args, 2))
 
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
+
+	var msg string
 	switch strings.ToLower(flag) {
 	case "recruiting":
 		if err := c.Store.SetClanRecruiting(c.Ctx, c.GUID, id, on); err != nil {
 			return userError(err)
 		}
-	case "appending":
-		p, err := c.Store.TribeProfile(c.Ctx, id)
-		if err != nil {
-			return notFound(err, "There is no tribe by that name.")
+		msg = p.Name + " is no longer recruiting."
+		if on {
+			msg = p.Name + " is now recruiting."
 		}
+	case "appending":
 		if err := c.Store.SetClanTag(c.Ctx, c.GUID, id, p.Tag, on); err != nil {
 			return userError(err)
+		}
+		msg = "The tag " + p.Tag + " now goes before the name of every " +
+			p.Name + " member."
+		if on {
+			msg = "The tag " + p.Tag + " now goes after the name of every " +
+				p.Name + " member."
 		}
 	default:
 		return fail("%q is not a tribe flag this server knows.", flag), nil
 	}
-	return okResult("Done."), nil
+	return okMessage(msg), nil
 }
 
 // scalar 21, the TribeAdminMemberDlg write: a member's title and admin level,
@@ -388,7 +414,15 @@ func setMemberProfile(c *Ctx, args string) (Answer, error) {
 			c.Name+" has "+verb+" you to "+title+" in "+p.Name+".")
 	}
 
-	return okResult("That member's profile has been updated."), nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	if rank == before {
+		return okMessage(who.Name + " is now titled " + title + " in " + p.Name + "."), nil
+	}
+	return okMessage("Player " + who.Name + " is now " + title + " in " + p.Name +
+		", at admin level " + itoa(rank) + "."), nil
 }
 
 func setTribeGraphic(c *Ctx, args string) (Answer, error) {
@@ -396,10 +430,14 @@ func setTribeGraphic(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
 	if err := c.Store.SetClanPicture(c.Ctx, c.GUID, id, field(args, 1)); err != nil {
 		return userError(err)
 	}
-	return okResult("The tribe graphic has been updated."), nil
+	return okMessage("The graphic for " + p.Name + " has been updated."), nil
 }
 
 func setTribeTag(c *Ctx, args string) (Answer, error) {
@@ -411,10 +449,11 @@ func setTribeTag(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
-	if err := c.Store.SetClanTag(c.Ctx, c.GUID, id, field(args, 1), p.Append); err != nil {
+	tag := field(args, 1)
+	if err := c.Store.SetClanTag(c.Ctx, c.GUID, id, tag, p.Append); err != nil {
 		return userError(err)
 	}
-	return okResult("The tribe tag has been updated."), nil
+	return okMessage("The tag for " + p.Name + " is now " + tag + "."), nil
 }
 
 //-----------------------------------------------------------------------------
@@ -438,7 +477,7 @@ func leaveTribe(c *Ctx, args string) (Answer, error) {
 	c.notifyAll(admins, "Member left "+p.Name,
 		c.Name+" has left "+p.Name+".")
 
-	return okResult("You have left the tribe."), nil
+	return okMessage("You have left " + p.Name + "."), nil
 }
 
 // scalar 25. The resultString is the tribe name, which the client echoes into
@@ -451,7 +490,7 @@ func setPrimaryTribe(c *Ctx, args string) (Answer, error) {
 		if err := c.Store.SetActiveClan(c.Ctx, c.GUID, -1); err != nil {
 			return userError(err)
 		}
-		return okResult(""), nil
+		return okResult("You are now a free agent, wearing no tribe's tag.", ""), nil
 	}
 
 	id, err := c.Store.FindClan(c.Ctx, arg)
@@ -465,7 +504,7 @@ func setPrimaryTribe(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.SetActiveClan(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
 	}
-	return okResult(p.Name), nil
+	return okResult(p.Name+" is now your primary tribe.", p.Name), nil
 }
 
 // scalar 27. Recording the invitation is not enough to make it answerable: no
@@ -506,7 +545,8 @@ func inviteToTribe(c *Ctx, args string) (Answer, error) {
 		"Tribe invitation: "+p.Name, body); err != nil {
 		return userError(err)
 	}
-	return okResult(p.Name), nil
+	return okResult("Player "+who.Name+" has been invited to join "+p.Name+
+		". The invitation is in their mail.", p.Name), nil
 }
 
 // scalar 28: accept, reject or cancel.
@@ -538,7 +578,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 		if _, err := c.Store.CancelInvite(c.Ctx, c.GUID, id, subject); err != nil {
 			return userError(err)
 		}
-		return okResult(p.Name), nil
+		return okResult("That invitation to "+p.Name+" has been withdrawn.", p.Name), nil
 	}
 
 	asAdmin := false
@@ -552,7 +592,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 	// how it ended: the client has no query that lists answered invitations, so
 	// to the side that did not answer, an acceptance and a rejection look
 	// identical -- the row is simply gone from the pane that showed it.
-	var tell, mailSubject, mailBody string
+	var tell, mailSubject, mailBody, said string
 
 	switch {
 	case verb == "accept" && asAdmin:
@@ -560,6 +600,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 			tell = subject
 			mailSubject = "Join request accepted: " + p.Name
 			mailBody = c.Name + " has accepted your request to join " + p.Name + "."
+			said = "That warrior's request to join " + p.Name + " has been accepted."
 		}
 	case verb == "reject" && asAdmin:
 		var removed bool
@@ -570,16 +611,19 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 			tell = subject
 			mailSubject = "Join request declined: " + p.Name
 			mailBody = c.Name + " has declined your request to join " + p.Name + "."
+			said = "That warrior's request to join " + p.Name + " has been declined."
 		}
 	case verb == "accept":
 		if tell, err = c.Store.AcceptInvite(c.Ctx, c.GUID, id); err == nil {
 			mailSubject = "Invitation accepted: " + p.Name
 			mailBody = c.Name + " has accepted your invitation to join " + p.Name + "."
+			said = "You have joined " + p.Name + "."
 		}
 	case verb == "reject":
 		if tell, err = c.Store.RejectInvite(c.Ctx, c.GUID, id); err == nil {
 			mailSubject = "Invitation declined: " + p.Name
 			mailBody = c.Name + " has declined your invitation to join " + p.Name + "."
+			said = "You have declined the invitation to join " + p.Name + "."
 		}
 	default:
 		return fail("%q is not something that can be done with an invitation.", verb), nil
@@ -589,7 +633,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 	}
 	c.notify(tell, mailSubject, mailBody)
 
-	return okResult(p.Name), nil
+	return okResult(said, p.Name), nil
 }
 
 // scalar 34. Status field 1 goes straight into a MessageBoxOK
@@ -625,11 +669,8 @@ func requestInvite(c *Ctx, args string) (Answer, error) {
 		}
 	}
 
-	return Answer{
-		Status: okStatus("Your request has been sent to the tribe's administrators."),
-		Result: p.Name,
-		Rows:   []string{},
-	}, nil
+	return okResult("Your request to join "+p.Name+" has been sent to its "+
+		"administrators.", p.Name), nil
 }
 
 //-----------------------------------------------------------------------------
@@ -647,21 +688,28 @@ func setWarriorDescription(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.SetInfo(c.Ctx, c.GUID, text); err != nil {
 		return userError(err)
 	}
-	return okResult("Your description has been updated."), nil
+	if text == "" {
+		return okMessage("The description on " + c.Name + " has been cleared."), nil
+	}
+	return okMessage("The description on " + c.Name + " has been updated."), nil
 }
 
 func setPlayerGraphic(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.SetGraphic(c.Ctx, c.GUID, field(args, 0)); err != nil {
 		return userError(err)
 	}
-	return okResult("Your graphic has been updated."), nil
+	return okMessage("The graphic on " + c.Name + " has been updated."), nil
 }
 
 func setPlayerUrl(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.SetWebsite(c.Ctx, c.GUID, field(args, 0)); err != nil {
+	url := field(args, 0)
+	if err := c.Store.SetWebsite(c.Ctx, c.GUID, url); err != nil {
 		return userError(err)
 	}
-	return okResult("Your web address has been updated."), nil
+	if url == "" {
+		return okMessage("The web address on " + c.Name + " has been cleared."), nil
+	}
+	return okMessage("The web address on " + c.Name + " is now " + url + "."), nil
 }
 
 // scalar 33. Refused, and the refusal is the honest answer rather than an
@@ -679,7 +727,7 @@ func clearBuddy(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.BuddyClear(c.Ctx, c.GUID); err != nil {
 		return userError(err)
 	}
-	return okResult("Your buddy list has been cleared."), nil
+	return okMessage("Your buddy list has been cleared."), nil
 }
 
 // scalar 63. WON kept its staff in one tribe and checked membership of it
@@ -699,7 +747,8 @@ func postAdminAction(c *Ctx, args string) (Answer, error) {
 		int(atoi(field(args, 0))), args); err != nil {
 		return Answer{}, err
 	}
-	return okResult("Recorded."), nil
+	return okMessage("That moderator action has been recorded against " +
+		c.Name + " for review."), nil
 }
 
 //-----------------------------------------------------------------------------

@@ -75,7 +75,10 @@ func getDeletedMail(c *Ctx, args string) (Answer, error) {
 	// (webemail.cs:1029's handler), so it gets a sentence rather than a blank.
 	answer := okRows(out)
 	if len(out) == 0 {
-		answer.Status = okStatus("Your deleted folder is empty.")
+		// Twice over: field 1 is the sentence every pane shows, field 2 the
+		// one this pane reads.
+		answer.Status = okStatus("Your deleted folder is empty.",
+			"Your deleted folder is empty.")
 	}
 	return answer, nil
 }
@@ -108,23 +111,28 @@ func sendMail(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.MailSend(c.Ctx, c.GUID, to, cc, subject, body); err != nil {
 		return userError(err)
 	}
-	return okResult("Your message has been sent."), nil
+	return okMessage("Your message " + quoted(subject) + " has been sent to " +
+		to + "."), nil
 }
 
 // scalar 6 moves to the deleted folder; 35 removes permanently. Both arrive
 // through DoEmailDelete, which picks the ordinal and nothing else.
 func deleteMail(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.MailDelete(c.Ctx, c.GUID, atoi(field(args, 0))); err != nil {
+	id := atoi(field(args, 0))
+	if err := c.Store.MailDelete(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
 	}
-	return okResult("Message deleted."), nil
+	return okMessage("Message " + itoa64(id) +
+		" has been moved to your deleted folder."), nil
 }
 
 func removeMailPermanently(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.PurgeMail(c.Ctx, c.GUID, atoi(field(args, 0))); err != nil {
+	id := atoi(field(args, 0))
+	if err := c.Store.PurgeMail(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
 	}
-	return okResult("Message removed."), nil
+	return okMessage("Message " + itoa64(id) +
+		" has been deleted for good."), nil
 }
 
 // scalar 7. Fire-and-forget by construction: the only call site in the five
@@ -133,10 +141,11 @@ func removeMailPermanently(c *Ctx, args string) (Answer, error) {
 // correctly -- a failure here would be invisible either way, which is exactly
 // why the write itself has to be right.
 func markMailRead(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.MarkMailRead(c.Ctx, c.GUID, atoi(field(args, 0))); err != nil {
+	id := atoi(field(args, 0))
+	if err := c.Store.MarkMailRead(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
 	}
-	return okResult("1"), nil
+	return okResult("Message "+itoa64(id)+" has been marked as read.", "1"), nil
 }
 
 // scalar 9 and 8. Status field 1 is shown in a MessageBoxOK on both the success
@@ -149,11 +158,11 @@ func addBlock(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.BlockAdd(c.Ctx, c.GUID, target); err != nil {
 		return userError(err)
 	}
-	return Answer{
-		Status: okStatus("Mail from that warrior will no longer reach you."),
-		Result: "1",
-		Rows:   []string{},
-	}, nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	return okResult("Mail from "+who.Name+" will no longer reach you.", "1"), nil
 }
 
 func removeBlock(c *Ctx, args string) (Answer, error) {
@@ -164,9 +173,10 @@ func removeBlock(c *Ctx, args string) (Answer, error) {
 	if err := c.Store.BlockRemove(c.Ctx, c.GUID, target); err != nil {
 		return userError(err)
 	}
-	return Answer{
-		Status: okStatus("That warrior is no longer blocked."),
-		Result: "1",
-		Rows:   []string{},
-	}, nil
+	who, err := c.Store.Quad(c.Ctx, target)
+	if err != nil {
+		return Answer{}, err
+	}
+	return okResult(who.Name+" is no longer blocked. Their mail will reach "+
+		"you again.", "1"), nil
 }
