@@ -315,7 +315,16 @@ func toggleTribeFlag(c *Ctx, args string) (Answer, error) {
 	return okResult("Done."), nil
 }
 
-// scalar 21, the TribeAdminMemberDlg write: a member's admin level and title.
+// scalar 21, the TribeAdminMemberDlg write: a member's title and admin level,
+// in that order. webbrowser.cs:643 sends
+//
+//	vTribe TAB vPlayer TAB %title TAB vPerm
+//
+// -- %title read from E_Title one line above, vPerm the admin level TAM_OnAction
+// stashed (:663). Reading the two the other way round does not just swap them:
+// the level is stored as the title, and atoi of a title like "Warlord" is 0, so
+// renaming a member demoted them to recruit and the refusal band never fired
+// because 0 is a legal rank.
 func setMemberProfile(c *Ctx, args string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
@@ -325,8 +334,8 @@ func setMemberProfile(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
 	}
-	rank := int(atoi(field(args, 2)))
-	title := field(args, 3)
+	title := field(args, 2)
+	rank := int(atoi(field(args, 3)))
 
 	if err := c.Store.SetRank(c.Ctx, c.GUID, id, target, rank, title); err != nil {
 		return userError(err)

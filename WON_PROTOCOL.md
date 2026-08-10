@@ -488,7 +488,7 @@ moved once the `Link*` helpers in `webbrowser.cs` were read rather than just the
 | 18 | `deleteTribe` | browser | `webbrowser.cs:343` | `<tribeName>` |
 | 19 | `kickMember` | browser | `webbrowser.cs:499` | `<player> \t <tribe> \t 0` |
 | 20 | `toggleTribeFlag` | browser | `webbrowser.cs:520` | `<"Recruiting"\|"Appending"> \t <tribeName> \t <0\|1>` |
-| 21 | `setMemberProfile` | browser | `webbrowser.cs:643` | `<tribe> \t <further fields>` |
+| 21 | `setMemberProfile` | browser | `webbrowser.cs:643` | `<tribe> \t <player> \t <title> \t <adminLevel>` |
 | 22 | `getTribeProfile` | browser | `webbrowser.cs:1571` | `<tribeName>` — **payload in status** |
 | 23 | `getWarriorProfile` | browser | `webbrowser.cs:1890`, `:1947` | `<playerName>` — **payload in status** |
 | 24 | `leaveTribe` | browser | `webbrowser.cs:497` | `<tribeName>` |

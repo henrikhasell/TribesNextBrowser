@@ -394,7 +394,7 @@ var Table = map[Key]Ordinal{
 	k(Scalar, "21"): {
 		Name: "setMemberProfile", Pane: "browser",
 		Where:    "webbrowser.cs:643",
-		Args:     "<tribe> \\t <player> \\t <adminLevel> \\t <title>",
+		Args:     "<tribe> \\t <player> \\t <title> \\t <adminLevel>",
 		ParsedBy: "webbrowser.cs:805 TribeAdminMemberDlg",
 	},
 	k(Scalar, "22"): {

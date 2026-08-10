@@ -388,9 +388,23 @@ func clearTagIf(ctx context.Context, tx pgx.Tx, guid string, clanID int64) error
 
 // SetRank changes a member's rank and title. A leader cannot promote anyone
 // above themselves.
+//
+// The blank-title check is here because the client's is broken, not as belt and
+// braces. SetMemberProfile (webbrowser.cs:632) means to refuse an empty box and
+// says so -- "Member Title cannot be blank...really." -- but tests
+// strLen(trim(E_Title.getValue)), without the parentheses, so it reads a
+// dynamic field of that name rather than calling the method. The result is
+// always "", the length is always 0, and the condition is inverted on top of
+// that, so the branch it always takes is the one that sends the query. Nothing
+// stops a blank title reaching here, and a member whose title is the empty
+// string renders as a gap in the roster column with no way to tell it from a
+// rendering fault.
 func (s *Store) SetRank(ctx context.Context, guid string, id int64, target string, rank int, title string) error {
 	if rank < RankRecruit || rank > RankLeader {
 		return refuse("rank must be an integer 0 to 4")
+	}
+	if strings.TrimSpace(title) == "" {
+		return refuse("A member's title cannot be blank.")
 	}
 
 	return s.tx(ctx, func(tx pgx.Tx) error {

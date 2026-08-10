@@ -459,6 +459,71 @@ func TestRankGateIsEnforcedServerSide(t *testing.T) {
 	}
 }
 
+// Scalar 21 sends the title third and the admin level fourth.
+//
+// Read the other way round the two do not merely swap: the title is stored as
+// whatever number the level was, and the rank becomes atoi("Warlord") -- zero,
+// silently demoting the member to recruit as the side effect of renaming them.
+// The call site is webbrowser.cs:643, and it sends
+//
+//	vTribe TAB vPlayer TAB %title TAB vPerm
+//
+// with %title from E_Title (:641) and vPerm the admin level TAM_OnAction
+// stashed (:663). Asserted through array 6, the roster the ROSTER button
+// issues, whose field 4 is the title and field 5 the admin level.
+func TestMemberTitleAndRankAreNotSwapped(t *testing.T) {
+	ts := newServer(t, testStore(t))
+
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
+	account(t, ts, "1002")
+	db(t, ts, "1001", "scalar", "27", "Big Sucka Fishes\twarrior-1002")
+	db(t, ts, "1002", "scalar", "28", "accept\tBig Sucka Fishes")
+
+	answer := db(t, ts, "1001", "scalar", "21",
+		"Big Sucka Fishes\twarrior-1002\tWarlord\t2")
+	if got := statusCode(answer); got != "0" {
+		t.Fatalf("setting the profile failed: %v", answer["status"])
+	}
+
+	var row string
+	for _, r := range rows(t, db(t, ts, "1001", "array", "6", "Big Sucka Fishes")) {
+		if strings.HasPrefix(r, "warrior-1002\t") {
+			row = r
+		}
+	}
+	if row == "" {
+		t.Fatal("the member is missing from the roster")
+	}
+
+	f := strings.Split(row, "\t")
+	if got, want := f[4], "Warlord"; got != want {
+		t.Errorf("title = %q, want %q -- the arguments are swapped", got, want)
+	}
+	if got, want := f[5], "2"; got != want {
+		t.Errorf("admin level = %q, want %q -- the arguments are swapped", got, want)
+	}
+
+	// The client means to refuse a blank title and cannot (webbrowser.cs:634
+	// reads a field where it meant to call a method), so the refusal has to
+	// happen here -- and it must not take the title with it on the way.
+	blank := db(t, ts, "1001", "scalar", "21",
+		"Big Sucka Fishes\twarrior-1002\t   \t2")
+	if statusCode(blank) == "0" {
+		t.Errorf("a blank title was accepted: %v", blank["status"])
+	}
+	if msg := statusField(blank, 1); !strings.ContainsAny(msg, " ") {
+		t.Errorf("refusal is not a sentence: %q", msg)
+	}
+
+	for _, r := range rows(t, db(t, ts, "1001", "array", "6", "Big Sucka Fishes")) {
+		if strings.HasPrefix(r, "warrior-1002\t") {
+			if got := strings.Split(r, "\t")[4]; got != "Warlord" {
+				t.Errorf("title = %q after a refused write, want it untouched", got)
+			}
+		}
+	}
+}
+
 // An invitation is delivered by mail, because the client has no query that
 // lists a player's own invitations -- so the link in that body is the only way
 // one can ever be answered.
