@@ -300,6 +300,7 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 // session against either backend byte-comparable.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	closeAfterResponse(w)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("\n"))
 
@@ -315,8 +316,26 @@ func writeJSON(w http.ResponseWriter, v any) {
 // fatal reproduces the HTML error body the PHP backend produced, so the
 // client's existing error handling (which sniffs for "401"/"Authentication")
 // behaves identically against either server.
+// closeAfterResponse ends the connection once the body is written.
+//
+// Not an optimisation -- a correctness requirement, and the client's, not
+// ours. Torque's HTTPObject reports a completed transfer as onDisconnect and
+// has no other completion signal, so the mod's request queue advances only
+// when the socket closes. Serve a keep-alive response and the queue stops dead
+// with the answer already in its buffer: $TNB::Busy stays 1, and every
+// subsequent request waits behind a transfer that finished minutes ago.
+//
+// Found by sweeping the ordinals against this server -- the client answered 10
+// and then hung, while the same sweep against tools/mockserver.py (which sends
+// Connection: close) passed. Go's keep-alive is the only difference between
+// the two.
+func closeAfterResponse(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+}
+
 func fatal(w http.ResponseWriter, code int, text string) {
 	w.Header().Set("Content-Type", "text/html")
+	closeAfterResponse(w)
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte("<h1>Fatal Error</h1><h2>" + text + "</h2>"))
 }
