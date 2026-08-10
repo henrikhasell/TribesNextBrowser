@@ -9,3 +9,11 @@ screenshot-*.png
 # Go build output. `go build` without -o drops the binary next to the source.
 /server/tnserver
 /server/**/*.test
+
+# Mod archives built by tools/build-vl2.sh. Build output, not source: the
+# install instructions run the build before copying one into a mod directory,
+# so a checkout has never needed a prebuilt copy.
+/dist/*.vl2
+
+# Scratch list, kept locally rather than as a project TODO.
+/todo.txt

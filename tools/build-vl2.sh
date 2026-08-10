@@ -114,8 +114,7 @@ pack() {
     esac
 
     # Stamp every entry with one timestamp so a rebuild of unchanged sources
-    # produces an identical archive. Without this, `git status` reports dist/
-    # as modified after every test run, which trains you to ignore it.
+    # produces an identical archive.
     #
     # The stamp is the last commit's date rather than a fixed epoch, because the
     # engine only recompiles a script when the source is newer than its .dso: a
