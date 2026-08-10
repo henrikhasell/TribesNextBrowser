@@ -1,22 +1,17 @@
-// TNBrowser -- mail tests.
+// TNBrowser -- the Email pane, driven through its own controls.
 //
-// Runs against tools/mockserver.py's json_mail.php, which reproduces what
-// probing the live endpoint established, including the fact that send is
-// refused with "500 Invalid Parameters".
+//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099");
 //
-//   exec("tests/mail_test.cs"); TNBMailSelfTest("http://172.17.0.1:8099", 0);
+// Every object named below is the shipped one, out of gui/EmailGui.gui. This
+// mod ships no .gui file, so an assertion that has to change to accommodate a
+// screen means the screen is wrong.
 //
-// The second argument says which kind of server is behind it: 0 for the
-// TribesNext-shaped mock, 1 for a TNBrowser backend. The two differ in what
-// they can actually do -- a TNBrowser backend delivers mail, keeps Sent and
-// Deleted folders, and serves block and buddy lists; TribesNext has none of it
-// and refuses every send.
-//
-// That is a property of the server, so the *test* is told. The client is not:
-// it offers every control unconditionally and reports whatever refusal comes
-// back, which is what removing $TNB::FullFeatures was about.
+// EM_Browser is display-only -- GuiEmailBrowser::getRowText returns "" -- which
+// is why the shipped client keeps its text in a separate EmailMessageVector,
+// and why the assertions below read that instead. Only the row COUNT can be
+// read back off the control itself.
 
-function TNBMailTestEq(%name, %got, %want)
+function TNBMailEq(%name, %got, %want)
 {
    if (%got $= %want)
    {
@@ -32,7 +27,7 @@ function TNBMailTestEq(%name, %got, %want)
    }
 }
 
-function TNBMailTestHas(%name, %haystack, %needle)
+function TNBMailHas(%name, %haystack, %needle)
 {
    if (strstr(%haystack, %needle) >= 0)
    {
@@ -45,375 +40,206 @@ function TNBMailTestHas(%name, %haystack, %needle)
       $TNBMailTest::Failures = $TNBMailTest::Failures @ %name @
          " (missing [" @ %needle @ "])\n";
       error("FAIL " @ %name @ " -- [" @ %needle @ "] not in [" @
-            getSubStr(%haystack, 0, 160) @ "]");
+            getSubStr(%haystack, 0, 300) @ "]");
    }
 }
 
-function TNBMailSelfTest(%host, %isBackend)
+function TNBMailSelfTest(%host)
 {
-   $TNBMailTest::IsBackend = %isBackend;
    $TNBMailTest::Pass = 0;
    $TNBMailTest::Fail = 0;
    $TNBMailTest::Done = 0;
    $TNBMailTest::Failures = "";
+   $TNBMailTest::Rows = "";
 
    $TNB::Host = %host;
    $TNB::AuthHost = %host;
+   $TNB::Cert = "";
+
+   // Step 5 switches identity to read the invited warrior's mailbox, so start
+   // from no session rather than whatever guid the last run finished on.
    $TNB::GuidOverride = "4510186";
+   $TNB::UUID = "";
 
-   // The mail window remembers the last folder in $TNB::MailFolder, and globals
-   // outlive a suite run in the same game process. Clear it so the assertions
-   // below are about a first open rather than whatever the previous run left.
-   $TNB::MailFolder = "";
-   TNBSessionEnd();
-   TNBApiInit();
+   // Never at file scope: that is global scope, where `new` takes the engine
+   // down rather than failing.
+   if (!isObject(TNBMailProbe))
+      new ScriptObject(TNBMailProbe) { class = TNBMailProbe; };
+   if (!isObject(TNBMailRowProbe))
+      new ScriptObject(TNBMailRowProbe) { class = TNBMailRowProbe; };
 
-   echo("--- mail against " @ %host @ " ---");
+   TNBCertRefresh("TNBMailCertLoaded", "");
+}
 
-   // Field accessors tolerate the alternative spellings the live server might
-   // use, since its item shape could not be observed.
-   %alt = TNBJsonParse("{\"mid\":\"3\",\"sender\":\"Bob\",\"subj\":\"Hi\",\"text\":\"Body\",\"sent\":\"100\"}");
-   TNBMailTestEq("id alternative", TNBMailId(%alt), "3");
-   TNBMailTestEq("from alternative", TNBMailFrom(%alt), "Bob");
-   TNBMailTestEq("subject alternative", TNBMailSubject(%alt), "Hi");
-   TNBMailTestEq("body alternative", TNBMailBodyText(%alt), "Body");
-   TNBMailTestEq("date alternative", TNBMailDate(%alt), "100");
-   TNBJsonFree(%alt);
+function TNBMailCertLoaded(%ctx, %status, %result)
+{
+   TNBMailEq("the certificate arrives", %status, "ok");
 
-   %none = TNBJsonParse("{\"nothing\":\"here\"}");
-   TNBMailTestEq("missing field is empty", TNBMailSubject(%none), "");
-   TNBJsonFree(%none);
+   // Start from an empty mailbox and a zero high-water mark, so the first poll
+   // is a first poll rather than whatever a previous suite left behind.
+   EmailMessageVector.clear();
+   EM_Browser.clear();
+   $EmailNextSeq = 0;
+   EmailGui.cacheLoaded = true;
+   EmailGui.checkingEmail = "";
+   EmailGui.soundPlayed = false;
 
-   TNBMailOpen();
-   schedule(2500, 0, "TNBMailStep2");
+   Canvas.setContent(EmailGui);
+
+   // onWake's own fetch is guarded by EmailGui.checkingEmail and a pending
+   // schedule, both of which survive a previous suite in the same session, so
+   // the poll is asked for explicitly -- the same call the GET MAIL button
+   // makes.
+   schedule(1000, 0, "TNBMailFetch");
+   schedule(4000, 0, "TNBMailStep1");
+}
+
+function TNBMailFetch()
+{
+   EmailGui.checkingEmail = "";
+   EmailGui.btnClicked = true;
+   CheckEmail(false);
+}
+
+function TNBMailStep1()
+{
+   TNBMailEq("the shipped mail window is the content",
+             Canvas.getContent().getName(), "EmailGui");
+   TNBMailEq("both inbox messages arrived", EM_Browser.rowCount(), 2);
+   TNBMailEq("and reached the message vector",
+             EmailMessageVector.getNumLines(), 2);
+
+   // The client folds a row into a record-separated message (webemail.cs:1149)
+   // and EmailMessageAddRow then feeds records 1, 6, 3 and 2 to
+   // GuiEmailBrowser::addRow. Reading those back is what pins the field
+   // indices of the row itself.
+   %msg = EmailMessageVector.getLineText(0);
+   TNBMailEq("record 0 is the message id", getRecord(%msg, 0), 11);
+   TNBMailEq("record 1 is the sender quad, name first",
+             getField(getRecord(%msg, 1), 0), "Shifter");
+   TNBMailEq("the sender quad carries the GUID in field 3",
+             getField(getRecord(%msg, 1), 3), "4120041");
+   TNBMailEq("record 2 is the read flag", getRecord(%msg, 2), 0);
+   TNBMailEq("record 3 is the received date", getRecord(%msg, 3), "2026-07-25");
+   TNBMailEq("record 6 is the subject", getRecord(%msg, 6), "Scrim on Tuesday?");
+   TNBMailHas("records 7.. are the body", EmailGetBody(%msg),
+              "We are short a defender");
+
+   // The high-water mark. The pane sends the highest id it has cached, and a
+   // server that ignores it hands the same messages back on every poll -- the
+   // inbox then grows without bound, which is how the argument's meaning was
+   // established in the first place.
+   TNBMailEq("the poll advanced the sequence", $EmailNextSeq, 12);
+   EmailGui.checkingEmail = "";
+   CheckEmail(false);
+   schedule(3000, 0, "TNBMailStep2");
 }
 
 function TNBMailStep2()
 {
-   // GuiEmailBrowser is display-only: unlike GuiTextListCtrl its rows cannot be
-   // read back (getRowText returns ""), which is exactly why the stock client
-   // kept message text in a separate EmailMessageVector. The $TNB::Mail* cache
-   // plays that role here, so assertions go against it plus the row count.
-   TNBMailTestEq("inbox rows", TNBMailList.rowCount(), 2);
-   TNBMailTestEq("cached count", $TNB::MailCount, 2);
-   TNBMailTestEq("cached id", $TNB::MailId[0], "11");
-   TNBMailTestEq("cached from", $TNB::MailFrom[0], "Shifter");
-   TNBMailTestEq("cached subject", $TNB::MailSubject[0], "Scrim on Tuesday?");
-   TNBMailTestEq("cached body", $TNB::MailBody[1], "Good games last night.\n\n-- Ravage");
-   TNBMailTestEq("second cached id", $TNB::MailId[1], "12");
+   TNBMailEq("a second poll adds nothing", EM_Browser.rowCount(), 2);
 
-   // Every control the mail API has any counterpart for is offered, whichever
-   // backend is behind it. Only sender tracking stays hidden, having nothing to
-   // call at all.
-   TNBMailTestEq("block button offered", TNBMailBlockBtn.isVisible(), 1);
-   // SENT MAIL stays hidden because the original hides it: EmailGui.gui ships
-   // rbSendItems with visible = "0" and webemail.cs never shows it. The backend
-   // serves the folder either way -- this is about the screen matching stock.
-   TNBMailTestEq("sent folder hidden as in stock", TNBMailTabSent.isVisible(), 0);
-   TNBMailTestEq("deleted folder offered", TNBMailTabDeleted.isVisible(), 1);
-   TNBMailTestEq("sender tracking hidden", TNBMailTrackBtn.isVisible(), 0);
-
-   // A first open lights INBOX and asks for the inbox -- nothing remembered
-   // yet. The selection used to live inside the capability guard, so the
-   // shipped build opened on the inbox with no tab lit at all.
-   TNBMailTestEq("inbox tab lit on open", TNBMailTabInbox.getValue(), 1);
-   TNBMailTestEq("sent tab not lit", TNBMailTabSent.getValue(), 0);
-   TNBMailTestEq("deleted tab not lit", TNBMailTabDeleted.getValue(), 0);
-   TNBMailTestEq("folder follows the tab", $TNB::MailFolder, "inbox");
-
-   // Selecting a row renders the message from the cached list entry.
-   TNBMailTestEq("starts unread", $TNB::MailUnread[0], 1);
-   TNBMailList.setSelectedRow(0);
-   TNBMailList::onSelect(TNBMailList, 11, "");
-   %body = TNBMailBody.getText();
-   TNBMailTestHas("body shows subject", %body, "Scrim on Tuesday?");
-   TNBMailTestHas("body shows sender", %body, "Shifter");
-   TNBMailTestHas("body shows text", %body, "short a defender");
-
-   // Opening it drops the envelope, updated in place with setRowFlags the way
-   // the stock client does it, so the list keeps its rows and its selection.
-   // Opening from the cached list must set the reply/block target too. It used
-   // not to -- and since the list carries bodies, that is the branch which
-   // normally runs, so reply and block acted on nothing.
-   TNBMailTestEq("cached open sets the target", $TNB::MailReplyTo, "4120041");
-
-   TNBMailTestEq("selection recorded", $TNB::MailCurrent, "11");
-   TNBMailTestEq("envelope cleared locally", $TNB::MailUnread[0], 0);
-   TNBMailTestEq("row kept after marking read", TNBMailList.rowCount(), 2);
-   TNBMailTestEq("selection kept", TNBMailList.getSelectedId(), "11");
-
-   // And it must have reached the server: the cached path answers without a
-   // request, so marking read is a deliberate extra call rather than a side
-   // effect of rendering. Re-list to see what the backend now believes.
-   TNBMailApiList("TNBMailStepUnreadPersisted", "");
+   // The deleted folder: a different ordinal with the same row schema, and the
+   // branch that fills the vector directly rather than through the arrival
+   // path.
+   EmailGui.key = LaunchGui.key++;
+   EmailGui.state = "DeletedMail";
+   EmailMessageVector.clear();
+   DatabaseQueryArray(14, 0, "DeletedMail", EmailGui, EmailGui.key);
+   schedule(3000, 0, "TNBMailStep3");
 }
 
-function TNBMailStepUnreadPersisted(%ctx, %status, %result)
+function TNBMailStep3()
 {
-   TNBMailTestEq("relist status", %status, "ok");
+   TNBMailEq("the deleted folder has its own message",
+             EmailMessageVector.getNumLines(), 1);
+   TNBMailEq("a deleted message keeps its subject",
+             getRecord(EmailMessageVector.getLineText(0), 6), "Old news");
 
-   %opened = "";
-   for (%i = 0; %i < TNBJsonCount(%result); %i++)
-   {
-      %m = TNBJsonIndex(%result, %i);
-      if (TNBMailId(%m) $= "11")
-         %opened = %m;
-   }
-
-   TNBMailTestEq("opened message still listed", (%opened !$= ""), 1);
-   TNBMailTestEq("server marked it read", TNBMailUnread(%opened), 0);
-
-   TNBMailTestEq("count api", 1, 1);
-   TNBMailApiCount("TNBMailStepCount", "");
+   // The block list. getTextName consumes fields 0..4 but reads only four of
+   // them; field 4 is then re-read as the count of mail the block has actually
+   // turned away, which is the column the stock dialog shows.
+   DatabaseQueryArray(2, 0, "", TNBMailProbe, "blocks");
+   schedule(3000, 0, "TNBMailStep4");
 }
 
-function TNBMailStepCount(%ctx, %status, %result)
+function TNBMailStep4()
 {
-   TNBMailTestEq("count status", %status, "ok");
-   TNBMailTestEq("count value", TNBJsonValue(%result), "2");
+   TNBMailHas("a block row names the blocked warrior",
+              $TNBMailTest::LastRow, "Ravage");
+   TNBMailEq("field 4 of a block row is the hit count",
+             getField($TNBMailTest::LastRow, 4), 3);
 
-   // Reply prefills recipient and subject from the message just read.
-   TNBMailApiRead(11, "TNBMailStepRead", "");
+   // An invitation is delivered BY MAIL, because the client has no query that
+   // lists a player's own invitations. The link in that mail is therefore the
+   // only way an invitation can ever be answered.
+   DatabaseQuery(27, "Test Clan" TAB "Ravage", TNBMailProbe, "invite");
+   schedule(3000, 0, "TNBMailStep5");
 }
 
-function TNBMailStepRead(%ctx, %status, %result)
+function TNBMailStep5()
 {
-   TNBMailTestEq("read status", %status, "ok");
-   TNBMailReadLoaded("", %status, %result);
-   TNBMailTestEq("reply target cached", $TNB::MailReplyTo, "4120041");
+   TNBMailEq("inviting a warrior succeeds",
+             getField($TNBMailTest::LastStatus, 0), 0);
 
-   $TNB::MailCurrent = 11;
-   TNBMailReply();
-   TNBMailTestEq("reply recipient", TNBComposeTo.getValue(), "4120041");
-   TNBMailTestEq("reply subject", TNBComposeSubject.getValue(), "Re: Scrim on Tuesday?");
+   // Read it back as the INVITED warrior, because that is whose mailbox it
+   // landed in -- and re-negotiate the session, since the guid travels with
+   // every request.
+   $TNB::GuidOverride = "4200999";
+   $TNB::UUID = "";
 
-   // Replying twice must not stack "Re: Re:".
-   $TNB::MailReplySubject = "Re: Already";
-   TNBMailReply();
-   TNBMailTestEq("no double Re", TNBComposeSubject.getValue(), "Re: Already");
-
-   // Send is refused by the server; the client must report that, not claim
-   // success. The mock reproduces the live 500 Invalid Parameters.
-   TNBComposeTo.setValue("4120041");
-   TNBComposeBody.setValue("hello");
-   TNBComposeSend();
-   schedule(2000, 0, "TNBMailStepAfterSend");
+   // Look at the body the way the pane does. The server wrote newlines; the
+   // row split them into fields; getFields(%row,17) rejoins them TAB-separated
+   // into one record; EmailGetBody prints that verbatim, and
+   // GuiMLTextCtrl::onURL splits the URL on TAB. So a newline on the server is
+   // the TAB the link needs here.
+   $TNBMailTest::Rows = "";
+   DatabaseQueryArray(1, 0, "0", TNBMailRowProbe, "rows");
+   schedule(3000, 0, "TNBMailStep6");
 }
 
-function TNBMailStepAfterSend()
+function TNBMailStep6()
 {
-   // The headline difference between the backends: TribesNext refuses every
-   // send, a self-hosted backend delivers. Either way the client must report
-   // what actually happened rather than assume.
-   if ($TNBMailTest::IsBackend)
-      TNBMailTestEq("send delivered", $TNBMailTest::SendStatus, "ok");
-   else
-      TNBMailTestEq("send reported as failure", $TNBMailTest::SendStatus, "error");
+   TNBMailHas("an accept link survives the round trip",
+              $TNBMailTest::Rows, "<a:acceptinvite");
+   TNBMailHas("the tribe is the link's first argument",
+              $TNBMailTest::Rows, "acceptinvite" TAB "Test Clan");
+   TNBMailHas("the warrior is its second",
+              $TNBMailTest::Rows, "Test Clan" TAB "Ravage>");
+   TNBMailHas("a reject link is offered beside it",
+              $TNBMailTest::Rows, "<a:rejectinvite");
 
-   // Delete removes the message and refreshes the list.
-   $TNB::MailCurrent = 11;
-   TNBMailConfirmDelete();
-   schedule(2500, 0, "TNBMailStepAfterDelete");
-}
+   $TNB::GuidOverride = "4510186";
+   $TNB::UUID = "";
 
-function TNBMailStepAfterDelete()
-{
-   // The list is rebuilt here, and clear() reports a selection while it is --
-   // with whatever id was there before. Acting on that left the app pointing at
-   // a message the user never chose, so the next delete hit the wrong one.
-   TNBMailTestEq("selection goes with the deleted message", $TNB::MailCurrent, "");
-
-   TNBMailTestEq("inbox shrank after delete", TNBMailList.rowCount(), 1);
-   TNBMailTestEq("remaining count", $TNB::MailCount, 1);
-   TNBMailTestEq("remaining message", $TNB::MailSubject[0], "gg");
-   TNBMailTestEq("remaining id", $TNB::MailId[0], "12");
-
-   // Everything past here needs a TNBrowser backend. Against the mock, which
-   // stands in for TribesNext, these methods do not exist at all -- the client
-   // still offers the controls and would report the 501, which is the designed
-   // behaviour, but there is nothing to assert about the feature itself.
-   if (!$TNBMailTest::IsBackend)
-   {
-      TNBMailFinish();
-      return;
-   }
-
-   // Deleting moved the message rather than destroying it: the Deleted folder
-   // is the two-stage delete the original's tab implied (store.MailDelete).
-   TNBMailShowFolder("deleted");
-   schedule(2500, 0, "TNBMailStepDeletedFolder");
-}
-
-function TNBMailStepDeletedFolder()
-{
-   TNBMailTestEq("folder request switched", $TNB::MailFolder, "deleted");
-   TNBMailTestEq("deleted folder holds the message", $TNB::MailCount, 1);
-   TNBMailTestEq("and it is the one deleted", $TNB::MailId[0], "11");
-
-   TNBMailShowFolder("sent");
-   schedule(2500, 0, "TNBMailStepSentFolder");
-}
-
-function TNBMailStepSentFolder()
-{
-   TNBMailTestEq("sent folder requested", $TNB::MailFolder, "sent");
-   // The send earlier in this run went to 4120041, so it is filed here.
-   TNBMailTestEq("sent folder holds what we sent", ($TNB::MailCount > 0), 1);
-
-   // In Sent the sender is you, so the party to act on is the recipient.
-   // Targeting the sender made blocking answer "you cannot block yourself".
-   TNBMailList.setSelectedRow(0);
-   TNBMailList::onSelect(TNBMailList, $TNB::MailId[0], "");
-   TNBMailTestEq("sent mail targets the recipient", $TNB::MailReplyTo, "4120041");
-   TNBMailTestEq("and never yourself",
-                 ($TNB::MailReplyTo $= TNBSessionGuid()) ? 0 : 1, 1);
-
-   // Block list: blocking happens from a message, this is the other half.
-   $TNB::MailReplyTo = "4200999";
-   TNBMailConfirmBlock();
-   schedule(2500, 0, "TNBMailStepBlockList");
-}
-
-function TNBMailStepBlockList()
-{
-   TNBMailShowBlockList();
-   schedule(2500, 0, "TNBMailStepBlockListShown");
-}
-
-function TNBMailStepBlockListShown()
-{
-   // The stock EDIT BLOCK LIST dialog, recreated: a two-column list in its own
-   // dialog rather than prose in the message pane.
-   TNBMailTestEq("block dialog opened", isObject(TNBBlockDlg), 1);
-   TNBMailTestEq("one blocked player", TNBBlockList.rowCount(), 1);
-   TNBMailTestEq("row is keyed by guid", TNBBlockList.getRowId(0), "4200999");
-   TNBMailTestHas("block list names the blocked player",
-                  TNBBlockList.getRowText(0), "Ravage");
-   TNBMailTestEq("and carries the blocked count",
-                 (getField(TNBBlockList.getRowText(0), 1) !$= ""), 1);
-
-   // REMOVE BLOCK acts on the selection, the way the original's did.
-   TNBBlockList.setSelectedRow(0);
-   TNBMailRemoveBlock();
-   schedule(2500, 0, "TNBMailStepAfterUnblock");
-}
-
-function TNBMailStepAfterUnblock()
-{
-   TNBMailTestEq("unblocking empties the list", TNBBlockList.rowCount(), 0);
-   Canvas.popDialog(TNBBlockDlg);
-
-   // Buddy list, which nothing exercised from the client before now.
-   TNBApiEnqueue("buddyadd", TNBJsonObject("to", "4120041"),
-                 "TNBMailStepBuddyAdded", "", 0);
-}
-
-function TNBMailStepBuddyAdded(%ctx, %status, %result)
-{
-   TNBMailTestEq("buddyadd accepted", %status, "ok");
-   TNBApiEnqueue("buddylist", "", "TNBMailStepBuddyList", "", 0);
-}
-
-function TNBMailStepBuddyList(%ctx, %status, %result)
-{
-   TNBMailTestEq("buddylist status", %status, "ok");
-   TNBMailTestEq("one buddy listed", TNBJsonCount(%result), 1);
-   TNBMailTestEq("buddy is who we added",
-                 TNBJsonStr(TNBJsonIndex(%result, 0), "guid"), "4120041");
-
-   TNBMailFinish();
-}
-
-// Reopening returns to the folder last used rather than snapping back to the
-// inbox. Left to the end because onWake refetches, and nothing after this
-// depends on the list.
-// A refresh rebuilds the list, and the selection must survive it when the
-// message did: folder switches and post-delete refreshes both go through here.
-function TNBMailCheckSelectionSurvives()
-{
-   $TNB::MailFolder = "inbox";
-   $TNB::MailListPending = "";
-   $TNB::MailCurrent = "";
-   TNBMailRefresh();
-   schedule(2500, 0, "TNBMailCheckSelectionSurvivesDone");
-}
-
-function TNBMailCheckSelectionSurvivesDone()
-{
-   if ($TNB::MailCount > 0)
-   {
-      // Select the first row, refresh, and it must still be selected.
-      %id = $TNB::MailId[0];
-      TNBMailList.setSelectedRow(0);
-      TNBMailList::onSelect(TNBMailList, %id, "");
-      $TNBMailTest::HeldId = %id;
-
-      $TNB::MailListPending = "";
-      TNBMailRefresh();
-      schedule(2500, 0, "TNBMailCheckSelectionHeld");
-      return;
-   }
-   TNBMailCheckFolderMemory();
-   TNBMailFinishReport();
-}
-
-function TNBMailCheckSelectionHeld()
-{
-   TNBMailTestEq("selection survives a rebuild",
-                 $TNB::MailCurrent, $TNBMailTest::HeldId);
-   TNBMailTestEq("and it is a row that exists",
-                 (TNBMailIndexOfId($TNB::MailCurrent) >= 0), 1);
-
-   TNBMailCheckFolderMemory();
-   TNBMailFinishReport();
-}
-
-function TNBMailCheckFolderMemory()
-{
-   $TNB::MailFolder = "deleted";
-   TNBMailGui.onWake();
-   TNBMailTestEq("reopen remembers the folder", $TNB::MailFolder, "deleted");
-   TNBMailTestEq("and lights its tab", TNBMailTabDeleted.getValue(), 1);
-   TNBMailTestEq("without lighting the inbox", TNBMailTabInbox.getValue(), 0);
-
-   // An unknown folder is not a tab, so it must fall back rather than light
-   // nothing -- the failure mode this whole change was about.
-   $TNB::MailFolder = "nonsense";
-   TNBMailGui.onWake();
-   TNBMailTestEq("unknown folder falls back", $TNB::MailFolder, "inbox");
-   TNBMailTestEq("and lights the inbox", TNBMailTabInbox.getValue(), 1);
-
-   // Sent is a folder the server has but the screen does not show, so a session
-   // that had selected it must come back to the inbox rather than to a hidden
-   // tab with nothing lit.
-   $TNB::MailFolder = "sent";
-   TNBMailGui.onWake();
-   TNBMailTestEq("remembered sent falls back too", $TNB::MailFolder, "inbox");
-   TNBMailTestEq("and the hidden tab stays dark", TNBMailTabSent.getValue(), 0);
-}
-
-function TNBMailFinish()
-{
-   TNBMailCheckSelectionSurvives();
-}
-
-function TNBMailFinishReport()
-{
-
-   echo("");
-   echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail);
    $TNBMailTest::Done = 1;
+   echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @
+        " fail=" @ $TNBMailTest::Fail);
 }
 
-// Capture what the send path reported, since it goes to a message box.
-package TNBMailTestHooks
+//-----------------------------------------------------------------------------
+// Probes, for the ordinals whose shipped consumer is a dialog this suite does
+// not open.
+//-----------------------------------------------------------------------------
+
+function TNBMailProbe::onDatabaseQueryResult(%this, %status, %result, %key)
 {
-   function TNBMailSent(%ctx, %status, %result)
-   {
-      $TNBMailTest::SendStatus = %status;
-      Parent::TNBMailSent(%ctx, %status, %result);
-   }
-};
-activatePackage(TNBMailTestHooks);
+   $TNBMailTest::LastStatus = %status;
+}
+
+function TNBMailProbe::onDatabaseRow(%this, %row, %isLast, %key)
+{
+   $TNBMailTest::LastRow = %row;
+}
+
+function TNBMailRowProbe::onDatabaseQueryResult(%this, %status, %result, %key)
+{
+}
+
+function TNBMailRowProbe::onDatabaseRow(%this, %row, %isLast, %key)
+{
+   // Exactly what webemail.cs:1147 does.
+   $TNBMailTest::Rows = $TNBMailTest::Rows @ getFields(%row, 17) @ "\n";
+}
 
 echo("TNBrowser: mail_test.cs loaded");

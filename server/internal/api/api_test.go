@@ -1,9 +1,8 @@
-package api_test
+package api
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -12,651 +11,305 @@ import (
 	"os"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/henrik/tnbrowser-server/internal/api"
 	"github.com/henrik/tnbrowser-server/internal/auth"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
-// These tests run against a real PostgreSQL, because the behaviour worth
-// testing here is the SQL: rank gates, cascade rules and transactional
-// mutations. A fake would test the fake.
+// These run against a real PostgreSQL, because what is worth testing here is
+// the SQL: rank gates, cascades, transactions and the high-water filter. A
+// fake would only re-assert the shape of the Go code.
 //
-//	docker run -d --name tnb-postgres -e POSTGRES_PASSWORD=tnbrowser \
-//	  -e POSTGRES_USER=tnbrowser -e POSTGRES_DB=tnbrowser -p 5433:5432 postgres:16-alpine
-//	go test ./...
-const defaultTestDSN = "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser"
+//	TNB_TEST_DSN=postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser go test ./...
+//
+// Skipped without a DSN so `go test ./...` stays useful on a machine with no
+// database.
 
-// knownAccounts is what the fake TribesNext vouches for. Anything else gets a
-// 401, exactly as the real one does for an unknown or expired pair.
-var knownAccounts = map[string]string{
-	"4510186": "orange01",
-	"4120041": "Shifter",
-	"4200999": "Ravage",
-	"4300777": "orangeade",
-}
-
-type harness struct {
-	t        *testing.T
-	srv      *httptest.Server
-	upstream *httptest.Server
-	pool     *pgxpool.Pool
-	store    *store.Store
-}
-
-func newHarness(t *testing.T) *harness {
+func testStore(t *testing.T) *store.Store {
 	t.Helper()
 
 	dsn := os.Getenv("TNB_TEST_DSN")
 	if dsn == "" {
-		dsn = defaultTestDSN
+		t.Skip("set TNB_TEST_DSN to run the database tests")
 	}
 
-	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.New(context.Background(), dsn)
 	if err != nil {
-		t.Skipf("no test database (%v); start postgres to run these", err)
+		t.Fatalf("connect: %v", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
-		t.Skipf("test database unreachable (%v); start postgres to run these", err)
-	}
-
-	// Fresh state per test: these tests assert on counts and orderings, and
-	// leftovers from a previous run would make failures depend on run order.
-	for _, tbl := range []string{
-		"history", "mail", "buddies", "blocks", "clan_disband_votes",
-		"clan_invites", "clan_members", "clans", "accounts",
-	} {
-		if _, err := pool.Exec(ctx, "TRUNCATE "+tbl+" CASCADE"); err != nil {
-			t.Fatalf("truncate %s: %v", tbl, err)
-		}
-	}
-
-	// A stand-in for TribesNext's verification oracle.
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		guid := r.URL.Query().Get("guid")
-		uuid := r.URL.Query().Get("uuid")
-		name, ok := knownAccounts[guid]
-		if !ok || uuid != "session-"+guid {
-			w.WriteHeader(http.StatusUnauthorized)
-			_, _ = w.Write([]byte("<h1>Fatal Error</h1><h2>401 Authentication Required</h2>"))
-			return
-		}
-		// Reproduce the live server's leading blank line and null fields.
-		_, _ = fmt.Fprintf(w, "\n{\"guid\":%q,\"name\":%q,\"tag\":null,\"online\":1}", guid, name)
-	}))
-	t.Cleanup(upstream.Close)
-
-	st := store.New(pool)
-	s := &api.Server{
-		Store:    st,
-		Verifier: auth.NewVerifier(upstream.URL, time.Minute),
-		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-
-	srv := httptest.NewServer(s.Routes())
-	t.Cleanup(srv.Close)
 	t.Cleanup(pool.Close)
 
-	return &harness{t: t, srv: srv, upstream: upstream, pool: pool, store: st}
-}
-
-// call invokes a method as a player and decodes the JSON reply.
-func (h *harness) call(path, guid, method string, payload map[string]any) (int, []byte) {
-	h.t.Helper()
-
-	q := url.Values{}
-	q.Set("guid", guid)
-	q.Set("uuid", "session-"+guid)
-	q.Set("method", method)
-	if payload != nil {
-		b, _ := json.Marshal(payload)
-		q.Set("payload", string(b))
-	}
-
-	resp, err := http.Get(h.srv.URL + path + "?" + q.Encode())
-	if err != nil {
-		h.t.Fatalf("%s %s: %v", path, method, err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
-	return resp.StatusCode, body
-}
-
-func (h *harness) browser(guid, method string, payload map[string]any) (int, []byte) {
-	return h.call("/tn/json/json_browser.php", guid, method, payload)
-}
-
-func (h *harness) mail(guid, method string, payload map[string]any) (int, []byte) {
-	return h.call("/tn/json/json_mail.php", guid, method, payload)
-}
-
-// decode parses a reply, tolerating the leading blank line the protocol carries.
-func decode[T any](t *testing.T, body []byte) T {
-	t.Helper()
-	var v T
-	if err := json.Unmarshal([]byte(strings.TrimSpace(string(body))), &v); err != nil {
-		t.Fatalf("decode %q: %v", body, err)
-	}
-	return v
-}
-
-// status is the {"status":...,"msg":...} envelope.
-type status struct {
-	Status string `json:"status"`
-	Msg    string `json:"msg"`
-}
-
-// seed logs a player in once, which is what creates their account row.
-func (h *harness) seed(guids ...string) {
-	h.t.Helper()
-	for _, g := range guids {
-		if code, _ := h.browser(g, "userinvites", nil); code != http.StatusOK {
-			h.t.Fatalf("seeding %s: got %d", g, code)
+	// Truncate rather than recreate: the schema is applied by hand from
+	// migrations/, and a test that silently created its own would stop being a
+	// check on the migrations.
+	for _, table := range []string{
+		"clan_invites", "clan_members", "clan_disband_votes", "mail",
+		"buddies", "blocks", "history", "clans", "accounts",
+	} {
+		if _, err := pool.Exec(context.Background(),
+			"TRUNCATE TABLE "+table+" CASCADE"); err != nil {
+			t.Fatalf("truncate %s: %v", table, err)
 		}
 	}
+	return store.New(pool)
 }
 
-// makeClan creates a clan owned by guid and returns its id.
-func (h *harness) makeClan(guid, name, tag string) string {
-	h.t.Helper()
+// newServer wires the front door to a stand-in for the TribesNext session
+// check -- the one thing this server does not own. Identity stays TribesNext's;
+// what is faked here is only the round trip to them.
+//
+// The stand-in echoes the guid back, because the verifier refuses a 200 whose
+// profile is for somebody else: a pairing that upstream did not actually
+// enforce would otherwise let any token authorise any account.
+func newServer(t *testing.T, st *store.Store) *httptest.Server {
+	t.Helper()
 
-	code, body := h.browser(guid, "createclan",
-		map[string]any{"name": name, "tag": tag, "append": "no"})
-	if code != http.StatusOK {
-		h.t.Fatalf("createclan: got %d", code)
-	}
-	if st := decode[status](h.t, body); st.Status != "success" {
-		h.t.Fatalf("createclan refused: %s", st.Msg)
-	}
+	upstream := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			// The real oracle answers 200 for a live pair and 401 otherwise.
+			if r.FormValue("uuid") == "" || r.FormValue("guid") == "" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			guid := r.FormValue("guid")
+			_, _ = io.WriteString(w,
+				`{"guid":"`+guid+`","name":"warrior-`+guid+`"}`)
+		}))
+	t.Cleanup(upstream.Close)
 
-	_, body = h.browser(guid, "clansearch", map[string]any{"q": name})
-	hits := decode[[]struct {
-		ID   string `json:"id"`
-		Name string `json:"name"`
-	}](h.t, body)
-	if len(hits) != 1 {
-		h.t.Fatalf("expected to find the new clan, got %d hits", len(hits))
+	srv := &Server{
+		Store:    st,
+		Verifier: auth.NewVerifier(upstream.URL, 0),
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
-	return hits[0].ID
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts
 }
 
-// --------------------------------------------------------------------------
+// db issues one ordinal and returns the decoded answer.
+func db(t *testing.T, ts *httptest.Server, guid, form, ordinal, args string) map[string]any {
+	t.Helper()
 
-func TestSessionMustBeVouchedForUpstream(t *testing.T) {
-	h := newHarness(t)
+	payload, _ := json.Marshal(map[string]string{
+		"form": form, "ordinal": ordinal, "args": args,
+	})
+	resp, err := ts.Client().PostForm(ts.URL+"/db", url.Values{
+		"guid":    {guid},
+		"uuid":    {"session-" + guid},
+		"payload": {string(payload)},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
 
-	// A pair TribesNext does not recognise is refused, and with the same HTML
-	// body the real backend sends so the client's error path is unchanged.
-	q := url.Values{}
-	q.Set("guid", "4510186")
-	q.Set("uuid", "not-a-real-session")
-	q.Set("method", "userinvites")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("%s %s: status %d: %s", form, ordinal, resp.StatusCode, body)
+	}
 
-	resp, err := http.Get(h.srv.URL + "/tn/json/json_browser.php?" + q.Encode())
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out
+}
+
+func statusCode(answer map[string]any) string {
+	s, _ := answer["status"].(string)
+	return strings.SplitN(s, "\t", 2)[0]
+}
+
+func rows(t *testing.T, answer map[string]any) []string {
+	t.Helper()
+	raw, _ := answer["rows"].([]any)
+	out := make([]string, len(raw))
+	for i, r := range raw {
+		out[i], _ = r.(string)
+	}
+	return out
+}
+
+func TestUnauthenticatedIsRefused(t *testing.T) {
+	ts := newServer(t, testStore(t))
+
+	resp, err := ts.Client().Post(ts.URL+"/db", "application/x-www-form-urlencoded",
+		strings.NewReader("payload={}"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d", resp.StatusCode)
-	}
-	if !strings.Contains(string(body), "401 Authentication Required") {
-		t.Fatalf("expected the PHP error body, got %q", body)
-	}
-
-	// A GUID nobody vouches for is refused too, even with a plausible token.
-	if code, _ := h.browser("9999999", "userinvites", nil); code != http.StatusUnauthorized {
-		t.Fatalf("unknown guid: expected 401, got %d", code)
+		t.Errorf("status %d, want 401", resp.StatusCode)
 	}
 }
 
-func TestProfileRoundTrip(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186")
+// An ordinal nobody implements must refuse loudly. An empty success would
+// render as an empty pane, which is indistinguishable from "there is nothing
+// here" and hides the gap.
+func TestUnknownOrdinalRefusesRatherThanEmpties(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
 
-	if code, body := h.browser("4510186", "userinfo",
-		map[string]any{"info": "Hello \"world\" & 100%"}); code != http.StatusOK {
-		t.Fatalf("userinfo: %d %s", code, body)
-	}
-	if code, _ := h.browser("4510186", "usersite",
-		map[string]any{"site": "www.example.com"}); code != http.StatusOK {
-		t.Fatalf("usersite: %d", code)
-	}
-
-	_, body := h.browser("4510186", "userview", map[string]any{"id": "4510186"})
-	user := decode[struct {
-		GUID    string `json:"guid"`
-		Name    string `json:"name"`
-		Info    string `json:"info"`
-		Website string `json:"website"`
-		Online  int    `json:"online"`
-	}](t, body)
-
-	if user.GUID != "4510186" {
-		t.Fatalf("guid: %q", user.GUID)
-	}
-	// The name is TribesNext's, not ours -- it arrived with the verification.
-	if user.Name != "orange01" {
-		t.Fatalf("name should come from upstream, got %q", user.Name)
-	}
-	if user.Info != "Hello \"world\" & 100%" {
-		t.Fatalf("info round trip: %q", user.Info)
-	}
-	if user.Website != "www.example.com" {
-		t.Fatalf("website round trip: %q", user.Website)
-	}
-	if user.Online != 1 {
-		t.Fatalf("the requesting player should read as online, got %d", user.Online)
+	answer := db(t, ts, "1001", "scalar", "999", "")
+	if statusCode(answer) == "0" {
+		t.Errorf("unknown ordinal answered success: %v", answer["status"])
 	}
 }
 
-func TestViewingSomethingMissingIsEmptyNotAnError(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186")
+// The certificate is the identity every community pane reads, and its layout is
+// load-bearing: field 3 of record 0 reaches the filesystem as the mail cache
+// path, and webbrowser.cs compares it against field 3 of a row quad.
+func TestCertificateLayout(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
 
-	// The original answered [] for a missing subject; the client relies on it.
-	_, body := h.browser("4510186", "clanview", map[string]any{"id": "999"})
-	if got := strings.TrimSpace(string(body)); got != "[]" {
-		t.Fatalf("missing clan should be [], got %s", got)
-	}
-	_, body = h.browser("4510186", "userview", map[string]any{"id": "123456"})
-	if got := strings.TrimSpace(string(body)); got != "[]" {
-		t.Fatalf("missing user should be [], got %s", got)
-	}
-}
+	// Two ordinals first, so the account exists and owns a tribe.
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
 
-func TestClanLifecycleAndRankRules(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041", "4200999")
-
-	clan := h.makeClan("4510186", "Test Clan", "[TC]")
-
-	// Founder is the leader.
-	_, body := h.browser("4510186", "clanview", map[string]any{"id": clan})
-	view := decode[struct {
-		Name    string `json:"name"`
-		Members []struct {
-			GUID string `json:"guid"`
-			Rank string `json:"rank"`
-		} `json:"members"`
-	}](t, body)
-	if len(view.Members) != 1 || view.Members[0].Rank != "4" {
-		t.Fatalf("founder should be sole leader, got %+v", view.Members)
-	}
-
-	// A non-member cannot administer it.
-	_, body = h.browser("4120041", "claninfo", map[string]any{"id": clan, "v": "hi"})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("a non-member must not be able to edit clan info")
-	}
-
-	// Invite and accept.
-	if _, body = h.browser("4510186", "claninvite",
-		map[string]any{"id": clan, "to": "4120041"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("invite refused: %s", body)
-	}
-	_, body = h.browser("4120041", "userinvites", nil)
-	invites := decode[[]struct {
-		Clan struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"clan"`
-	}](t, body)
-	if len(invites) != 1 || invites[0].Clan.ID != clan {
-		t.Fatalf("expected one invitation for the clan, got %+v", invites)
-	}
-	if _, body = h.browser("4120041", "useraccept",
-		map[string]any{"id": clan}); decode[status](t, body).Status != "success" {
-		t.Fatalf("accept refused: %s", body)
-	}
-
-	// A recruit cannot promote anyone.
-	_, body = h.browser("4120041", "clanrank",
-		map[string]any{"id": clan, "to": "4120041", "rank": "4", "title": "Usurper"})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("a recruit must not be able to promote themselves")
-	}
-
-	// The leader can, but not above their own rank.
-	if _, body = h.browser("4510186", "clanrank",
-		map[string]any{"id": clan, "to": "4120041", "rank": "2", "title": "Officer"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("leader should be able to promote: %s", body)
-	}
-	_, body = h.browser("4510186", "clanrank",
-		map[string]any{"id": clan, "to": "4120041", "rank": "9", "title": "Nope"})
-	if st := decode[status](t, body); st.Status != "error" || st.Msg != "rank must be an integer 0 to 4" {
-		t.Fatalf("out-of-range rank should be refused with the documented message, got %+v", st)
-	}
-
-	// An officer still cannot kick: that needs senior rank.
-	_, body = h.browser("4120041", "clankick", map[string]any{"id": clan, "to": "4510186"})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("an officer must not be able to kick")
-	}
-
-	// Nor can a leader be kicked by an equal.
-	if _, body = h.browser("4510186", "clanrank",
-		map[string]any{"id": clan, "to": "4120041", "rank": "4", "title": "Leader"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("promote to leader: %s", body)
-	}
-	_, body = h.browser("4120041", "clankick", map[string]any{"id": clan, "to": "4510186"})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("a leader must not be able to kick another leader")
-	}
-}
-
-func TestWearingATagRequiresMembership(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4200999")
-
-	clan := h.makeClan("4510186", "Test Clan", "[TC]")
-
-	// An outsider cannot wear the tag -- the whole point of a tag is that it
-	// cannot be worn by someone with no claim to it.
-	_, body := h.browser("4200999", "userclan", map[string]any{"id": clan})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("a non-member must not be able to wear the clan tag")
-	}
-
-	// The founder can, and it shows up on their profile.
-	if _, body = h.browser("4510186", "userclan",
-		map[string]any{"id": clan}); decode[status](t, body).Status != "success" {
-		t.Fatalf("member should be able to wear the tag: %s", body)
-	}
-	_, body = h.browser("4510186", "userview", map[string]any{"id": "4510186"})
-	if tag := decode[struct {
-		Tag string `json:"tag"`
-	}](t, body).Tag; tag != "[TC]" {
-		t.Fatalf("expected the worn tag on the profile, got %q", tag)
-	}
-
-	// Leaving drops it, rather than leaving them wearing a tag they lost.
-	if _, body = h.browser("4510186", "userleave",
-		map[string]any{"id": clan}); decode[status](t, body).Status != "success" {
-		t.Fatalf("leave refused: %s", body)
-	}
-	_, body = h.browser("4510186", "userview", map[string]any{"id": "4510186"})
-	if tag := decode[struct {
-		Tag string `json:"tag"`
-	}](t, body).Tag; tag != "" {
-		t.Fatalf("tag should be cleared on leaving, got %q", tag)
-	}
-}
-
-func TestMailSendReadFoldersAndDelete(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041")
-
-	// Sending works here, which is the headline difference from TribesNext.
-	if _, body := h.mail("4120041", "send", map[string]any{
-		"to": "4510186", "subject": "Scrim?", "body": "Tuesday.",
-	}); decode[status](t, body).Status != "success" {
-		t.Fatalf("send refused: %s", body)
-	}
-
-	_, body := h.mail("4510186", "count", nil)
-	if got := strings.TrimSpace(string(body)); got != `"1"` {
-		t.Fatalf("count should be a JSON string, got %s", got)
-	}
-
-	_, body = h.mail("4510186", "read", nil)
-	inbox := decode[[]struct {
-		ID       string `json:"id"`
-		From     string `json:"from"`
-		FromGUID string `json:"fromguid"`
-		Subject  string `json:"subject"`
-		Body     string `json:"body"`
-		Unread   string `json:"unread"`
-	}](t, body)
-	if len(inbox) != 1 {
-		t.Fatalf("expected one message, got %d", len(inbox))
-	}
-	if inbox[0].From != "Shifter" || inbox[0].FromGUID != "4120041" {
-		t.Fatalf("sender should be resolved, got %+v", inbox[0])
-	}
-	if inbox[0].Unread != "1" {
-		t.Fatal("a new message should be unread")
-	}
-
-	// The sender keeps a copy in Sent.
-	_, body = h.mail("4120041", "read", map[string]any{"folder": "sent"})
-	if sent := decode[[]struct {
-		Subject string `json:"subject"`
-	}](t, body); len(sent) != 1 || sent[0].Subject != "Scrim?" {
-		t.Fatalf("sender should have a Sent copy, got %+v", sent)
-	}
-
-	// Reading marks the message read but does not remove it, and count reports
-	// what is in the inbox rather than what is unread.
-	if _, body = h.mail("4510186", "read", map[string]any{"id": inbox[0].ID}); len(body) == 0 {
-		t.Fatal("read by id returned nothing")
-	}
-	_, body = h.mail("4510186", "read", nil)
-	if again := decode[[]struct {
-		Unread string `json:"unread"`
-	}](t, body); len(again) != 1 || again[0].Unread != "0" {
-		t.Fatalf("reading should clear the unread flag, got %+v", again)
-	}
-	_, body = h.mail("4510186", "count", nil)
-	if got := strings.TrimSpace(string(body)); got != `"1"` {
-		t.Fatalf("count should still see the message in the inbox: %s", got)
-	}
-
-	// Delete moves to Deleted first, and only purges on the second delete.
-	if _, body = h.mail("4510186", "delete",
-		map[string]any{"id": inbox[0].ID}); decode[status](t, body).Status != "success" {
-		t.Fatalf("delete refused: %s", body)
-	}
-	_, body = h.mail("4510186", "count", nil)
-	if got := strings.TrimSpace(string(body)); got != `"0"` {
-		t.Fatalf("deleting should empty the inbox: %s", got)
-	}
-	_, body = h.mail("4510186", "read", map[string]any{"folder": "deleted"})
-	if del := decode[[]struct {
-		ID string `json:"id"`
-	}](t, body); len(del) != 1 {
-		t.Fatalf("expected the message in Deleted, got %d", len(del))
-	}
-	if _, body = h.mail("4510186", "delete",
-		map[string]any{"id": inbox[0].ID}); decode[status](t, body).Status != "success" {
-		t.Fatalf("purge refused: %s", body)
-	}
-	_, body = h.mail("4510186", "read", map[string]any{"folder": "deleted"})
-	if del := decode[[]struct {
-		ID string `json:"id"`
-	}](t, body); len(del) != 0 {
-		t.Fatalf("second delete should purge, got %d", len(del))
-	}
-}
-
-func TestMailCannotBeReadByAnyoneElse(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041")
-
-	if _, body := h.mail("4120041", "send", map[string]any{
-		"to": "4510186", "subject": "private", "body": "secret",
-	}); decode[status](t, body).Status != "success" {
-		t.Fatalf("send refused: %s", body)
-	}
-
-	_, body := h.mail("4510186", "read", nil)
-	id := decode[[]struct {
-		ID string `json:"id"`
-	}](t, body)[0].ID
-
-	// A third party guessing the id must get nothing, not someone else's mail.
-	h.seed("4200999")
-	_, body = h.mail("4200999", "read", map[string]any{"id": id})
-	if got := decode[[]struct {
-		Body string `json:"body"`
-	}](t, body); len(got) != 0 {
-		t.Fatalf("mail leaked to another player: %+v", got)
-	}
-}
-
-func TestBlockingSilentlyDropsMail(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041")
-
-	if _, body := h.browser("4510186", "blockadd",
-		map[string]any{"to": "4120041"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("blockadd refused: %s", body)
-	}
-
-	// The sender is told nothing, deliberately: revealing the block invites
-	// working around it.
-	if _, body := h.mail("4120041", "send", map[string]any{
-		"to": "4510186", "subject": "hi", "body": "hi",
-	}); decode[status](t, body).Status != "success" {
-		t.Fatalf("blocked send should look like success, got %s", body)
-	}
-
-	_, body := h.mail("4510186", "count", nil)
-	if got := strings.TrimSpace(string(body)); got != `"0"` {
-		t.Fatalf("blocked mail should not arrive, count = %s", got)
-	}
-
-	// Silent to the sender, but counted: the stock EDIT BLOCK LIST dialog shows
-	// how many messages each block has turned away.
-	_, body = h.browser("4510186", "blocklist", nil)
-	list := decode[[]person](t, body)
-	if len(list) != 1 {
-		t.Fatalf("block list: %+v", list)
-	}
-	if list[0].Hits != "1" {
-		t.Fatalf("blocked send should be counted, hits = %q", list[0].Hits)
-	}
-	if list[0].Since == "" || list[0].Since == "0" {
-		t.Fatalf("block list carries no date, since = %q", list[0].Since)
-	}
-}
-
-// person is the shape the buddy, block and clan-invite lists all return.
-type person struct {
-	GUID   string `json:"guid"`
-	Name   string `json:"name"`
-	Online int    `json:"online"`
-	Since  string `json:"since"`
-	Hits   string `json:"hits"`
-}
-
-func TestBuddyList(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041")
-
-	if _, body := h.browser("4510186", "buddyadd",
-		map[string]any{"to": "4120041"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("buddyadd refused: %s", body)
-	}
-	_, body := h.browser("4510186", "buddylist", nil)
-	list := decode[[]person](t, body)
-	if len(list) != 1 || list[0].Name != "Shifter" {
-		t.Fatalf("buddy list: %+v", list)
-	}
-	// SINCE is the second column of the stock BUDDYLIST view, so it has to be
-	// on the wire and not merely in the table.
-	if list[0].Since == "" || list[0].Since == "0" {
-		t.Fatalf("buddy list carries no date, since = %q", list[0].Since)
-	}
-
-	// Adding someone who does not exist is a refusal, not a silent no-op.
-	_, body = h.browser("4510186", "buddyadd", map[string]any{"to": "0000000"})
-	if st := decode[status](t, body); st.Status != "error" {
-		t.Fatal("adding an unknown player should be refused")
-	}
-
-	if _, body = h.browser("4510186", "buddyremove",
-		map[string]any{"to": "4120041"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("buddyremove refused: %s", body)
-	}
-	_, body = h.browser("4510186", "buddylist", nil)
-	if list := decode[[]struct{}](t, body); len(list) != 0 {
-		t.Fatalf("expected empty buddy list, got %d", len(list))
-	}
-}
-
-// The clan INVITES view is a list, not prose, and stock gave it two columns:
-// PLAYER and INVITED. Online state is carried too, because the original greyed
-// out whoever was offline (webbrowser.cs:1528).
-func TestClanInvitesCarryDateAndPresence(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186", "4120041")
-	clan := h.makeClan("4510186", "Test Clan", "[TC]")
-
-	if _, body := h.browser("4510186", "claninvite",
-		map[string]any{"id": clan, "to": "4120041"}); decode[status](t, body).Status != "success" {
-		t.Fatalf("claninvite refused: %s", body)
-	}
-
-	_, body := h.browser("4510186", "clanviewinvites", map[string]any{"id": clan})
-	env := decode[struct {
-		Status  string   `json:"status"`
-		Payload []person `json:"payload"`
-	}](t, body)
-	if len(env.Payload) != 1 || env.Payload[0].Name != "Shifter" {
-		t.Fatalf("clan invites: %+v", env)
-	}
-	if env.Payload[0].Since == "" || env.Payload[0].Since == "0" {
-		t.Fatalf("invite carries no date, since = %q", env.Payload[0].Since)
-	}
-	if env.Payload[0].Online != 1 {
-		t.Fatalf("a player seen just now should read online, got %d", env.Payload[0].Online)
-	}
-}
-
-func TestAuthInfoEndpointForTheGameServer(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186")
-
-	clan := h.makeClan("4510186", "Test Clan", "[TC]")
-	if _, body := h.browser("4510186", "userclan",
-		map[string]any{"id": clan}); decode[status](t, body).Status != "success" {
-		t.Fatalf("wear tag: %s", body)
-	}
-
-	// Deliberately unauthenticated: a game server has no player token, and a
-	// name and clan tag are public anyway.
-	resp, err := http.Get(h.srv.URL + "/tn/server/authinfo?guid=4510186")
+	resp, err := ts.Client().PostForm(ts.URL+"/cert", url.Values{
+		"guid": {"1001"}, "uuid": {"session-1001"},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
-		t.Fatalf("open lookup should be 200, got %d", resp.StatusCode)
-	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
 
-	// The exact record the game's auth-info format wants, so the mod can use it
-	// verbatim: Name TAB Tag TAB Append TAB guid / count / one line per clan.
-	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
-	if len(lines) != 3 {
-		t.Fatalf("expected header, count and one clan line, got %q", body)
+	var out struct {
+		Cert string `json:"cert"`
 	}
-	header := strings.Split(lines[0], "\t")
-	if len(header) != 4 || header[0] != "orange01" || header[1] != "[TC]" ||
-		header[2] != "0" || header[3] != "4510186" {
-		t.Fatalf("header record: %q", lines[0])
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
 	}
-	if lines[1] != "1" {
-		t.Fatalf("clan count: %q", lines[1])
+
+	records := strings.Split(out.Cert, "\n")
+	if len(records) < 3 {
+		t.Fatalf("certificate has %d records: %q", len(records), out.Cert)
 	}
-	if fields := strings.Split(lines[2], "\t"); len(fields) != 6 || fields[0] != "Test Clan" {
-		t.Fatalf("clan record: %q", lines[2])
+	if got := strings.Split(records[0], "\t"); len(got) != 4 || got[3] != "1001" {
+		t.Errorf("record 0 = %q, want a four-field quad ending in the GUID", records[0])
+	}
+	if records[1] != "1" {
+		t.Errorf("record 1 = %q, want the tribe count", records[1])
+	}
+	if fields := strings.Split(records[2], "\t"); len(fields) != 6 || fields[4] != "4" {
+		t.Errorf("record 2 = %q, want six fields with the admin level in field 4",
+			records[2])
 	}
 }
 
-func TestUnknownMethodIsNotImplemented(t *testing.T) {
-	h := newHarness(t)
-	h.seed("4510186")
+// The mail sequence argument is a high-water mark and filtering on it is not
+// optional: the pane caches what it is handed and polls again with the highest
+// id it has, so an unfiltered server makes the inbox grow without bound.
+func TestMailHonoursTheHighWaterMark(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
 
-	if code, _ := h.browser("4510186", "nosuchmethod", nil); code != http.StatusNotImplemented {
-		t.Fatalf("expected 501, got %d", code)
+	db(t, ts, "1001", "scalar", "5", "") // create the account
+	db(t, ts, "1002", "scalar", "5", "") // and the recipient
+	db(t, ts, "1001", "scalar", "5",
+		"warrior-1002\t\tFirst\tHello.")
+
+	first := rows(t, db(t, ts, "1002", "array", "1", "0"))
+	if len(first) != 1 {
+		t.Fatalf("first poll returned %d rows, want 1", len(first))
+	}
+	id := strings.SplitN(first[0], "\t", 2)[0]
+
+	again := rows(t, db(t, ts, "1002", "array", "1", id))
+	if len(again) != 0 {
+		t.Errorf("polling with the high-water mark returned %d rows, want 0: %v",
+			len(again), again)
+	}
+}
+
+// Blocking is enforced at send time so a blocked sender's mail never occupies
+// the mailbox, and the refusal is deliberately indistinguishable from success:
+// telling a sender they are blocked invites them to work around it. The hit
+// counter is what fills the stock dialog's "# Blocked Emails" column.
+func TestBlockingIsSilentAndCounted(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	db(t, ts, "1001", "scalar", "5", "")
+	db(t, ts, "1002", "scalar", "5", "")
+
+	if got := statusCode(db(t, ts, "1002", "scalar", "9", "warrior-1001")); got != "0" {
+		t.Fatalf("blocking failed: %v", got)
+	}
+	if got := statusCode(db(t, ts, "1001", "scalar", "5",
+		"warrior-1002\t\tBlocked\tHello.")); got != "0" {
+		t.Errorf("a blocked send reported failure to the sender: %v", got)
+	}
+
+	if got := rows(t, db(t, ts, "1002", "array", "1", "0")); len(got) != 0 {
+		t.Errorf("blocked mail was delivered: %v", got)
+	}
+
+	blocks := rows(t, db(t, ts, "1002", "array", "2", ""))
+	if len(blocks) != 1 {
+		t.Fatalf("block list has %d rows, want 1", len(blocks))
+	}
+	if hits := strings.Split(blocks[0], "\t")[4]; hits != "1" {
+		t.Errorf("field 4 of the block row is %q, want the hit count 1", hits)
+	}
+}
+
+// The client hides administration controls by rank, but that is a convenience:
+// a player can issue any ordinal directly, so every rule is checked again here.
+func TestRankGateIsEnforcedServerSide(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
+	db(t, ts, "1002", "scalar", "5", "") // exists, not a member
+
+	answer := db(t, ts, "1002", "scalar", "15",
+		"Big Sucka Fishes\t1\tRewritten by a stranger.")
+	if statusCode(answer) == "0" {
+		t.Errorf("a non-member rewrote a tribe description: %v", answer["status"])
+	}
+
+	// And the refusal has to be a sentence: webbrowser.cs:927 puts status
+	// field 1 straight into a MessageBoxOK.
+	msg := strings.SplitN(answer["status"].(string), "\t", 2)[1]
+	if msg == "" || !strings.ContainsAny(msg, " ") {
+		t.Errorf("refusal is not a sentence: %q", msg)
+	}
+}
+
+// An invitation is delivered by mail, because the client has no query that
+// lists a player's own invitations -- so the link in that body is the only way
+// one can ever be answered.
+func TestInvitationArrivesAsMailWithAWorkingLink(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
+	db(t, ts, "1002", "scalar", "5", "")
+
+	if got := statusCode(db(t, ts, "1001", "scalar", "27",
+		"Big Sucka Fishes\twarrior-1002")); got != "0" {
+		t.Fatalf("invite failed: %v", got)
+	}
+
+	got := rows(t, db(t, ts, "1002", "array", "1", "0"))
+	if len(got) != 1 {
+		t.Fatalf("the invited warrior has %d messages, want 1", len(got))
+	}
+
+	// The body starts at field 17 and the client rejoins it TAB-separated, so
+	// the newline written here is the TAB GuiMLTextCtrl::onURL splits on.
+	body := strings.Split(got[0], "\t")[17:]
+	joined := strings.Join(body, "\t")
+	if !strings.Contains(joined, "<a:acceptinvite\tBig Sucka Fishes\twarrior-1002>") {
+		t.Errorf("no working accept link in the body: %q", joined)
+	}
+	if !strings.Contains(joined, "<a:rejectinvite\t") {
+		t.Errorf("no reject link in the body: %q", joined)
 	}
 }

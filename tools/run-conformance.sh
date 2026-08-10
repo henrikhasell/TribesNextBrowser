@@ -34,39 +34,38 @@ sleep 1
 
 "$ROOT/tools/deploy.sh" "$PORT" >/dev/null || exit 1
 
-LOAD='exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
-      exec("tnbrowser/session.cs"); exec("tnbrowser/api.cs");
-      exec("tnbrowser/panes.cs");
-      exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");
-      exec("tnbrowser/mail.cs");'
+# The shim is loaded by the mod's own autoexec at boot; only the tests need
+# exec'ing. GuidOverride stands in for a TribesNext login the container does
+# not have -- the seed data is keyed on that guid.
+LOAD='$TNB::GuidOverride = "4510186";'
 
 # The suites set $TNB::Host themselves; auth stays on the mock, which mints
 # session tokens the way TribesNext's robot login does.
 SPLIT="\$TNB::AuthHost = \"$AUTH\";"
 
 echo
-echo "== api + session, against the Go backend =="
+echo "== ordinal sweep, against the Go backend =="
 reseed
-$CONSOLE "$LOAD" 'exec("tests/api_test.cs");' \
-    "TNBApiSelfTest(\"$DATA\"); $SPLIT" \
-    --until '$TNBApiTest::Pass + $TNBApiTest::Fail >= 36' --until-timeout 120 >/dev/null 2>&1
-$CONSOLE 'echo("CONFORMANCE-API pass=" @ $TNBApiTest::Pass @ " fail=" @ $TNBApiTest::Fail); if ($TNBApiTest::Fail > 0) echo($TNBApiTest::Failures);' 2>&1 \
+$CONSOLE "$LOAD" 'exec("tests/sweep_test.cs");' \
+    "TNBSweepSelfTest(\"$DATA\"); $SPLIT" \
+    --until '$TNBSweep::Done' --until-timeout 180 >/dev/null 2>&1
+$CONSOLE 'echo("CONFORMANCE-API pass=" @ $TNBSweep::Pass @ " fail=" @ $TNBSweep::Fail); if ($TNBSweep::Fail > 0) echo($TNBSweep::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-API|\(got "
 
 echo
-echo "== gui, against the Go backend =="
+echo "== browser, against the Go backend =="
 reseed
-$CONSOLE "$LOAD" 'exec("tests/gui_test.cs");' \
-    "TNBGuiSelfTest(\"$DATA\", 1); $SPLIT" \
-    --until '$TNBGuiTest::Done' --until-timeout 150 >/dev/null 2>&1
-$CONSOLE 'echo("CONFORMANCE-GUI pass=" @ $TNBGuiTest::Pass @ " fail=" @ $TNBGuiTest::Fail); if ($TNBGuiTest::Fail > 0) echo($TNBGuiTest::Failures);' 2>&1 \
+$CONSOLE "$LOAD" 'exec("tests/browser_test.cs");' \
+    "TNBBrowserSelfTest(\"$DATA\"); $SPLIT" \
+    --until '$TNBBrowserTest::Done' --until-timeout 150 >/dev/null 2>&1
+$CONSOLE 'echo("CONFORMANCE-GUI pass=" @ $TNBBrowserTest::Pass @ " fail=" @ $TNBBrowserTest::Fail); if ($TNBBrowserTest::Fail > 0) echo($TNBBrowserTest::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-GUI|\(got |\(missing "
 
 echo
 echo "== mail, against the Go backend =="
 reseed
 $CONSOLE "$LOAD" 'exec("tests/mail_test.cs");' \
-    "TNBMailSelfTest(\"$DATA\", 1); $SPLIT" \
+    "TNBMailSelfTest(\"$DATA\"); $SPLIT" \
     --until '$TNBMailTest::Done' --until-timeout 150 >/dev/null 2>&1
 $CONSOLE 'echo("CONFORMANCE-MAIL pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-MAIL|\(got |\(missing "

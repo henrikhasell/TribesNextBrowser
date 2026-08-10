@@ -59,10 +59,18 @@ if ($TNB::Host $= "")
 if ($TNB::LoginURI $= "")
    $TNB::LoginURI = "/tn/robot/robot_login.php";
 
-// Documented JSON browser API. Authorises with the guid/uuid pair minted by
-// the robot login above.
-if ($TNB::BrowserURI $= "")
-   $TNB::BrowserURI = "/tn/json/json_browser.php";
+// The database proxy. One endpoint for all 61 stored-procedure ordinals the
+// shipped community scripts issue, and the reason this backend cannot be
+// TribesNext's: json_browser.php speaks methods and JSON objects, not ordinals
+// and rows. Authorises with the same guid/uuid pair the robot login mints.
+if ($TNB::DbURI $= "")
+   $TNB::DbURI = "/db";
+
+// The identity WONGetAuthInfo() hands to the shipped scripts. Separate from the
+// proxy because it is not one of WON's ordinals -- the real client had the
+// certificate inside the process, delivered by a login this one does not run.
+if ($TNB::CertURI $= "")
+   $TNB::CertURI = "/cert";
 
 // How often to ping the session so it stays alive, in seconds. The reference
 // tournament client used 10 minutes.

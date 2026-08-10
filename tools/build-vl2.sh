@@ -5,8 +5,11 @@
 # directory's loose files *plus the contents of its .vl2 archives*, so paths
 # inside the archive are resolved exactly as if they had been unpacked into the
 # mod directory. That is why the archive root must be the mod root: the entry
-# for the browser window has to be "tnbrowser/gui/TNBrowserGui.gui", not
-# "TNBrowser/tnbrowser/gui/TNBrowserGui.gui".
+# for the shim has to be "tnbrowser/dbproxy.cs", not
+# "TNBrowser/tnbrowser/dbproxy.cs".
+#
+# The client package contains no .gui file, and that is the point rather than an
+# omission: the community screens a player sees are the shipped ones.
 #
 # Install:  drop the .vl2 into GameData/<MOD>/ and launch with -mod <MOD>
 #
@@ -61,6 +64,9 @@ OUTDIR="${OUTDIR:-$ROOT/dist}"
 command -v zip >/dev/null || { echo "zip is required" >&2; exit 1; }
 mkdir -p "$OUTDIR"
 
+# SOURCE_DATE_EPOCH is the reproducible-builds convention; honour it if set.
+STAMP="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}"
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -107,8 +113,18 @@ pack() {
             bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$HOST" ;;
     esac
 
+    # Stamp every entry with one timestamp so a rebuild of unchanged sources
+    # produces an identical archive. Without this, `git status` reports dist/
+    # as modified after every test run, which trains you to ignore it.
+    #
+    # The stamp is the last commit's date rather than a fixed epoch, because the
+    # engine only recompiles a script when the source is newer than its .dso: a
+    # 2001 timestamp would let a stale .dso from a previous install shadow every
+    # file in the archive.
+    find "$stage" -exec touch -h -d "@$STAMP" {} +
+
     cd "$stage"
-    zip -0 -q -r "$out" "$@" -x '*.dso' -x '.*' -x '*/.*'
+    zip -0 -X -q -r "$out" "$@" -x '*.dso' -x '.*' -x '*/.*'
     echo "Built $out"
     unzip -l "$out" | tail -n +4 | head -n -2 | awk '{print "  " $4}' | sed '/^  $/d'
     echo

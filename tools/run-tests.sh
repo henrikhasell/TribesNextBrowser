@@ -1,12 +1,12 @@
 #!/bin/bash
 # Run the TNBrowser test suites against a patched container and a fresh mock.
 #
-# The mock holds its fixtures in memory and the write tests mutate them
-# (promotions, invitations, profile edits), so it is restarted before *each*
-# suite rather than once per run. Sharing one mock across suites makes the API
-# suite's writes surface as GUI-suite failures -- which is exactly what happened
-# the first time this was wired up: the API suite promotes a member and rewrites
-# a profile, then the GUI suite asserts on the original fixture values.
+# The mock holds its fixtures in memory and every suite writes to them -- the
+# sweep alone sends mail, deletes mail, invites a warrior and edits two
+# profiles -- so it is restarted before *each* suite rather than once per run.
+# Sharing one mock across suites makes an earlier suite's writes surface as a
+# later suite's failures, which is exactly what happened the first time this was
+# wired up.
 #
 # Usage: ./tools/run-tests.sh [port]
 set -uo pipefail
@@ -25,56 +25,52 @@ restart_mock() {
     # this script's own command line, so the runner would kill its own shell.
     pkill -f "^python3 .*mockserver\.py" 2>/dev/null
     sleep 0.4
-    (setsid python3 "$ROOT/tools/mockserver.py" --port "$MOCK_PORT" \
+    (setsid python3 "$ROOT/tools/mockserver.py" --port "$MOCK_PORT" --open-auth \
         > /tmp/tnbrowser-mock.log 2>&1 &)
     sleep 1
 }
 
-# Against the mock the client is in its TribesNext-compatible configuration:
-# auth and data are the same host, and the extras only a TNBrowser backend can
-# serve stay hidden.
-LOAD='exec("tnbrowser/settings.cs"); exec("tnbrowser/json.cs");
-      exec("tnbrowser/session.cs"); exec("tnbrowser/api.cs");
-      exec("tnbrowser/panes.cs");
-      exec("tnbrowser/clanprops.cs"); exec("tnbrowser/playerprops.cs");
-      exec("tnbrowser/mail.cs");'
+# The shim is loaded by the mod's own autoexec at boot, so nothing needs
+# exec'ing here beyond the test files. GuidOverride stands in for a TribesNext
+# login the container does not have: the mock accepts any account, and the guid
+# is what its fixtures are keyed on.
+SETUP='$TNB::GuidOverride = "4510186";'
 
 echo "== deploying =="
 "$ROOT/tools/deploy.sh" "$PORT" >/dev/null || exit 1
 
 echo
 echo "== json parser =="
-$CONSOLE "$LOAD" 'exec("tests/json_test.cs"); TNBJsonSelfTest();' 2>&1 \
+$CONSOLE "$SETUP" 'exec("tests/json_test.cs"); TNBJsonSelfTest();' 2>&1 \
     | grep -E "^FAIL|TNBJSONRESULT"
 
 echo
-echo "== api + session =="
+echo "== ordinal sweep =="
 restart_mock
-$CONSOLE "$LOAD" 'exec("tests/api_test.cs");' \
-    "TNBApiSelfTest(\"$HOST_ADDR\");" \
-    --until '$TNBApiTest::Pass + $TNBApiTest::Fail >= 36' \
-    --until-timeout 120 >/dev/null 2>&1
+$CONSOLE "$SETUP" 'exec("tests/sweep_test.cs");' \
+    "TNBSweepSelfTest(\"$HOST_ADDR\");" \
+    --until '$TNBSweep::Done' --until-timeout 180 >/dev/null 2>&1
 
-$CONSOLE 'echo("TNBAPIRESULT pass=" @ $TNBApiTest::Pass @ " fail=" @ $TNBApiTest::Fail); if ($TNBApiTest::Fail > 0) echo($TNBApiTest::Failures);' 2>&1 \
-    | grep -E "TNBAPIRESULT|\(got "
+# The steps run from schedule() callbacks, so their console output lands
+# between a runner's polls instead of on our connection. Read the tally back.
+$CONSOLE 'echo("TNBSWEEPRESULT pass=" @ $TNBSweep::Pass @ " fail=" @ $TNBSweep::Fail); if ($TNBSweep::Fail > 0) echo($TNBSweep::Failures);' 2>&1 \
+    | grep -E "TNBSWEEPRESULT|\(got |\(missing "
 
 echo
-echo "== gui =="
+echo "== browser =="
 restart_mock
-$CONSOLE "$LOAD" 'exec("tests/gui_test.cs");' \
-    "TNBGuiSelfTest(\"$HOST_ADDR\", 0);" \
-    --until '$TNBGuiTest::Done' --until-timeout 120 >/dev/null 2>&1
+$CONSOLE "$SETUP" 'exec("tests/browser_test.cs");' \
+    "TNBBrowserSelfTest(\"$HOST_ADDR\");" \
+    --until '$TNBBrowserTest::Done' --until-timeout 120 >/dev/null 2>&1
 
-# The GUI steps run from schedule() callbacks, so their console output lands
-# between --until polls instead of on our connection. Read the recorded tally.
-$CONSOLE 'echo("TNBGUIRESULT pass=" @ $TNBGuiTest::Pass @ " fail=" @ $TNBGuiTest::Fail); if ($TNBGuiTest::Fail > 0) echo($TNBGuiTest::Failures);' 2>&1 \
-    | grep -E "TNBGUIRESULT|\(got |\(missing "
+$CONSOLE 'echo("TNBBROWSERRESULT pass=" @ $TNBBrowserTest::Pass @ " fail=" @ $TNBBrowserTest::Fail); if ($TNBBrowserTest::Fail > 0) echo($TNBBrowserTest::Failures);' 2>&1 \
+    | grep -E "TNBBROWSERRESULT|\(got |\(missing "
 
 echo
 echo "== mail =="
 restart_mock
-$CONSOLE "$LOAD" 'exec("tests/mail_test.cs");' \
-    "TNBMailSelfTest(\"$HOST_ADDR\", 0);" \
+$CONSOLE "$SETUP" 'exec("tests/mail_test.cs");' \
+    "TNBMailSelfTest(\"$HOST_ADDR\");" \
     --until '$TNBMailTest::Done' --until-timeout 120 >/dev/null 2>&1
 
 $CONSOLE 'echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \

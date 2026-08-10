@@ -23,6 +23,15 @@ T2="${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/plugins/cache/tribes-2-modding-skill/tri
 
 docker exec "$NAME" bash -lc "find '$GAME_DATA' -name '*.dso' -newermt '2020-01-01' -delete 2>/dev/null || true"
 
+# Clear the script trees before copying, so a file DELETED here disappears
+# there. docker cp only ever adds, and a left-behind script is worse than a
+# stale one: TNBEnsureGui-style loaders skip a .gui whose object already
+# exists, so a screen removed from the source went on rendering in the
+# container until somebody noticed it should not.
+docker exec "$NAME" bash -lc \
+    "rm -rf '$GAME_DATA/$MOD/scripts' '$GAME_DATA/$MOD/tnbrowser' \
+            '$GAME_DATA/$MOD/tnbserver' '$GAME_DATA/$MOD/tests'"
+
 # The mod's own tree.
 docker cp "$ROOT/$MOD/." "${NAME}:${GAME_DATA}/${MOD}/"
 

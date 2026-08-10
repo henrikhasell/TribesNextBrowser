@@ -1,10 +1,11 @@
-// TNBrowser -- TribesNext browser API client
+// TNBrowser -- the HTTP request queue
 //
-// Every documented method of json_browser.php, each wrapped in a function that
-// takes a callback. Requests are queued and issued one at a time over a single
-// HTTPObject, the way the reference tournament client does: the engine gives
-// each connection object one set of callbacks, so overlapping requests would
-// interleave their response bodies.
+// One queue, one connection object, one request in flight. The engine gives
+// each HTTPObject a single set of callbacks, so two overlapping transfers would
+// interleave their response bodies; everything that talks to the backend goes
+// through here for that reason. dbproxy.cs sits on top of it and is the only
+// caller that matters -- it turns the shipped scripts' DatabaseQuery() into a
+// request and the answer back into rows.
 //
 // Callbacks are invoked as
 //
@@ -17,8 +18,8 @@
 // copy anything it wants to keep rather than store the node.
 //
 // Authentication is the guid/uuid pair from session.cs. The session is
-// established lazily -- calling any method with no session negotiates one
-// first and then runs the request.
+// established lazily -- enqueuing with no session negotiates one first and then
+// runs the request.
 
 //-----------------------------------------------------------------------------
 // Queue
@@ -71,14 +72,6 @@ function TNBApiCursorIdle()
 
    if (isObject(Canvas))
       Canvas.setCursor(DefaultCursor);
-}
-
-// Browser-API convenience wrapper. Mail goes through TNBApiEnqueueOn with the
-// mail endpoint; both share this one queue so two requests can never overlap on
-// the single connection object.
-function TNBApiEnqueue(%method, %payload, %callback, %ctx, %usePost)
-{
-   TNBApiEnqueueOn($TNB::BrowserURI, %method, %payload, %callback, %ctx, %usePost);
 }
 
 function TNBApiEnqueueOn(%uri, %method, %payload, %callback, %ctx, %usePost)
@@ -359,167 +352,6 @@ function TNBApiComplete(%body)
 
    TNBJsonFree(%root);
    TNBApiPumpSoon();
-}
-
-//-----------------------------------------------------------------------------
-// Read methods
-//-----------------------------------------------------------------------------
-
-function TNBApiUserSearch(%query, %cb, %ctx)
-{
-   TNBApiEnqueue("usersearch", TNBJsonObject("q", %query), %cb, %ctx, 0);
-}
-
-function TNBApiUserView(%guid, %cb, %ctx)
-{
-   TNBApiEnqueue("userview", TNBJsonObject("id", %guid), %cb, %ctx, 0);
-}
-
-function TNBApiUserHistory(%guid, %cb, %ctx)
-{
-   TNBApiEnqueue("userhistory", TNBJsonObject("id", %guid), %cb, %ctx, 0);
-}
-
-function TNBApiClanSearch(%query, %cb, %ctx)
-{
-   TNBApiEnqueue("clansearch", TNBJsonObject("q", %query), %cb, %ctx, 0);
-}
-
-function TNBApiClanView(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("clanview", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-function TNBApiClanHistory(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("clanhistory", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-function TNBApiUserInvites(%cb, %ctx)
-{
-   TNBApiEnqueue("userinvites", "", %cb, %ctx, 0);
-}
-
-function TNBApiClanViewInvites(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("clanviewinvites", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-//-----------------------------------------------------------------------------
-// Own-account methods
-//-----------------------------------------------------------------------------
-
-function TNBApiSetInfo(%text, %cb, %ctx)
-{
-   TNBApiEnqueue("userinfo", TNBJsonObject("info", %text), %cb, %ctx, 1);
-}
-
-function TNBApiSetWebsite(%url, %cb, %ctx)
-{
-   TNBApiEnqueue("usersite", TNBJsonObject("site", %url), %cb, %ctx, 1);
-}
-
-// Clan whose tag to wear. -1 clears the active tag.
-function TNBApiSetActiveClan(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("userclan", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-// Rejected by the backend during the beta; wired up so it reports the server's
-// own refusal rather than being silently missing.
-function TNBApiChangeName(%name, %cb, %ctx)
-{
-   TNBApiEnqueue("username", TNBJsonObject("name", %name), %cb, %ctx, 1);
-}
-
-function TNBApiAcceptInvite(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("useraccept", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-function TNBApiRejectInvite(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("userreject", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-function TNBApiLeaveClan(%clanId, %cb, %ctx)
-{
-   TNBApiEnqueue("userleave", TNBJsonObject("id", %clanId), %cb, %ctx, 0);
-}
-
-function TNBApiCreateClan(%tag, %append, %name, %cb, %ctx)
-{
-   TNBApiEnqueue("createclan",
-                 TNBJsonObject("tag", %tag, "append", %append, "name", %name),
-                 %cb, %ctx, 1);
-}
-
-//-----------------------------------------------------------------------------
-// Clan administration
-//-----------------------------------------------------------------------------
-
-function TNBApiSetClanInfo(%clanId, %text, %cb, %ctx)
-{
-   TNBApiEnqueue("claninfo", TNBJsonObject("id", %clanId, "v", %text), %cb, %ctx, 1);
-}
-
-function TNBApiSetClanName(%clanId, %name, %cb, %ctx)
-{
-   TNBApiEnqueue("clanname", TNBJsonObject("id", %clanId, "v", %name), %cb, %ctx, 1);
-}
-
-function TNBApiSetClanWebsite(%clanId, %url, %cb, %ctx)
-{
-   TNBApiEnqueue("clansite", TNBJsonObject("id", %clanId, "v", %url), %cb, %ctx, 1);
-}
-
-function TNBApiSetClanPicture(%clanId, %path, %cb, %ctx)
-{
-   TNBApiEnqueue("clanpicture", TNBJsonObject("id", %clanId, "v", %path), %cb, %ctx, 0);
-}
-
-function TNBApiSetClanRecruiting(%clanId, %on, %cb, %ctx)
-{
-   TNBApiEnqueue("clanrecruit",
-                 TNBJsonObject("id", %clanId, "v", (%on ? "yes" : "no")),
-                 %cb, %ctx, 0);
-}
-
-function TNBApiSetClanTag(%clanId, %tag, %append, %cb, %ctx)
-{
-   TNBApiEnqueue("clantag",
-                 TNBJsonObject("id", %clanId, "tag", %tag,
-                               "append", (%append ? "yes" : "no")),
-                 %cb, %ctx, 0);
-}
-
-function TNBApiInvitePlayer(%clanId, %targetGuid, %cb, %ctx)
-{
-   TNBApiEnqueue("claninvite", TNBJsonObject("id", %clanId, "to", %targetGuid),
-                 %cb, %ctx, 0);
-}
-
-// Rank is 0-4; title is the free-text rank name shown in the roster.
-function TNBApiSetRank(%clanId, %targetGuid, %rank, %title, %cb, %ctx)
-{
-   TNBApiEnqueue("clanrank",
-                 TNBJsonObject("id", %clanId, "to", %targetGuid,
-                               "rank", %rank, "title", %title),
-                 %cb, %ctx, 1);
-}
-
-function TNBApiKickMember(%clanId, %targetGuid, %cb, %ctx)
-{
-   TNBApiEnqueue("clankick", TNBJsonObject("id", %clanId, "to", %targetGuid),
-                 %cb, %ctx, 0);
-}
-
-// Disbanding is an authorisation that can be withdrawn while the clan lives.
-function TNBApiDisbandClan(%clanId, %authorise, %cb, %ctx)
-{
-   TNBApiEnqueue("clandisband",
-                 TNBJsonObject("id", %clanId, "v", (%authorise ? "yes" : "no")),
-                 %cb, %ctx, 0);
 }
 
 echo("TNBrowser: api.cs loaded");

@@ -1,24 +1,33 @@
-// Package api serves the wire protocol the Tribes 2 client already speaks.
+// Package api is the front door: four routes, and nothing that knows what an
+// ordinal means.
 //
-// Paths, parameter names and response shapes are TribesNext's, so pointing the
-// mod at this server is a one-line change on the client. The behaviour is the
-// behaviour tools/mockserver.py encodes, which was itself written against the
-// published json_browser.phps -- the two are kept comparable on purpose so the
-// existing client test suites act as a conformance check for this server.
+//	POST /db                  one stored-procedure ordinal (internal/dbproxy)
+//	POST /cert                the identity WONGetAuthInfo() hands the scripts
+//	GET  /tn/server/authinfo  the game-server mod's clan lookup
+//	GET  /healthz
+//
+// The interesting thing about this file is what is no longer in it. It used to
+// serve json_browser.php and json_mail.php -- TribesNext's method-and-JSON
+// protocol -- because the mod was a set of hand-built screens that spoke it.
+// The mod now runs the shipped screens instead, and the shipped screens speak
+// ordinals, so the whole method table went with them.
+//
+// Authentication did not change and is not ours: a player proves who they are
+// to TribesNext with their RSA key, and internal/auth asks TribesNext whether
+// the resulting token is real. This server holds no passwords and no keys. The
+// one place json_browser.php survives is inside that check, as somebody else's
+// verification oracle -- which is a different thing from a protocol we speak.
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
-	"github.com/henrik/tnbrowser-server/internal/model"
+	"github.com/henrik/tnbrowser-server/internal/dbproxy"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -28,60 +37,185 @@ type Server struct {
 	Log      *slog.Logger
 }
 
-// payload is the decoded JSON `payload` parameter. Every field the protocol
-// uses appears here; methods read the ones they need.
+// request is the decoded `payload` parameter of /db.
 //
-// Numeric fields are json.RawMessage-ish strings because the client sends them
-// quoted ("id":"7") while some callers send them bare -- flexible on input,
-// strict on output.
-type payload struct {
-	ID     string `json:"id"`
-	To     string `json:"to"`
-	Q      string `json:"q"`
-	V      string `json:"v"`
-	Tag    string `json:"tag"`
-	Append string `json:"append"`
-	Rank   string `json:"rank"`
-	Title  string `json:"title"`
-	Name   string `json:"name"`
-	Info   string `json:"info"`
-	Site   string `json:"site"`
-	// Extensions beyond TribesNext parity.
-	Folder  string `json:"folder"`
-	Subject string `json:"subject"`
-	Body    string `json:"body"`
+// Args stays the single tab-joined string the call site assembled. Splitting it
+// client-side would mean deciding a field count, and three ordinals genuinely
+// vary theirs -- scalar 14 sends one field or three depending on which of its
+// call sites fired.
+//
+// MaxRows is carried and not used. It is nominally a row cap, but three call
+// sites put a page number in that slot instead (webnews.cs:467,
+// webforums.cs:602, :920) and a fourth puts a real limit there (:935), so it
+// cannot be read as a cap without capping the wrong thing. Ordinals that need a
+// bound pick their own.
+type request struct {
+	Form    string `json:"form"`
+	Ordinal string `json:"ordinal"`
+	MaxRows string `json:"maxRows"`
+	Args    string `json:"args"`
 }
-
-func (p payload) id64() int64 {
-	n, _ := strconv.ParseInt(strings.TrimSpace(p.ID), 10, 64)
-	return n
-}
-
-// truthy accepts every spelling the protocol uses for yes: the original PHP
-// took "true", "yes" or 1 interchangeably, and the client sends "yes"/"no".
-func truthy(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "1", "true", "yes", "on":
-		return true
-	}
-	return false
-}
-
-// handler is one API method. Returning a *store.UserError produces
-// {"status":"error","msg":...}; any other error is a fault and becomes a 500.
-type handler func(ctx context.Context, guid string, p payload) (any, error)
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/tn/json/json_browser.php", s.dispatch(s.browserMethods()))
-	mux.HandleFunc("/tn/json/json_mail.php", s.dispatch(s.mailMethods()))
-	// Not a client endpoint: the game-server mod's clan lookup.
+	mux.HandleFunc("/db", s.handleDB)
+	mux.HandleFunc("/cert", s.handleCert)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	return s.logRequests(mux)
+}
+
+//-----------------------------------------------------------------------------
+// The database proxy
+//-----------------------------------------------------------------------------
+
+func (s *Server) handleDB(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+
+	var req request
+	if raw := r.FormValue("payload"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &req); err != nil {
+			writeJSON(w, dbproxy.Answer{
+				Status: "1\tThe community server could not read that request.",
+				Result: "0",
+				Rows:   []string{},
+			})
+			return
+		}
+	}
+
+	if req.Form != dbproxy.Scalar && req.Form != dbproxy.Array {
+		writeJSON(w, dbproxy.Answer{
+			Status: "1\tUnknown query form " + req.Form + ".",
+			Result: "0",
+			Rows:   []string{},
+		})
+		return
+	}
+
+	answer, err := dbproxy.Dispatch(c, req.Form, req.Ordinal, req.Args)
+	if err != nil {
+		// A fault, not a refusal. Dispatch has already turned everything the
+		// player could have caused into a well-formed non-zero status, so
+		// reaching here means we are broken and should say so as a 500 rather
+		// than dress it up as a rejected request.
+		s.Log.Error("ordinal failed", "form", req.Form, "ordinal", req.Ordinal, "err", err)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+
+	if answer.Rows == nil {
+		answer.Rows = []string{}
+	}
+	writeJSON(w, answer)
+}
+
+//-----------------------------------------------------------------------------
+// The certificate
+//-----------------------------------------------------------------------------
+
+func (s *Server) handleCert(w http.ResponseWriter, r *http.Request) {
+	c, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+
+	cert, err := dbproxy.Certificate(c)
+	if err != nil {
+		s.Log.Error("certificate failed", "guid", c.GUID, "err", err)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+	writeJSON(w, struct {
+		Cert string `json:"cert"`
+	}{cert})
+}
+
+// handleAuthInfo is the same record, unauthenticated and as plain text.
+//
+// Deliberately open. A game server has no player token and needs none: a
+// warrior name and a clan tag are on the scoreboard of every server that player
+// joins, so guarding this would only add a shared secret to distribute and
+// rotate, for data anyone can read by joining a game.
+//
+// It answers in the layout the game's auth-info format wants, so the server mod
+// can drop it into %client.t2csri_authInfo without reformatting -- which is the
+// same layout WONGetAuthInfo() hands the client scripts, because it is the same
+// record. One producer, two encodings.
+func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
+	guid := r.FormValue("guid")
+	if guid == "" {
+		fatal(w, http.StatusNotImplemented, "501 Not Implemented")
+		return
+	}
+
+	cert, err := dbproxy.Certificate(&dbproxy.Ctx{
+		Ctx: r.Context(), Store: s.Store, GUID: guid,
+	})
+	if err != nil {
+		// An unknown player is not an error: they simply have no tag here, and
+		// the mod should leave their name alone.
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("\n"))
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	_, _ = w.Write([]byte("\n" + cert + "\n"))
+}
+
+//-----------------------------------------------------------------------------
+// Shared front-door work
+//-----------------------------------------------------------------------------
+
+// authenticate parses the request, verifies the session upstream and returns
+// the context a handler runs in. It writes the failure itself and reports
+// false, so a caller is a two-line guard.
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.Ctx, bool) {
+	if err := r.ParseForm(); err != nil {
+		fatal(w, http.StatusBadRequest, "400 Bad Request")
+		return nil, false
+	}
+
+	guid := r.FormValue("guid")
+	uuid := r.FormValue("uuid")
+	if guid == "" || uuid == "" {
+		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+		return nil, false
+	}
+
+	id, err := s.Verifier.Verify(r.Context(), guid, uuid)
+	if err != nil {
+		if errors.Is(err, auth.ErrUnauthorised) {
+			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+			return nil, false
+		}
+		// Upstream is broken, not the player. 503 keeps that distinction, and
+		// the client reports it as a server problem rather than silently
+		// dropping the session.
+		s.Log.Error("upstream verification failed", "err", err)
+		fatal(w, http.StatusServiceUnavailable, "503 Service Unavailable")
+		return nil, false
+	}
+
+	if err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name); err != nil {
+		s.Log.Error("ensure account", "err", err, "guid", id.GUID)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return nil, false
+	}
+
+	return &dbproxy.Ctx{
+		Ctx:   r.Context(),
+		Store: s.Store,
+		GUID:  id.GUID,
+		Name:  id.Name,
+	}, true
 }
 
 // logRequests writes one line per request: what was asked, by whom, what came
@@ -101,9 +235,7 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 
 		// Read the form only after the handler has run. Calling ParseForm here
 		// would consume a POST body and, because ParseForm caches, would stop
-		// dispatch's own call from ever reporting a malformed one as 400.
-		// r.Form is populated by then; the query string covers requests that
-		// failed before it was.
+		// authenticate's own call from ever reporting a malformed one as 400.
 		field := func(k string) string {
 			if r.Form != nil {
 				return r.Form.Get(k)
@@ -119,8 +251,13 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 			"dur", time.Since(start).Round(time.Millisecond).String(),
 			"remote", r.RemoteAddr,
 		}
-		if m := field("method"); m != "" {
-			attrs = append(attrs, "api", m)
+		if p := field("payload"); p != "" {
+			// The ordinal, not the arguments: those carry mail bodies and
+			// profile text.
+			var req request
+			if err := json.Unmarshal([]byte(p), &req); err == nil {
+				attrs = append(attrs, "q", req.Form+" "+req.Ordinal)
+			}
 		}
 		if g := field("guid"); g != "" {
 			attrs = append(attrs, "guid", g)
@@ -158,89 +295,18 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// dispatch is the shared front door: parse, verify the session, run the method.
-func (s *Server) dispatch(methods map[string]handler) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if err := r.ParseForm(); err != nil {
-			fatal(w, http.StatusBadRequest, "400 Bad Request")
-			return
-		}
-
-		guid := r.FormValue("guid")
-		uuid := r.FormValue("uuid")
-		method := r.FormValue("method")
-
-		if guid == "" || uuid == "" {
-			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
-			return
-		}
-		if method == "" {
-			fatal(w, http.StatusNotImplemented, "501 Not Implemented")
-			return
-		}
-
-		fn, ok := methods[method]
-		if !ok {
-			fatal(w, http.StatusNotImplemented, "501 Not Implemented")
-			return
-		}
-
-		id, err := s.Verifier.Verify(r.Context(), guid, uuid)
-		if err != nil {
-			if errors.Is(err, auth.ErrUnauthorised) {
-				fatal(w, http.StatusUnauthorized, "401 Authentication Required")
-				return
-			}
-			// Upstream is broken, not the player. 503 keeps that distinction,
-			// and the client reports it as a server problem rather than
-			// silently dropping the session.
-			s.Log.Error("upstream verification failed", "err", err)
-			fatal(w, http.StatusServiceUnavailable, "503 Service Unavailable")
-			return
-		}
-
-		if err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name); err != nil {
-			s.Log.Error("ensure account", "err", err, "guid", id.GUID)
-			fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
-			return
-		}
-
-		var p payload
-		if raw := r.FormValue("payload"); raw != "" {
-			if err := json.Unmarshal([]byte(raw), &p); err != nil {
-				writeJSON(w, model.Status{Status: "error", Msg: "malformed payload"})
-				return
-			}
-		}
-
-		result, err := fn(r.Context(), id.GUID, p)
-		if err != nil {
-			var ue *store.UserError
-			if errors.As(err, &ue) {
-				writeJSON(w, model.Status{Status: "error", Msg: ue.Msg})
-				return
-			}
-			s.Log.Error("method failed", "method", method, "err", err)
-			fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
-			return
-		}
-		writeJSON(w, result)
-	}
-}
-
-// writeJSON emits the body, preceded by the blank line the live server sends.
-// The client trims it, but reproducing it keeps the two backends
-// byte-comparable when debugging with curl.
+// writeJSON emits the body, preceded by the blank line the live TribesNext
+// server sends. The client trims it either way; reproducing it keeps a curl
+// session against either backend byte-comparable.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("\n"))
 
-	// HTML escaping off: Go would turn < and > into \u003c/\u003e, and profile
-	// text legitimately contains markup like <a:www.example.com>link</a> that the
-	// game renders. PHP did not escape it, so neither do we -- the client parser
-	// would cope either way, but keeping the bytes identical means the two
-	// backends can be compared directly.
+	// HTML escaping off: Go would turn < and > into </>, and rows
+	// legitimately carry markup the game renders -- every invitation mail has
+	// an <a:acceptinvite...> link in its body, and a warrior profile can have
+	// one too.
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(v)
@@ -253,14 +319,4 @@ func fatal(w http.ResponseWriter, code int, text string) {
 	w.Header().Set("Content-Type", "text/html")
 	w.WriteHeader(code)
 	_, _ = w.Write([]byte("<h1>Fatal Error</h1><h2>" + text + "</h2>"))
-}
-
-// notFoundIsEmpty turns a missing subject into an empty result, which is what
-// the original did: viewing a clan that does not exist answers [] rather than
-// an error.
-func notFoundIsEmpty(v any, err error) (any, error) {
-	if errors.Is(err, store.ErrNotFound) {
-		return []any{}, nil
-	}
-	return v, err
 }

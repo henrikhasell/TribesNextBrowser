@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Stand-in for the TribesNext community backend.
+"""Stand-in for the TNBrowser community backend.
 
-Serves the documented shapes of the robot session endpoint and the JSON browser
-API so the mod's GUI, parser and API layers can be developed and tested without
-touching the live server -- which is beta, rate-limits under repeated probing,
-and would need a real account for every write.
+Serves the robot session endpoint, the database proxy (`/db`) and the identity
+certificate (`/cert`), so the mod's shim, parser and session layers can be
+developed and tested without touching a real backend or a real database.
+
+It is deliberately a second implementation of the same row schemas the Go
+server produces, rather than a thin fake. The two are driven by the same test
+suites inside the real game, so a difference between them is a real behavioural
+difference -- which is the whole point of having both. Where this file and
+`server/internal/dbproxy` disagree about a field index, one of them is wrong
+about what the shipped client reads.
 
 Plain HTTP on purpose. The client verifies certificates against
 curl-ca-bundle.crt, so a self-signed HTTPS mock would simply fail to connect;
@@ -33,6 +39,7 @@ import random
 import re
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -51,8 +58,9 @@ USERS = {
         "name": "orange01",
         "tag": "[TC]",
         "append": "0",
-        "creation": str(NOW - 400 * 86400),
+        "creation": NOW - 400 * 86400,
         "website": "www.tribesnext.com",
+        "graphic": "texticons/twb/twb_Missilelauncher.jpg",
         "info": "Testing the in-game browser.\n\nSecond paragraph with a "
                 'quote: "shazbot!" and a <a:www.example.com>link</a>.',
         "online": "1",
@@ -68,8 +76,9 @@ USERS = {
         "name": "Shifter",
         "tag": "[TC]",
         "append": "0",
-        "creation": str(NOW - 900 * 86400),
+        "creation": NOW - 900 * 86400,
         "website": "",
+        "graphic": "",
         "info": "Long-time defender. Ask me about mortar arcs.",
         "online": "0",
         "memberships": [
@@ -82,8 +91,9 @@ USERS = {
         "name": "Ravage",
         "tag": "",
         "append": "0",
-        "creation": str(NOW - 120 * 86400),
+        "creation": NOW - 120 * 86400,
         "website": "example.org",
+        "graphic": "",
         "info": "",
         "online": "1",
         "memberships": [],
@@ -93,8 +103,9 @@ USERS = {
         "name": "orangeade",
         "tag": "-CA-",
         "append": "1",
-        "creation": str(NOW - 30 * 86400),
+        "creation": NOW - 30 * 86400,
         "website": "",
+        "graphic": "",
         "info": "Unicode check: café naïve — and a backslash \\ too.",
         "online": "0",
         "memberships": [
@@ -113,14 +124,13 @@ CLANS = {
         "recruiting": "1",
         "website": "www.testclan.example",
         "info": "We are a test clan. Scrims Tuesdays.",
-        "creation": str(NOW - 800 * 86400),
+        "creation": NOW - 800 * 86400,
         "picture": "",
-        "active": "1",
         "members": [
-            {"guid": "4510186", "name": "orange01", "tag": "[TC]",
-             "append": "0", "rank": "4", "title": "Leader", "online": "1"},
-            {"guid": "4120041", "name": "Shifter", "tag": "[TC]",
-             "append": "0", "rank": "2", "title": "Officer", "online": "0"},
+            {"guid": "4510186", "rank": "4", "title": "Leader",
+             "joined": NOW - 800 * 86400},
+            {"guid": "4120041", "rank": "2", "title": "Officer",
+             "joined": NOW - 700 * 86400},
         ],
     },
     "9": {
@@ -131,390 +141,931 @@ CLANS = {
         "recruiting": "0",
         "website": "",
         "info": "",
-        "creation": str(NOW - 200 * 86400),
+        "creation": NOW - 200 * 86400,
         "picture": "",
-        "active": "1",
         "members": [
-            {"guid": "4510186", "name": "orange01", "tag": "[TC]",
-             "append": "0", "rank": "1", "title": "Member", "online": "1"},
-            {"guid": "4300777", "name": "orangeade", "tag": "-CA-",
-             "append": "1", "rank": "0", "title": "Recruit", "online": "0"},
+            {"guid": "4510186", "rank": "1", "title": "Member",
+             "joined": NOW - 200 * 86400},
+            {"guid": "4300777", "rank": "0", "title": "Recruit",
+             "joined": NOW - 30 * 86400},
         ],
     },
 }
 
-# Invitations pending for a player, keyed by invitee GUID.
-USER_INVITES = {
-    "4510186": [
-        {"sender": {"guid": "4120041", "name": "Shifter", "tag": "[TC]",
-                    "append": "0"},
-         "clan": {"id": "7", "name": "Test Clan", "tag": "[TC]", "append": "0"}},
-    ],
-}
-
-# Invitations a clan has outstanding, keyed by clan id.
+# Outstanding invitations and join requests, keyed by clan id. "kind" is what
+# tells an invitation the tribe sent from a request a warrior made -- the wire
+# cannot distinguish them, only who is asking can.
 CLAN_INVITES = {
     "7": [
-        {"guid": "4200999", "name": "Ravage", "tag": "", "append": "0"},
+        {"id": "31", "guid": "4200999", "from": "4120041",
+         "created": NOW - 2 * 86400, "kind": "invite"},
     ],
 }
 
-# Mail fixtures. The live server's item field names could not be observed (the
-# inbox is empty and sending is disabled), so the mock uses the spellings
-# TNBMailField tries first; the client accepts several alternatives.
+BUDDIES = {
+    "4510186": [
+        {"guid": "4120041", "since": NOW - 300 * 86400},
+        {"guid": "4300777", "since": NOW - 20 * 86400},
+    ],
+}
+
+BLOCKS = {
+    "4510186": [
+        {"guid": "4200999", "hits": "3"},
+    ],
+}
+
+# Mail. The row schema is the client's: field 12 is what makes an unread row
+# render bold, and the body is a line count followed by that many fields.
 MAIL = {
     "4510186": [
-        {"id": "11", "from": "Shifter", "fromguid": "4120041",
-         "subject": "Scrim on Tuesday?", "date": str(NOW - 3600),
-         "body": "We are short a defender. Interested?", "unread": "1"},
-        {"id": "12", "from": "Ravage", "fromguid": "4200999",
-         "subject": "gg", "date": str(NOW - 86400),
-         "body": "Good games last night.\n\n-- Ravage", "unread": "0"},
+        {"id": 11, "from": "4120041", "to": "4510186",
+         "subject": "Scrim on Tuesday?", "created": NOW - 3600,
+         "body": "We are short a defender. Interested?",
+         "read": False, "folder": "inbox", "cc": False,
+         "tolist": "orange01", "cclist": ""},
+        {"id": 12, "from": "4200999", "to": "4510186",
+         "subject": "gg", "created": NOW - 86400,
+         "body": "Good games last night.\n-- Ravage",
+         "read": True, "folder": "inbox", "cc": False,
+         "tolist": "orange01", "cclist": ""},
+        {"id": 9, "from": "4120041", "to": "4510186",
+         "subject": "Old news", "created": NOW - 20 * 86400,
+         "body": "Already thrown away.",
+         "read": True, "folder": "deleted", "cc": False,
+         "tolist": "orange01", "cclist": ""},
     ],
 }
 
 HISTORY = {
-    "user": [
-        {"time": str(NOW - 86400), "event": "Joined clan Test Clan"},
-        {"time": str(NOW - 200000), "event": "Changed profile text"},
-    ],
-    "clan": [
-        {"time": str(NOW - 86400), "event": "orange01 promoted Shifter"},
-        {"time": str(NOW - 500000), "event": "Clan created"},
+    "4510186": [
+        {"time": NOW - 86400, "event": "Joined tribe Test Clan"},
+        {"time": NOW - 200000, "event": "Changed profile text"},
     ],
 }
+
+NEWS = [
+    {"id": 501, "category": 105, "headline": "Local stand-in serves news",
+     "body": "Nothing in a retail install can render this pane.",
+     "author": "4510186", "created": NOW - 4 * 86400, "updated": NOW - 4 * 86400},
+]
+
+FORUMS = [{"id": 1, "name": "General Discussion", "flag": 0, "security": 0}]
+
+TOPICS = [
+    {"id": 71, "forum": 1, "subject": "Welcome", "author": "4510186",
+     "created": NOW - 10 * 86400, "updated": NOW - 9 * 86400},
+]
+
+POSTS = [
+    {"id": 900, "topic": 71, "parent": 0, "author": "4510186",
+     "subject": "Welcome", "body": "First post.", "created": NOW - 10 * 86400,
+     "deleted": False},
+]
+
+# weblinksmenu::defaultList (weblinks.cs:1-56) is the client's own fallback and
+# the only surviving record of what this pane served. Three of it is enough to
+# prove the row shape.
+WEB_LINKS = [
+    {"name": "PlanetTribes", "address": "www.planettribes.com"},
+    {"name": "Tribal War", "address": "www.tribalwar.com"},
+    {"name": "5 Assed Monkey", "address": "www.5assedmonkey.com"},
+]
+
+# What the shipped dialogs set their own preview controls to
+# (WarriorPropertiesDlg.gui:348, TribePropertiesDlg.gui:618). An empty graphic
+# renders a permanently blank picture, because $PlayerGfx and $TribeGfx are the
+# fallbacks the client uses and no shipped script assigns either.
+DEFAULT_PLAYER_GFX = "texticons/twb/twb_Missilelauncher.jpg"
+DEFAULT_TRIBE_GFX = "texticons/twb/twb_Laserrifle.jpg"
+
+
+def graphic_or(path, fallback):
+    """A graphic beginning with a digit would be read as a tribe count by the
+    other consumer of ordinal 23 field 9."""
+    return fallback if (not path or path[0].isdigit()) else path
 
 STATE_LOCK = threading.Lock()
 SESSIONS = {}       # uuid -> guid
 CHALLENGES = {}     # guid -> nonce
 
 
-def ok():
-    return {"status": "success"}
+# --------------------------------------------------------------------------
+# Row helpers -- the same conventions as server/internal/dbproxy/dispatch.go
+# --------------------------------------------------------------------------
+
+def tab(*parts):
+    return "\t".join("" if p is None else str(p) for p in parts)
 
 
-def err(msg):
-    return {"status": "error", "msg": msg}
+def flag(b):
+    return "1" if b else "0"
 
 
-def clan_rank_of(clan_id, guid):
-    for m in CLANS.get(clan_id, {}).get("members", []):
+def date(unix):
+    if not unix:
+        return ""
+    return datetime.fromtimestamp(int(unix), timezone.utc).strftime("%Y-%m-%d")
+
+
+def body_lines(text):
+    """An empty body is ONE empty line, not zero.
+
+    Every row schema that carries a body ends "line count then that many
+    lines", and a zero-line body makes every field after it land one place
+    early -- which renders as a plausible pane with the wrong data in it.
+    """
+    return (text or "").replace("\r\n", "\n").split("\n")
+
+
+def with_body(head, text):
+    lines = body_lines(text)
+    return tab(head, len(lines), *lines)
+
+
+def ml_link(label, verb, *args):
+    """A working <a:...> link in a mail body.
+
+    The separator is a newline here and a TAB by the time the client sees it:
+    the body is split on newlines into row fields, rejoined TAB-separated by
+    getFields(%row,17) (webemail.cs:1147), and printed verbatim by EmailGetBody.
+    GuiMLTextCtrl::onURL then splits the URL on TAB. For tribe invitations this
+    is the only channel there is.
+    """
+    return "<a:" + "\n".join((verb,) + args) + ">" + label + "</a>"
+
+
+def ok_status(*extra):
+    return tab("0", "OK", *extra)
+
+
+def ok_rows(rows):
+    return {"status": ok_status(), "result": str(len(rows)), "rows": rows}
+
+
+def ok_result(result):
+    return {"status": ok_status(), "result": result, "rows": []}
+
+
+def ok_with(status, result):
+    return {"status": status, "result": result, "rows": []}
+
+
+def fail(message):
+    return {"status": tab("1", message), "result": "0", "rows": []}
+
+
+def fields(args):
+    return args.split("\t") if args else []
+
+
+def field(args, n):
+    f = fields(args)
+    return f[n] if 0 <= n < len(f) else ""
+
+
+def num(s):
+    try:
+        return int(str(s).strip())
+    except (TypeError, ValueError):
+        return 0
+
+
+# --------------------------------------------------------------------------
+# Fixture lookups
+# --------------------------------------------------------------------------
+
+def user_by_name(name):
+    name = (name or "").strip().lower()
+    for u in USERS.values():
+        if u["name"].lower() == name:
+            return u
+    # getLinkName may have decorated the name with a tribe tag on either side.
+    for c in CLANS.values():
+        tag_ = c["tag"].lower()
+        if not tag_:
+            continue
+        bare = None
+        if name.startswith(tag_):
+            bare = name[len(tag_):]
+        elif name.endswith(tag_):
+            bare = name[:-len(tag_)]
+        if bare:
+            for u in USERS.values():
+                if u["name"].lower() == bare:
+                    return u
+    return None
+
+
+def clan_by_name(name):
+    name = (name or "").strip()
+    if name in CLANS:
+        return CLANS[name]
+    for c in CLANS.values():
+        if c["name"].lower() == name.lower():
+            return c
+    return None
+
+
+def quad(guid):
+    u = USERS.get(guid)
+    if u is None:
+        return ("(unknown)", "", "1", guid)
+    return (u["name"], u["tag"], u["append"], guid)
+
+
+def rank_in(clan, guid):
+    for m in clan["members"]:
         if m["guid"] == guid:
-            return int(m["rank"])
+            return num(m["rank"])
     return -1
 
 
 # --------------------------------------------------------------------------
-# Browser API methods
+# The ordinals
 # --------------------------------------------------------------------------
 
-def m_usersearch(guid, p):
-    q = (p.get("q") or "").lower()
-    if not q:
-        return []
-    return [{"guid": u["guid"], "name": u["name"], "tag": u["tag"],
-             "append": u["append"]}
-            for u in USERS.values() if u["name"].lower().startswith(q)]
+ORDINALS = {}
 
 
-def m_userview(guid, p):
-    u = USERS.get(str(p.get("id", "")))
-    return u if u else {}
+def on(form, ordinal):
+    def register(fn):
+        ORDINALS[(form, str(ordinal))] = fn
+        return fn
+    return register
 
 
-def m_userhistory(guid, p):
-    return HISTORY["user"]
+# -- browser: profiles ------------------------------------------------------
+
+@on("scalar", 22)
+def get_tribe_profile(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    status = ok_status(c["id"], c["name"], c["tag"], c["append"],
+                       c["recruiting"], graphic_or(c["picture"], DEFAULT_TRIBE_GFX))
+    return ok_with(status, c["info"])
 
 
-def m_clansearch(guid, p):
-    q = (p.get("q") or "").lower()
-    if not q:
-        return []
-    return [{"id": c["id"], "name": c["name"]}
-            for c in CLANS.values() if q in c["name"].lower()]
+@on("scalar", 23)
+def get_warrior_profile(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    gfx = graphic_or(u["graphic"], DEFAULT_PLAYER_GFX)
+    status = ok_status(u["name"], u["tag"], u["append"], u["guid"],
+                       date(u["creation"]), u["online"], u["website"], gfx)
+    return ok_with(status, u["info"])
 
 
-def m_clanview(guid, p):
-    c = CLANS.get(str(p.get("id", "")))
-    return c if c else {}
+# -- browser: lists ---------------------------------------------------------
+
+def search_args(args):
+    count = num(field(args, 2))
+    if count <= 0 or count > 200:
+        count = 100
+    return field(args, 0), num(field(args, 1)), count
 
 
-def m_clanhistory(guid, p):
-    return HISTORY["clan"]
+@on("array", 3)
+def search_warriors(guid, args):
+    q, start, count = search_args(args)
+    hits = [u for u in USERS.values() if q.lower() in u["name"].lower()]
+    hits.sort(key=lambda u: u["name"])
+    return ok_rows([tab(u["guid"], u["name"], u["tag"], u["append"])
+                    for u in hits[start:start + count]])
 
 
-def m_userinvites(guid, p):
-    return USER_INVITES.get(guid, [])
+@on("array", 4)
+def search_tribes(guid, args):
+    q, start, count = search_args(args)
+    hits = [c for c in CLANS.values() if q.lower() in c["name"].lower()]
+    hits.sort(key=lambda c: c["name"])
+    return ok_rows([tab(c["id"], c["name"], c["tag"])
+                    for c in hits[start:start + count]])
 
 
-def m_clanviewinvites(guid, p):
-    cid = str(p.get("id", ""))
-    if clan_rank_of(cid, guid) < 2:
-        return err("insufficient rank to view invitations")
-    return {"status": "success", "payload": CLAN_INVITES.get(cid, [])}
+@on("array", 5)
+def get_buddy_list(guid, args):
+    who = guid
+    if field(args, 0):
+        u = user_by_name(field(args, 0))
+        if u is None:
+            return fail("There is no warrior by that name.")
+        who = u["guid"]
+    rows = []
+    for b in BUDDIES.get(who, []):
+        n, t, a, g = quad(b["guid"])
+        rows.append(tab(n, t, a, g, date(b["since"]),
+                        USERS.get(b["guid"], {}).get("online", "0")))
+    return ok_rows(rows)
 
 
-def m_userinfo(guid, p):
-    USERS[guid]["info"] = p.get("info", "")
-    return ok()
+@on("array", 6)
+def get_tribe_members(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    can_admin = rank_in(c, guid) >= 2
+    rows = []
+    for m in c["members"]:
+        n, t, a, g = quad(m["guid"])
+        rows.append(tab(n, t, a, g, m["title"], m["rank"], date(m["joined"]),
+                        "", flag(can_admin and g != guid),
+                        USERS.get(g, {}).get("online", "0")))
+    return ok_rows(rows)
 
 
-def m_usersite(guid, p):
-    USERS[guid]["site"] = p.get("site", "")
-    USERS[guid]["website"] = p.get("site", "")
-    return ok()
+@on("array", 10)
+def get_tribe_news(guid, args):
+    # Cut before release: the pane sets state = "done" unconditionally and
+    # discards whatever arrives (webbrowser.cs:1410).
+    if clan_by_name(field(args, 0)) is None:
+        return fail("There is no tribe by that name.")
+    return ok_rows([])
 
 
-def m_userclan(guid, p):
-    cid = str(p.get("id", ""))
-    if cid == "-1":
-        USERS[guid]["tag"] = ""
-        USERS[guid]["append"] = "0"
-        return ok()
-    if clan_rank_of(cid, guid) < 0:
-        return err("not a member of that clan")
-    USERS[guid]["tag"] = CLANS[cid]["tag"]
-    USERS[guid]["append"] = CLANS[cid]["append"]
-    return ok()
+@on("array", 11)
+def get_tribe_invites(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    rows = []
+    for inv in CLAN_INVITES.get(c["id"], []):
+        rows.append(tab(inv["id"], date(inv["created"]),
+                        *quad(inv["from"]), *quad(inv["guid"]),
+                        flag(inv["from"] == guid),
+                        USERS.get(inv["guid"], {}).get("online", "0")))
+    return ok_rows(rows)
 
 
-def m_username(guid, p):
-    # Disabled server-side during the beta; the real backend rejects it too.
-    return err("name changes are disabled")
+@on("array", 12)
+def get_warrior_history(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    # The only ordinal whose rows are not field-structured: each is one line of
+    # display text, appended verbatim to a GuiMLTextCtrl.
+    return ok_rows([date(h["time"]) + "  " + h["event"]
+                    for h in HISTORY.get(u["guid"], [])])
 
 
-def m_useraccept(guid, p):
-    cid = str(p.get("id", ""))
-    pending = USER_INVITES.get(guid, [])
-    match = [i for i in pending if i["clan"]["id"] == cid]
-    if not match:
-        return err("no such invitation")
-    USER_INVITES[guid] = [i for i in pending if i["clan"]["id"] != cid]
-    u = USERS[guid]
-    CLANS[cid]["members"].append(
-        {"guid": guid, "name": u["name"], "tag": u["tag"],
-         "append": u["append"], "rank": "0", "title": "Recruit",
-         "online": u["online"]})
-    u["memberships"].append(
-        {"id": cid, "name": CLANS[cid]["name"], "rank": "0",
-         "title": "Recruit", "tag": CLANS[cid]["tag"],
-         "append": CLANS[cid]["append"]})
-    return ok()
+@on("array", 13)
+def get_warrior_tribe_list(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    rows = []
+    for m in u["memberships"]:
+        rows.append(tab(m["name"], "", m["id"], m["rank"],
+                        flag(num(m["rank"]) >= 2), m["title"]))
+    return ok_rows(rows)
 
 
-def m_userreject(guid, p):
-    cid = str(p.get("id", ""))
-    USER_INVITES[guid] = [i for i in USER_INVITES.get(guid, [])
-                          if i["clan"]["id"] != cid]
-    return ok()
+# -- browser: writes --------------------------------------------------------
+
+def _clan_write(guid, args, message, min_rank=2):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < min_rank:
+        return fail("You do not have the rank to do that.")
+    return ok_result(message)
 
 
-def m_userleave(guid, p):
-    cid = str(p.get("id", ""))
-    if clan_rank_of(cid, guid) < 0:
-        return err("not a member of that clan")
-    CLANS[cid]["members"] = [m for m in CLANS[cid]["members"]
-                             if m["guid"] != guid]
-    USERS[guid]["memberships"] = [m for m in USERS[guid]["memberships"]
-                                  if m["id"] != cid]
-    return ok()
+@on("scalar", 15)
+def set_tribe_description(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 2:
+        return fail("You do not have the rank to do that.")
+    c["info"] = "\n".join(fields(args)[2:])
+    return ok_result("The tribe description has been updated.")
 
 
-def m_createclan(guid, p):
-    tag, name = p.get("tag", ""), p.get("name", "")
-    if not tag or not name:
-        return err("tag and name are required")
-    if any(c["name"].lower() == name.lower() for c in CLANS.values()):
-        return err("a clan with that name already exists")
-    cid = str(max(int(k) for k in CLANS) + 1)
-    append = "1" if str(p.get("append", "")).lower() in ("1", "yes", "true") else "0"
-    u = USERS[guid]
-    CLANS[cid] = {
-        "id": cid, "name": name, "tag": tag, "append": append,
-        "recruiting": "0", "website": "", "info": "",
-        "creation": str(NOW), "picture": "", "active": "1",
-        "members": [{"guid": guid, "name": u["name"], "tag": u["tag"],
-                     "append": u["append"], "rank": "4", "title": "Leader",
-                     "online": u["online"]}],
-    }
-    u["memberships"].append({"id": cid, "name": name, "rank": "4",
-                             "title": "Leader", "tag": tag, "append": append})
-    return ok()
+@on("scalar", 16)
+def create_tribe(guid, args):
+    name = field(args, 0)
+    if not name:
+        return fail("A tribe needs a name.")
+    if clan_by_name(name) is not None:
+        return fail("There is already a tribe by that name.")
+    return ok_result(name)
 
 
-def _clan_setter(field, min_rank=3):
-    def setter(guid, p):
-        cid = str(p.get("id", ""))
-        if cid not in CLANS:
-            return err("no such clan")
-        if clan_rank_of(cid, guid) < min_rank:
-            return err("insufficient rank")
-        CLANS[cid][field] = p.get("v", "")
-        return ok()
-    return setter
+@on("scalar", 17)
+def set_warrior_description(guid, args):
+    USERS[guid]["info"] = "" if args == "NONE" else args
+    return ok_result("Your description has been updated.")
 
 
-m_claninfo = _clan_setter("info", min_rank=2)
-m_clanname = _clan_setter("name")
-m_clansite = _clan_setter("website", min_rank=2)
-m_clanpicture = _clan_setter("picture", min_rank=2)
+@on("scalar", 18)
+def delete_tribe(guid, args):
+    return _clan_write(guid, args,
+                       "Your disband authorisation has been recorded.", 4)
 
 
-def m_clanrecruit(guid, p):
-    cid = str(p.get("id", ""))
-    if clan_rank_of(cid, guid) < 2:
-        return err("insufficient rank")
-    v = str(p.get("v", "")).lower()
-    CLANS[cid]["recruiting"] = "1" if v in ("1", "yes", "true") else "0"
-    return ok()
+@on("scalar", 19)
+def kick_member(guid, args):
+    c = clan_by_name(field(args, 1))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 2:
+        return fail("You do not have the rank to do that.")
+    return ok_result("That warrior has been removed from the tribe.")
 
 
-def m_clantag(guid, p):
-    cid = str(p.get("id", ""))
-    if clan_rank_of(cid, guid) < 3:
-        return err("insufficient rank")
-    CLANS[cid]["tag"] = p.get("tag", "")
-    CLANS[cid]["append"] = "1" if str(p.get("append", "")).lower() in (
-        "1", "yes", "true") else "0"
-    return ok()
+@on("scalar", 20)
+def toggle_tribe_flag(guid, args):
+    what = field(args, 0).lower()
+    c = clan_by_name(field(args, 1))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if what == "recruiting":
+        c["recruiting"] = flag(field(args, 2) in ("1", "yes", "true"))
+    elif what == "appending":
+        c["append"] = flag(field(args, 2) in ("1", "yes", "true"))
+    else:
+        return fail('"%s" is not a tribe flag this server knows.' % what)
+    return ok_result("Done.")
 
 
-def m_claninvite(guid, p):
-    cid, to = str(p.get("id", "")), str(p.get("to", ""))
-    if clan_rank_of(cid, guid) < 2:
-        return err("insufficient rank")
-    if to not in USERS:
-        return err("no such player")
-    if clan_rank_of(cid, to) >= 0:
-        return err("player is already a member")
-    CLAN_INVITES.setdefault(cid, []).append(
-        {"guid": to, "name": USERS[to]["name"], "tag": USERS[to]["tag"],
-         "append": USERS[to]["append"]})
-    USER_INVITES.setdefault(to, []).append({
-        "sender": {"guid": guid, "name": USERS[guid]["name"],
-                   "tag": USERS[guid]["tag"], "append": USERS[guid]["append"]},
-        "clan": {"id": cid, "name": CLANS[cid]["name"],
-                 "tag": CLANS[cid]["tag"], "append": CLANS[cid]["append"]}})
-    return ok()
+@on("scalar", 21)
+def set_member_profile(guid, args):
+    return _clan_write(guid, args, "That member's profile has been updated.", 3)
 
 
-def m_clanrank(guid, p):
-    cid, to = str(p.get("id", "")), str(p.get("to", ""))
-    try:
-        rank = int(p.get("rank", ""))
-    except ValueError:
-        return err("rank must be an integer 0 to 4")
-    if not 0 <= rank <= 4:
-        return err("rank must be an integer 0 to 4")
-    mine = clan_rank_of(cid, guid)
-    if mine < 3:
-        return err("insufficient rank")
-    if rank > mine:
-        return err("cannot promote above your own rank")
-    for m in CLANS.get(cid, {}).get("members", []):
-        if m["guid"] == to:
-            m["rank"] = str(rank)
-            m["title"] = p.get("title", m["title"])
-            for ms in USERS.get(to, {}).get("memberships", []):
-                if ms["id"] == cid:
-                    ms["rank"] = str(rank)
-                    ms["title"] = m["title"]
-            return ok()
-    return err("target is not a member")
+@on("scalar", 24)
+def leave_tribe(guid, args):
+    if clan_by_name(field(args, 0)) is None:
+        return fail("There is no tribe by that name.")
+    return ok_result("You have left the tribe.")
 
 
-def m_clankick(guid, p):
-    cid, to = str(p.get("id", "")), str(p.get("to", ""))
-    mine = clan_rank_of(cid, guid)
-    if mine < 3:
-        return err("insufficient rank")
-    if clan_rank_of(cid, to) >= mine:
-        return err("cannot kick a player of equal or higher rank")
-    CLANS[cid]["members"] = [m for m in CLANS[cid]["members"]
-                             if m["guid"] != to]
-    USERS[to]["memberships"] = [m for m in USERS[to]["memberships"]
-                                if m["id"] != cid]
-    return ok()
+@on("scalar", 25)
+def set_primary_tribe(guid, args):
+    arg = field(args, 0)
+    if arg in ("", "0", "-1"):
+        return ok_result("")
+    c = clan_by_name(arg)
+    if c is None:
+        return fail("There is no tribe by that name.")
+    return ok_result(c["name"])
 
 
-def m_clandisband(guid, p):
-    cid = str(p.get("id", ""))
-    if clan_rank_of(cid, guid) < 4:
-        return err("only the leader may authorise a disband")
-    v = str(p.get("v", "")).lower()
-    CLANS[cid]["active"] = "0" if v in ("1", "yes", "true") else "1"
-    return ok()
+@on("scalar", 26)
+def clear_buddy(guid, args):
+    BUDDIES[guid] = []
+    return ok_result("Your buddy list has been cleared.")
 
 
-METHODS = {
-    "usersearch": m_usersearch, "userview": m_userview,
-    "userhistory": m_userhistory, "username": m_username,
-    "userclan": m_userclan, "usersite": m_usersite, "userinfo": m_userinfo,
-    "userinvites": m_userinvites, "useraccept": m_useraccept,
-    "userreject": m_userreject, "userleave": m_userleave,
-    "createclan": m_createclan,
-    "clansearch": m_clansearch, "clanview": m_clanview,
-    "clanhistory": m_clanhistory, "clanrecruit": m_clanrecruit,
-    "claninfo": m_claninfo, "clantag": m_clantag, "clansite": m_clansite,
-    "clanname": m_clanname, "clanpicture": m_clanpicture,
-    "claninvite": m_claninvite, "clanviewinvites": m_clanviewinvites,
-    "clanrank": m_clanrank, "clankick": m_clankick,
-    "clandisband": m_clandisband,
-}
+@on("scalar", 27)
+def invite_to_tribe(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    u = user_by_name(field(args, 1))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    if rank_in(c, guid) < 2:
+        return fail("You do not have the rank to do that.")
+
+    # No client query lists a player's own invitations, so the invitation is
+    # mailed with links that answer it.
+    body = "\n".join([
+        USERS[guid]["name"] + " has invited you to join " + c["name"] + ".",
+        "",
+        ml_link("Accept", "acceptinvite", c["name"], u["name"]) + "    " +
+        ml_link("Reject", "rejectinvite", c["name"], u["name"]),
+    ])
+    _deliver(u["guid"], guid, "Tribe invitation: " + c["name"], body)
+    return ok_result(c["name"])
 
 
-# --------------------------------------------------------------------------
-# Mail API (json_mail.php)
+@on("scalar", 28)
+def answer_invitation(guid, args):
+    verb = field(args, 0).lower()
+    c = clan_by_name(field(args, 1))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if verb not in ("accept", "reject", "cancel"):
+        return fail('"%s" is not something that can be done with an '
+                    'invitation.' % verb)
+    return ok_result(c["name"])
+
+
+@on("scalar", 29)
+def set_tribe_graphic(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 2:
+        return fail("You do not have the rank to do that.")
+    c["picture"] = field(args, 1)
+    return ok_result("The tribe graphic has been updated.")
+
+
+@on("scalar", 30)
+def set_tribe_tag(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 3:
+        return fail("You do not have the rank to do that.")
+    c["tag"] = field(args, 1)
+    return ok_result("The tribe tag has been updated.")
+
+
+@on("scalar", 31)
+def set_player_graphic(guid, args):
+    USERS[guid]["graphic"] = field(args, 0)
+    return ok_result("Your graphic has been updated.")
+
+
+@on("scalar", 32)
+def set_player_url(guid, args):
+    USERS[guid]["website"] = field(args, 0)
+    return ok_result("Your web address has been updated.")
+
+
+@on("scalar", 33)
+def set_player_name(guid, args):
+    return fail("Your warrior name belongs to your TribesNext account and "
+                "must be changed there.")
+
+
+@on("scalar", 34)
+def request_invite(guid, args):
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if c["recruiting"] != "1":
+        return fail("That tribe is not recruiting.")
+    if rank_in(c, guid) >= 0:
+        return fail("You are already a member of that tribe.")
+
+    body = "\n".join([
+        USERS[guid]["name"] + " has asked to join " + c["name"] + ".",
+        "",
+        ml_link("Accept", "acceptinvite", c["name"], USERS[guid]["name"]) +
+        "    " +
+        ml_link("Reject", "rejectinvite", c["name"], USERS[guid]["name"]),
+    ])
+    for m in c["members"]:
+        if num(m["rank"]) >= 2:
+            _deliver(m["guid"], guid, "Join request: " + c["name"], body)
+
+    # Status field 1 goes straight into a MessageBoxOK (webbrowser.cs:1446).
+    return {"status": ok_status("Your request has been sent to the tribe's "
+                                "administrators."),
+            "result": c["name"], "rows": []}
+
+
+@on("scalar", 63)
+def post_admin_action(guid, args):
+    # WON kept its staff in tribe 1401; no fixture account is in it.
+    return fail("You do not have moderator privileges.")
+
+
+# -- email ------------------------------------------------------------------
+
+def mail_row(m):
+    head = tab(m["id"], *quad(m["from"]), *quad(m["to"]), date(m["created"]),
+               flag(m["cc"]), flag(m["folder"] == "deleted"), flag(m["read"]),
+               m["tolist"], m["cclist"], m["subject"])
+    return with_body(head, m["body"])
+
+
+@on("array", 1)
+def get_mail(guid, args):
+    # The argument is a high-water mark and filtering on it is not optional:
+    # ignoring it makes the inbox grow without bound across polls.
+    since = num(field(args, 0))
+    rows = [mail_row(m) for m in MAIL.get(guid, [])
+            if m["folder"] == "inbox" and m["id"] > since]
+    return ok_rows(rows)
+
+
+@on("array", 14)
+def get_deleted_mail(guid, args):
+    rows = [mail_row(m) for m in MAIL.get(guid, [])
+            if m["folder"] == "deleted"]
+    if not rows:
+        return {"status": ok_status("Your deleted folder is empty."),
+                "result": "0", "rows": []}
+    return ok_rows(rows)
+
+
+@on("array", 2)
+def get_block_list(guid, args):
+    rows = []
+    for b in BLOCKS.get(guid, []):
+        rows.append(tab(*quad(b["guid"]), b["hits"]))
+    return ok_rows(rows)
+
+
+def _deliver(to_guid, from_guid, subject, body):
+    box = MAIL.setdefault(to_guid, [])
+    next_id = max([m["id"] for m in box] + [100]) + 1
+    box.append({"id": next_id, "from": from_guid, "to": to_guid,
+                "subject": subject, "created": NOW, "body": body,
+                "read": False, "folder": "inbox", "cc": False,
+                "tolist": USERS.get(to_guid, {}).get("name", ""), "cclist": ""})
+
+
+@on("scalar", 5)
+def send_mail(guid, args):
+    to = field(args, 0)
+    if not to:
+        return fail("No recipient.")
+    u = user_by_name(to)
+    if u is None:
+        return fail("There is no warrior by that name.")
+    _deliver(u["guid"], guid, field(args, 2), "\n".join(fields(args)[3:]))
+    return ok_result("Your message has been sent.")
+
+
+@on("scalar", 6)
+def delete_mail(guid, args):
+    mid = num(field(args, 0))
+    for m in MAIL.get(guid, []):
+        if m["id"] == mid:
+            m["folder"] = "deleted"
+            return ok_result("Message deleted.")
+    return fail("No such message.")
+
+
+@on("scalar", 35)
+def remove_mail_permanently(guid, args):
+    mid = num(field(args, 0))
+    MAIL[guid] = [m for m in MAIL.get(guid, []) if m["id"] != mid]
+    return ok_result("Message removed.")
+
+
+@on("scalar", 7)
+def mark_mail_read(guid, args):
+    # Fire-and-forget: the only call site that passes neither a proxy object
+    # nor a key, so this answer is reassembled and thrown away.
+    mid = num(field(args, 0))
+    for m in MAIL.get(guid, []):
+        if m["id"] == mid:
+            m["read"] = True
+    return ok_result("1")
+
+
+@on("scalar", 9)
+def add_block(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    box = BLOCKS.setdefault(guid, [])
+    if not any(b["guid"] == u["guid"] for b in box):
+        box.append({"guid": u["guid"], "hits": "0"})
+    return {"status": ok_status("Mail from that warrior will no longer "
+                                "reach you."),
+            "result": "1", "rows": []}
+
+
+@on("scalar", 8)
+def remove_block(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    BLOCKS[guid] = [b for b in BLOCKS.get(guid, []) if b["guid"] != u["guid"]]
+    return {"status": ok_status("That warrior is no longer blocked."),
+            "result": "1", "rows": []}
+
+
+@on("scalar", 10)
+def add_buddy(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    box = BUDDIES.setdefault(guid, [])
+    if not any(b["guid"] == u["guid"] for b in box):
+        box.append({"guid": u["guid"], "since": NOW})
+    return {"status": ok_status("Added to your buddy list."),
+            "result": "1", "rows": []}
+
+
+@on("scalar", 11)
+def drop_buddy(guid, args):
+    u = user_by_name(field(args, 0))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    BUDDIES[guid] = [b for b in BUDDIES.get(guid, []) if b["guid"] != u["guid"]]
+    return {"status": ok_status("Removed from your buddy list."),
+            "result": "1", "rows": []}
+
+
+@on("scalar", 69)
+def get_online_status(guid, args):
+    # A fixed-width bitmap indexed by character position, not a field list.
+    return ok_result("".join(USERS.get(g, {}).get("online", "0")
+                             for g in fields(args)))
+
+
+# -- news, weblinks, forums -------------------------------------------------
 #
-# Mirrors what probing the live endpoint established: count returns the number
-# as a JSON string, read with no payload returns the list, read with an id
-# returns one message, delete takes an id, and send is refused.
+# None of these three panes has controls in a retail install, so nothing here
+# is ever rendered. They answer so the sweep exercises the framing.
+
+MOTD = ["Welcome to the local TNBrowser stand-in."]
+
+
+@on("scalar", 0)
+def get_motd(guid, args):
+    return ok_result(MOTD[0])
+
+
+@on("scalar", 4)
+def set_motd(guid, args):
+    return fail("You do not have moderator privileges.")
+
+
+def news_row(a):
+    n, t, ap, g = quad(a["author"])
+    head = tab("", a["id"], a["id"], 1, date(a["created"]), a["updated"], g, "",
+               n, t, ap, g, a["category"], a["headline"])
+    return with_body(head, a["body"])
+
+
+def _news_feed(category):
+    rows = [news_row(a) for a in NEWS if not category or a["category"] == category]
+    return {"status": ok_status(str(len(rows)), "0"),
+            "result": str(len(rows)), "rows": rows}
+
+
+@on("array", 0)
+def get_news_articles(guid, args):
+    return _news_feed(num(field(args, 1)))
+
+
+@on("array", 100)
+def get_news_by_category(guid, args):
+    return _news_feed(num(field(args, 2)))
+
+
+@on("scalar", 1)
+def post_news_article(guid, args):
+    return fail("You do not have moderator privileges.")
+
+
+@on("scalar", 2)
+def edit_news_article(guid, args):
+    return fail("You do not have moderator privileges.")
+
+
+@on("scalar", 3)
+def delete_news_article(guid, args):
+    return fail("You do not have moderator privileges.")
+
+
+@on("array", 15)
+def get_web_links(guid, args):
+    # Field 0 is a per-row status: the client accepts the row only when it is
+    # "0". On a non-zero query status it abandons the list entirely and falls
+    # back to its own 50 hardcoded sites.
+    return ok_rows([tab("0", l["name"], l["address"]) for l in WEB_LINKS])
+
+
+@on("array", 7)
+def get_forum_list(guid, args):
+    return ok_rows([tab(i, f["name"], f["flag"], f["id"])
+                    for i, f in enumerate(FORUMS)])
+
+
+@on("array", 8)
+def get_topic_list(guid, args):
+    fid = num(field(args, 0))
+    rows = []
+    for t in TOPICS:
+        if t["forum"] != fid:
+            continue
+        posts = [p for p in POSTS if p["topic"] == t["id"]]
+        rows.append(tab("", t["id"], t["subject"], len(posts), "", "",
+                        date(t["created"]), "",
+                        USERS.get(t["author"], {}).get("name", ""),
+                        "", "", "", flag(any(p["deleted"] for p in posts)),
+                        0, max([p["id"] for p in posts] + [0])))
+    return ok_rows(rows)
+
+
+@on("array", 9)
+def get_post_updates(guid, args):
+    tid, since = num(field(args, 0)), num(field(args, 1))
+    rows = []
+    for p in POSTS:
+        if p["topic"] != tid or p["id"] <= since:
+            continue
+        head = tab(flag(p["author"] == guid), "", p["id"], p["parent"], p["id"],
+                   *quad(p["author"]), "", date(p["created"]), "",
+                   flag(p["deleted"]), p["subject"])
+        rows.append(with_body(head, p["body"]))
+    # Status field 2 is the per-forum flag the client caches as ForumsGui.bflag.
+    return {"status": ok_status("0"), "result": str(len(rows)), "rows": rows}
+
+
+@on("scalar", 12)
+def post_topic_or_reply(guid, args):
+    POSTS.append({"id": max(p["id"] for p in POSTS) + 1,
+                  "topic": num(field(args, 1)) or TOPICS[0]["id"],
+                  "parent": num(field(args, 2)), "author": guid,
+                  "subject": field(args, 3),
+                  "body": "\n".join(fields(args)[4:]),
+                  "created": NOW, "deleted": False})
+    return ok_result("Posted.")
+
+
+@on("scalar", 13)
+def edit_post(guid, args):
+    pid = num(field(args, 0))
+    for p in POSTS:
+        if p["id"] == pid:
+            if p["author"] != guid:
+                return fail("That is not your post.")
+            p["subject"] = field(args, 1)
+            p["body"] = "\n".join(fields(args)[2:])
+            return ok_result("Updated.")
+    return fail("No such post.")
+
+
+@on("scalar", 14)
+def post_news_or_delete_post(guid, args):
+    # Genuinely ambiguous: three call sites, two argument shapes, three labels.
+    # The field count is the only thing that separates them.
+    if len(fields(args)) >= 3:
+        return fail("You do not have moderator privileges.")
+    pid = num(field(args, 0))
+    for p in POSTS:
+        if p["id"] == pid:
+            if p["author"] != guid:
+                return fail("That is not your post.")
+            p["deleted"] = True
+            return ok_result("Deleted.")
+    return fail("No such post.")
+
+
+@on("scalar", 60)
+def request_topic_review(guid, args):
+    return ok_result("A moderator has been notified.")
+
+
+@on("scalar", 61)
+def request_post_review(guid, args):
+    return ok_result("A moderator has been notified.")
+
+
+@on("scalar", 62)
+def remove_topic(guid, args):
+    return fail("Only forum staff may do that.")
+
+
+@on("scalar", 66)
+def lock_topic(guid, args):
+    return fail("Only forum staff may do that.")
+
+
+@on("scalar", 67)
+def unlock_topic(guid, args):
+    return fail("Only forum staff may do that.")
+
+
+@on("scalar", 68)
+def move_topic(guid, args):
+    return fail("Only forum staff may do that.")
+
+
+# --------------------------------------------------------------------------
+# The certificate
 # --------------------------------------------------------------------------
 
-def mail_count(guid, p):
-    return str(len(MAIL.get(guid, [])))
+def certificate(guid):
+    """The identity WONGetAuthInfo() hands the shipped scripts.
+
+        record 0    name TAB tag TAB append TAB guid
+        record 1    <tribe count>
+        record 2+n  name TAB tag TAB append TAB tribeId TAB adminLevel TAB title
+    """
+    u = USERS.get(guid)
+    if u is None:
+        return ""
+    records = [tab(u["name"], u["tag"], u["append"], guid),
+               str(len(u["memberships"]))]
+    for m in u["memberships"]:
+        records.append(tab(m["name"], m["tag"], m["append"], m["id"],
+                           m["rank"], m["title"]))
+    return "\n".join(records)
 
 
-def mail_read(guid, p):
-    box = MAIL.get(guid, [])
-    if not p or "id" not in p:
-        return box
-
-    # Reading a message BY ID marks it read; listing a folder does not. That
-    # asymmetry is the whole of the read model, on the real backend too
-    # (store.MailRead -> UPDATE mail SET unread = FALSE), so the mock has to
-    # reproduce it or a client that never marks anything read still passes.
-    #
-    # The reply carries the message as it was when opened, which is why the
-    # copy is taken before the flag is cleared.
-    hit = [m for m in box if m["id"] == str(p.get("id"))]
-    out = [dict(m) for m in hit]
-    for m in hit:
-        m["unread"] = "0"
-    return out
-
-
-def mail_delete(guid, p):
-    box = MAIL.get(guid, [])
-    MAIL[guid] = [m for m in box if m["id"] != str(p.get("id"))]
-    return []
-
-
-def mail_send(guid, p):
-    # The live server answers "500 Invalid Parameters" for every shape tried.
-    # Reproduced so the client's failure path is exercised rather than guessed.
-    return None
-
-
-MAIL_METHODS = {
-    "count": mail_count, "read": mail_read,
-    "delete": mail_delete, "send": mail_send,
-}
-
+# --------------------------------------------------------------------------
+# HTTP
+# --------------------------------------------------------------------------
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "MockTribesNext/1.0"
+    server_version = "MockTNBrowser/2.0"
 
     def log_message(self, fmt, *args):
         print("  %s" % (fmt % args), flush=True)
@@ -529,6 +1080,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(raw)
+
+    def _json(self, obj):
+        # The blank first line the live server sends; the client trims it.
+        self._send("\n" + json.dumps(obj), "application/json")
 
     def _deny(self, code, text):
         raw = text.encode()
@@ -555,10 +1110,14 @@ class Handler(BaseHTTPRequestHandler):
 
         if parsed.path.endswith("robot_login.php"):
             return self._login(get)
-        if parsed.path.endswith("json_browser.php"):
-            return self._browser(get)
-        if parsed.path.endswith("json_mail.php"):
-            return self._mail(get)
+        if parsed.path == "/db":
+            return self._db(get)
+        if parsed.path == "/cert":
+            return self._cert(get)
+        if parsed.path == "/tn/server/authinfo":
+            return self._authinfo(get)
+        if parsed.path == "/healthz":
+            return self._send("ok\n", "text/plain")
         return self._deny(404, "<h1>Not Found</h1>")
 
     # -- session -----------------------------------------------------------
@@ -599,73 +1158,61 @@ class Handler(BaseHTTPRequestHandler):
 
         return self._send("ERR: Nothing to do.")
 
-    # -- browser -----------------------------------------------------------
+    # -- authentication ----------------------------------------------------
 
-    def _browser(self, get):
-        guid, uuid, method = get("guid"), get("uuid"), get("method")
-
+    def _authorised(self, get):
+        guid, uuid = get("guid"), get("uuid")
         if not guid or not uuid:
-            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
-                                   "Authentication Required</h2>")
+            return None
         with STATE_LOCK:
-            authorised = SESSIONS.get(uuid) == guid or self.server.open_auth
-        if not authorised:
+            if SESSIONS.get(uuid) != guid and not self.server.open_auth:
+                return None
+        return guid if guid in USERS else None
+
+    # -- the database proxy ------------------------------------------------
+
+    def _db(self, get):
+        guid = self._authorised(get)
+        if guid is None:
             return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
                                    "Authentication Required</h2>")
 
-        fn = METHODS.get(method)
-        if fn is None:
-            return self._deny(501, "<h1>Fatal Error</h1><h2>501 Not "
-                                   "Implemented</h2>")
-
-        payload = {}
+        req = {}
         raw = get("payload")
         if raw:
             try:
-                payload = json.loads(raw)
+                req = json.loads(raw)
             except ValueError:
-                return self._send(json.dumps(err("malformed payload")))
+                return self._json(fail("The community server could not read "
+                                       "that request."))
 
-        if guid not in USERS:
-            return self._send(json.dumps(err("unknown account")))
+        form = req.get("form", "")
+        ordinal = str(req.get("ordinal", ""))
+        args = req.get("args", "")
 
-        with STATE_LOCK:
-            result = fn(guid, payload)
-        return self._send(json.dumps(result))
+        if form not in ("scalar", "array"):
+            return self._json(fail("Unknown query form %s." % form))
 
-    def _mail(self, get):
-        guid, uuid, method = get("guid"), get("uuid"), get("method")
-
-        if not guid or not uuid:
-            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
-                                   "Authentication Required</h2>")
-        with STATE_LOCK:
-            authorised = SESSIONS.get(uuid) == guid or self.server.open_auth
-        if not authorised:
-            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
-                                   "Authentication Required</h2>")
-
-        fn = MAIL_METHODS.get(method)
+        fn = ORDINALS.get((form, ordinal))
         if fn is None:
-            return self._deny(501, "<h1>Fatal Error</h1><h2>501 Not "
-                                   "Implemented</h2>")
-
-        payload = {}
-        raw = get("payload")
-        if raw:
-            try:
-                payload = json.loads(raw)
-            except ValueError:
-                return self._deny(500, "<h1>Fatal Error</h1>"
-                                       "<h2>500 Invalid Parameters</h2>")
+            return self._json(fail("This server does not implement %s "
+                                   "ordinal %s." % (form, ordinal)))
 
         with STATE_LOCK:
-            result = fn(guid, payload)
+            return self._json(fn(guid, args))
 
-        if result is None:
-            return self._deny(500, "<h1>Fatal Error</h1>"
-                                   "<h2>500 Invalid Parameters</h2>")
-        return self._send(json.dumps(result))
+    def _cert(self, get):
+        guid = self._authorised(get)
+        if guid is None:
+            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
+                                   "Authentication Required</h2>")
+        return self._json({"cert": certificate(guid)})
+
+    def _authinfo(self, get):
+        # Deliberately unauthenticated: a warrior name and a clan tag are on
+        # the scoreboard of every server that player joins.
+        cert = certificate(get("guid"))
+        return self._send("\n" + cert + "\n" if cert else "\n", "text/plain")
 
 
 def main():
@@ -683,9 +1230,10 @@ def main():
     srv.require_handshake = args.require_handshake
     srv.open_auth = args.open_auth
     srv.latency = args.latency
-    print("Mock TribesNext backend on port %d "
+    print("Mock TNBrowser backend on port %d -- %d ordinals "
           "(handshake=%s, open-auth=%s, latency=%dms)"
-          % (args.port, args.require_handshake, args.open_auth, args.latency),
+          % (args.port, len(ORDINALS), args.require_handshake,
+             args.open_auth, args.latency),
           flush=True)
     try:
         srv.serve_forever()

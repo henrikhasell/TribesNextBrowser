@@ -194,9 +194,23 @@ function TNBTestRealPayloads()
    TNBTestEq("live null append is falsey", TNBJsonBool(%r, "append"), 0);
    TNBTestEq("live numeric online is true", TNBJsonBool(%r, "online"), 1);
    TNBTestEq("live empty memberships", TNBJsonCount(TNBJsonGet(%r, "memberships")), 0);
-   TNBTestEq("live tagged name falls back to plain",
-             TNBTaggedName(TNBJsonStr(%r, "name"), TNBJsonStr(%r, "tag"),
-                           TNBJsonBool(%r, "append")), "orange01");
+   // Decorating a name with its tribe tag is no longer this mod's job: rows
+   // carry an identity quad and the shipped getTextName (webstuff.cs:19)
+   // decodes it, putting the tag after the name when append is set and before
+   // it otherwise. Asserted here because the quad is what every row schema is
+   // built around.
+   TNBTestEq("an untagged quad decodes to the bare name",
+             getField(getTextName("orange01" TAB "" TAB 0 TAB 4510186), 0),
+             "orange01");
+   TNBTestEq("append false puts the tag first",
+             getField(getTextName("orange01" TAB "[TC]" TAB 0 TAB 4510186), 0),
+             "[TC]orange01");
+   TNBTestEq("append true puts the tag last",
+             getField(getTextName("orange01" TAB "[TC]" TAB 1 TAB 4510186), 0),
+             "orange01[TC]");
+   TNBTestEq("the quad's uid survives the decode",
+             getField(getTextName("orange01" TAB "[TC]" TAB 1 TAB 4510186), 1),
+             4510186);
    TNBJsonFree(%r);
 
    // The live server prefixes its body with a blank line; the API layer trims

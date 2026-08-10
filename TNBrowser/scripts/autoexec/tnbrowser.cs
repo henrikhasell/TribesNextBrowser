@@ -3,116 +3,131 @@
 // scripts/autoexec/*.cs is exec'd automatically for every directory on the mod
 // path during boot, so this file needs no registration.
 //
-// The shipped community browser (scripts/webbrowser.cs, driven by the WON
-// DatabaseQuery transport) is left in place and untouched. This mod adds its
-// own TNB-prefixed GUIs and re-points the shell's BROWSER button at them via a
-// package, so nothing is shadowed and deactivating the package restores the
-// stock behaviour exactly.
+// This mod ships no GUI. Not one: the community screens a player sees are the
+// shipped EmailGui and TribeAndWarriorBrowserGui, driven by the shipped
+// webemail.cs and webbrowser.cs, rendering through the shipped control
+// profiles. What it replaces is the layer underneath -- DatabaseQuery(), the
+// one call every community pane makes -- so the screens are identical to
+// vanilla by construction rather than by careful copying.
+//
+// Everything below lives in a package, including the two WON identity
+// functions, so deactivatePackage(TNBrowser) puts the shipped behaviour back
+// exactly: DatabaseQuery goes back to framing dbqax down the chat socket, and
+// WONGetAuthInfo goes back to not existing.
 
 exec("tnbrowser/settings.cs");
 exec("tnbrowser/json.cs");
 exec("tnbrowser/session.cs");
 exec("tnbrowser/api.cs");
-exec("tnbrowser/panes.cs");
-exec("tnbrowser/clanprops.cs");
-exec("tnbrowser/playerprops.cs");
-exec("tnbrowser/mail.cs");
-
-// The .gui files are deliberately NOT exec'd here. autoexec runs before the
-// shell control profiles exist, and a control built against a missing profile
-// constructs successfully but renders with default styling instead of the game
-// look. TNBEnsureGuis() in panes.cs loads them on first open instead.
+exec("tnbrowser/dbproxy.cs");
 
 package TNBrowser
 {
-   // The shell's BROWSER button calls LaunchBrowser(); send it to the working
-   // implementation instead of the WON one, which cannot connect to anything.
-   function LaunchBrowser(%pane, %type)
+   //-- the database proxy ----------------------------------------------------
+
+   function DatabaseQuery(%ordinal, %args, %proxyObject, %key)
    {
-      TNBrowserOpen();
-
-      if (%pane $= "")
-         return;
-
-      if (%type $= "Tribe")
-         TNBApiClanView(%pane, "TNBOpenClanTabFromLink", %pane);
-      else if (%type $= "Warrior")
-         TNBApiUserView(%pane, "TNBOpenPlayerTabFromLink", %pane);
+      return TNBDbQuery(%ordinal, %args, %proxyObject, %key);
    }
 
-   // Same for the shell's EMAIL button: the stock LaunchEmail opens the
-   // WON-backed mail window and schedules a CheckEmail that can never succeed.
-   function LaunchEmail()
+   function DatabaseQueryArray(%ordinal, %maxRows, %args, %proxyObject, %key)
    {
-      TNBMailOpen();
+      return TNBDbQueryArray(%ordinal, %maxRows, %args, %proxyObject, %key);
    }
 
-   // The launch bar's own EMAIL, CHAT and BROWSER tabs are dead: TribesNext
-   // forces all three inactive (console_client_patches.cs) because the WON
-   // services behind them shut down in 2003. They are added by OpenLaunchTabs
-   // only when playing online, which is why they show up greyed out there and
-   // not on a LAN game.
+   function DatabaseQueryCancel(%id)
+   {
+      TNBDbQueryCancel(%id);
+   }
+
+   //-- the identity ----------------------------------------------------------
+
+   // Absent natives on a TribesNext client, so these define rather than
+   // override. See dbproxy.cs for the record layout and what pins it.
+   function WONGetAuthInfo()
+   {
+      return TNBCertGet();
+   }
+
+   // Eight sites call this after an operation that changes a tribe and two use
+   // it as an if condition (webbrowser.cs:1788, :2245), so it has to answer
+   // now. The refresh it kicks off lands a moment later; both call sites follow
+   // the condition with a UI update rather than a re-read of the certificate,
+   // which is what makes that safe.
+   function WONUpdateCertificate()
+   {
+      TNBCertRefresh();
+      return true;
+   }
+
+   //-- the launch bar --------------------------------------------------------
+
+   // The shipped shell picks its online tab set on $PlayingOnline
+   // (LaunchLanGui.cs:158), which is false here because nobody logs in to WON
+   // any more -- so GAME / EMAIL / CHAT / BROWSER is never built and the two
+   // panes this mod serves have no way in. Set it for the duration of the call
+   // and put it back immediately: the global also reaches GameGui and the
+   // server browser, and leaving it set would advertise internet play that does
+   // not exist.
+   function OpenLaunchTabs(%gotoWarriorSetup)
+   {
+      %was = $PlayingOnline;
+      $PlayingOnline = true;
+
+      // $pref::Shell::LaunchGui remembers the tab you quit on. Opening straight
+      // into Email or Browser before the certificate has arrived renders a
+      // warrior with no name and queries the empty string, so send that player
+      // to GAME this once; the tab is right there when the identity lands.
+      %remembered = $pref::Shell::LaunchGui;
+      if (!TNBCertReady() && (%remembered $= "Email" || %remembered $= "Browser"))
+         $pref::Shell::LaunchGui = "Game";
+
+      Parent::OpenLaunchTabs(%gotoWarriorSetup);
+
+      $PlayingOnline = %was;
+      $pref::Shell::LaunchGui = %remembered;
+
+      TNBCertRefresh("TNBTabsCertLoaded", "");
+   }
+
+   // TribesNext forces EMAIL, CHAT and BROWSER inactive (console_client_patches.cs)
+   // because the WON services behind all three shut down in 2003. Two of them
+   // work again; the third does not, and a dead tab is worse than no tab.
    //
-   // Adopt the two this mod implements and drop the one it does not, so the bar
-   // has no dead entries. Adopting rather than removing also stops the
-   // duplicates: viewTab() matches a tab by GUI object, not by label, so
-   // opening TNBrowserGui used to add a second "BROWSER" beside the grey one.
-   // Now it finds this tab and just selects it.
+   // Re-enabling happens after Parent:: rather than by passing %makeInactive
+   // through, because TribesNext's own override sits between this and the
+   // shipped function and sets the flag again on the way down.
    function LaunchTabView::addLaunchTab(%this, %text, %gui, %makeInactive)
    {
       if (%text $= "CHAT")
          return;
 
-      if (%text $= "EMAIL" || %text $= "BROWSER")
-      {
-         // Safe here: OpenLaunchTabs runs once the shell is up, so the control
-         // profiles these GUIs are built against already exist.
-         if (%text $= "EMAIL")
-         {
-            TNBMailEnsureGuis();
-            %gui = TNBMailGui;
-         }
-         else
-         {
-            TNBEnsureGuis();
-            %gui = TNBrowserGui;
-         }
-         %makeInactive = false;
-      }
-
-      // Re-enable after the fact rather than passing %makeInactive through:
-      // TribesNext's own override sits between this and the stock function and
-      // sets the flag again on the way down.
       %index = %this.tabCount();
       Parent::addLaunchTab(%this, %text, %gui, %makeInactive);
-      if (!%makeInactive)
-         %this.setTabActive(%index, true);
-   }
 
-   // Catches the other way in: $pref::Shell::LaunchGui remembers the last tab by
-   // name, so a player who quit on Email or Browser has OpenLaunchTabs open the
-   // stock GUI directly, which would add a dead tab back beside the live one.
-   function LaunchTabView::viewTab(%this, %text, %gui, %key)
-   {
-      if (%gui $= EmailGui)
+      if (%text $= "EMAIL" || %text $= "BROWSER")
       {
-         TNBMailEnsureGuis();
-         %gui = TNBMailGui;
-      }
-      else if (%gui $= TribeandWarriorBrowserGui)
-      {
-         TNBEnsureGuis();
-         %gui = TNBrowserGui;
-      }
+         $TNB::Tab[%text] = %index;
 
-      Parent::viewTab(%this, %text, %gui, %key);
+         // Live only once there is an identity behind them.
+         %this.setTabActive(%index, TNBCertReady());
+      }
    }
 };
 
 activatePackage(TNBrowser);
-activatePackage(TNBrowserLinks);
 
-// The API layer's queue indices have to start from a known state.
+// The two panes come alive together, because they read the same certificate.
+function TNBTabsCertLoaded(%ctx, %status, %result)
+{
+   if (%status !$= "ok" || !isObject(LaunchTabView))
+      return;
+
+   LaunchTabView.setTabActive($TNB::Tab["EMAIL"], true);
+   LaunchTabView.setTabActive($TNB::Tab["BROWSER"], true);
+}
+
+// The request queue's indices have to start from a known state.
 TNBApiInit();
 
-echo("TNBrowser: loaded (TribesNext profile and clan browser)");
+echo("TNBrowser: loaded (community browser and mail over the DatabaseQuery proxy)");
