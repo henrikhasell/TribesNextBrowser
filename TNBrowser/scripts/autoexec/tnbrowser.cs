@@ -74,20 +74,9 @@ package TNBrowser
       %was = $PlayingOnline;
       $PlayingOnline = true;
 
-      // $pref::Shell::LaunchGui remembers the tab you quit on. Opening straight
-      // into Email or Browser before the certificate has arrived renders a
-      // warrior with no name and queries the empty string, so send that player
-      // to GAME this once; the tab is right there when the identity lands.
-      %remembered = $pref::Shell::LaunchGui;
-      if (!TNBCertReady() && (%remembered $= "Email" || %remembered $= "Browser"))
-         $pref::Shell::LaunchGui = "Game";
-
       Parent::OpenLaunchTabs(%gotoWarriorSetup);
 
       $PlayingOnline = %was;
-      $pref::Shell::LaunchGui = %remembered;
-
-      TNBCertRefresh("TNBTabsCertLoaded", "");
    }
 
    // TribesNext forces EMAIL, CHAT and BROWSER inactive (console_client_patches.cs)
@@ -105,26 +94,60 @@ package TNBrowser
       %index = %this.tabCount();
       Parent::addLaunchTab(%this, %text, %gui, %makeInactive);
 
+      // Unconditionally live. An earlier version gated these on the
+      // certificate having arrived, which was wrong twice over: it made the
+      // tabs permanently dead on a client that never gets one, and it needed
+      // the identity fetched at shell startup to un-gate them -- so a player
+      // who was not logged in met a session error before touching anything.
+      // The identity is now fetched when a pane is actually opened, below.
       if (%text $= "EMAIL" || %text $= "BROWSER")
-      {
-         $TNB::Tab[%text] = %index;
+         %this.setTabActive(%index, true);
+   }
 
-         // Live only once there is an identity behind them.
-         %this.setTabActive(%index, TNBCertReady());
-      }
+   // Every route into a pane goes through here -- a tab click, viewLastTab,
+   // and the initial viewTab that OpenLaunchTabs ends with. So it is the one
+   // place to make sure there is an identity behind the two panes that read
+   // one, and the only place this mod contacts the network without the player
+   // having asked for something.
+   function LaunchTabView::onSelect(%this, %id, %text)
+   {
+      Parent::onSelect(%this, %id, %text);
+
+      %gui = %this.gui[%this.getSelectedTab()];
+      if (%gui $= EmailGui || %gui $= TribeandWarriorBrowserGui)
+         TNBCertEnsure(%gui);
    }
 };
 
 activatePackage(TNBrowser);
 
-// The two panes come alive together, because they read the same certificate.
-function TNBTabsCertLoaded(%ctx, %status, %result)
+// Fetch the certificate if we do not have one, and re-wake the pane once it
+// lands so it renders against a real identity instead of an empty name.
+//
+// The pane is shown either way. Refusing to show it would turn "you are not
+// logged in" into a tab that does nothing when clicked, which is a worse
+// failure than the shipped screens' own -- they put whatever the server says
+// in a MessageBoxOK, which is at least a sentence the player can act on.
+function TNBCertEnsure(%gui)
 {
-   if (%status !$= "ok" || !isObject(LaunchTabView))
+   if (TNBCertReady() || $TNB::CertPending)
       return;
 
-   LaunchTabView.setTabActive($TNB::Tab["EMAIL"], true);
-   LaunchTabView.setTabActive($TNB::Tab["BROWSER"], true);
+   $TNB::CertPending = 1;
+   TNBCertRefresh("TNBCertEnsureDone", %gui);
+}
+
+function TNBCertEnsureDone(%gui, %status, %result)
+{
+   $TNB::CertPending = "";
+
+   if (%status !$= "ok" || !TNBCertReady())
+      return;
+
+   // onWake reads the warrior name out of the certificate and opens that
+   // warrior's page, so the pane has to be woken again now there is one.
+   if (isObject(%gui) && Canvas.getContent() $= %gui)
+      Canvas.setContent(%gui);
 }
 
 // The request queue's indices have to start from a known state.
