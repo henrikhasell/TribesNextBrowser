@@ -169,7 +169,11 @@ func (s *Store) SetWebsite(ctx context.Context, guid, site string) error {
 			`UPDATE accounts SET website = $2 WHERE guid = $1`, guid, site); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "user", guid, "Changed profile website")
+		if site == "" {
+			return s.note(ctx, tx, "user", guid, "Cleared their web address")
+		}
+		return s.note(ctx, tx, "user", guid,
+			"Changed their web address to "+Ref(RefWeb, site))
 	})
 }
 
@@ -177,11 +181,19 @@ func (s *Store) SetWebsite(ctx context.Context, guid, site string) error {
 func (s *Store) SetActiveClan(ctx context.Context, guid string, clanID int64) error {
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		if clanID < 0 {
+			before := activeClanTx(ctx, tx, guid)
 			if _, err := tx.Exec(ctx,
 				`UPDATE accounts SET active_clan = NULL WHERE guid = $1`, guid); err != nil {
 				return err
 			}
-			return s.note(ctx, tx, "user", guid, "Cleared active clan tag")
+			// Named while it is still readable: the UPDATE above has already
+			// cleared it, so the previous wearing is only knowable from here.
+			was := activeClanNameTx(ctx, tx, guid, before)
+			if was == "" {
+				return s.note(ctx, tx, "user", guid, "Stopped wearing a tribe tag")
+			}
+			return s.note(ctx, tx, "user", guid,
+				"Stopped wearing the tag of "+Ref(RefClan, was))
 		}
 
 		// Wearing a tag requires membership -- otherwise anyone could wear any
@@ -198,7 +210,8 @@ func (s *Store) SetActiveClan(ctx context.Context, guid string, clanID int64) er
 			`UPDATE accounts SET active_clan = $2 WHERE guid = $1`, guid, clanID); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "user", guid, "Changed active clan tag")
+		return s.note(ctx, tx, "user", guid,
+			"Now wears the tag of "+Ref(RefClan, clanNameTx(ctx, tx, clanID)))
 	})
 }
 
@@ -243,4 +256,23 @@ func (s *Store) UserInvites(ctx context.Context, guid string) ([]model.Invite, e
 		out = append(out, inv)
 	}
 	return out, rows.Err()
+}
+
+// activeClanTx reads the clan whose tag a player is wearing, and
+// activeClanNameTx names it. Zero means none.
+func activeClanTx(ctx context.Context, tx pgx.Tx, guid string) int64 {
+	var id *int64
+	if err := tx.QueryRow(ctx,
+		`SELECT active_clan FROM accounts WHERE guid = $1`, guid).Scan(&id); err != nil ||
+		id == nil {
+		return 0
+	}
+	return *id
+}
+
+func activeClanNameTx(ctx context.Context, tx pgx.Tx, guid string, id int64) string {
+	if id == 0 {
+		return ""
+	}
+	return clanNameTx(ctx, tx, id)
 }

@@ -148,3 +148,27 @@ func TestUnknownOrdinalIsRefusedNotEmpty(t *testing.T) {
 		t.Errorf("unknown ordinal answered rows: %#v", answer.Rows)
 	}
 }
+
+// The history is the one ordinal whose rows are display text rather than
+// fields, which is what makes a link possible in it at all -- and what makes
+// the separator a real tab rather than the newline mlLink writes.
+func TestLinkRefsBuildsLinksTheClientFollows(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"Joined {clan:Test Clan}", "Joined <a:tribe\tTest Clan>Test Clan</a>"},
+		{"{warrior:Shifter} joined", "<a:player\tShifter>Shifter</a> joined"},
+		{"to {web:example.org}", "to <a:wwwlink\texample.org>example.org</a>"},
+		{"{clan:A} and {clan:B}",
+			"<a:tribe\tA>A</a> and <a:tribe\tB>B</a>"},
+
+		// Rows written before any of this, and rows naming a kind this does not
+		// know, are left alone rather than mangled or dropped.
+		{"Changed profile text", "Changed profile text"},
+		{"a {mystery:thing} here", "a {mystery:thing} here"},
+		{"unbalanced {clan:A", "unbalanced {clan:A"},
+	}
+	for _, c := range cases {
+		if got := linkRefs(c.in); got != c.want {
+			t.Errorf("linkRefs(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -52,7 +52,7 @@ INSERT INTO clan_invites (clan_id, guid, from_guid, created) VALUES
   (7, '4200999', '4120041', 1785000000 - 7200);
 
 INSERT INTO history (subject_type, subject_id, event, at) VALUES
-  ('user', '4510186', 'Joined clan Test Clan',      1785000000 - 86400),
+  ('user', '4510186', 'Joined {clan:Test Clan}',    1785000000 - 86400),
   ('user', '4510186', 'Changed profile text',       1785000000 - 200000),
   ('clan', '7',       'orange01 promoted Shifter',  1785000000 - 86400),
   ('clan', '7',       'Clan created',               1785000000 - 500000);

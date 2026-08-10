@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -112,6 +113,57 @@ func requireRank(ctx context.Context, q pgx.Tx, clanID int64, guid string, min i
 		return 0, refuse("insufficient rank")
 	}
 	return rank, nil
+}
+
+// Ref marks a name inside a history line as something the reader can follow.
+//
+// The history is display text -- array 12 appends each row verbatim to a
+// GuiMLTextCtrl (webbrowser.cs:1821), markup and all -- but writing the
+// client's <a:tribe...> syntax here would put Torque's presentation language in
+// the store, where nothing else knows it. So the store names the subject and
+// says what kind of thing it is, and the proxy turns that into whatever the
+// client of the day follows: dbproxy.linkRefs.
+//
+// The braces are literal in the database, and a reader that does not expand
+// them still shows the name -- which is the whole reason the marker wraps the
+// name rather than replacing it. Old rows, written before any of this, carry no
+// markers and render exactly as they did.
+func Ref(kind, name string) string {
+	if name == "" {
+		return ""
+	}
+	return "{" + kind + ":" + name + "}"
+}
+
+// The kinds a history line can point at. Each has a link verb behind it in
+// GuiMLTextCtrl::onURL (webbrowser.cs:1063).
+const (
+	RefClan    = "clan"    // -> the tribe's page in the browser
+	RefWarrior = "warrior" // -> the warrior's page
+	RefWeb     = "web"     // -> the player's browser, off to a web address
+)
+
+// clanNameTx and warriorNameTx read the name a history line should carry, from
+// inside the transaction that is changing the thing it names. Both answer the
+// id rather than an error when the row has gone: a history line is worth
+// writing even when its subject is not resolvable, and "{clan:7}" still reads
+// better than "a clan".
+func clanNameTx(ctx context.Context, tx pgx.Tx, id int64) string {
+	var name string
+	if err := tx.QueryRow(ctx, `SELECT name FROM clans WHERE id = $1`, id).
+		Scan(&name); err != nil || name == "" {
+		return strconv.FormatInt(id, 10)
+	}
+	return name
+}
+
+func warriorNameTx(ctx context.Context, tx pgx.Tx, guid string) string {
+	var name string
+	if err := tx.QueryRow(ctx, `SELECT name FROM accounts WHERE guid = $1`, guid).
+		Scan(&name); err != nil || name == "" {
+		return guid
+	}
+	return name
 }
 
 // note appends to the audit trail behind userhistory/clanhistory.

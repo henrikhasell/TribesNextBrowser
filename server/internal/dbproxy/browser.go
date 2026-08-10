@@ -194,9 +194,58 @@ func getWarriorHistory(c *Ctx, args string) (Answer, error) {
 
 	rows := make([]string, 0, len(entries))
 	for _, e := range entries {
-		rows = append(rows, date(atoi(e.Time))+"  "+e.Event)
+		rows = append(rows, date(atoi(e.Time))+"  "+linkRefs(e.Event))
 	}
 	return okRows(rows), nil
+}
+
+// linkRefs turns the store's {kind:name} markers into links the client follows.
+//
+// Which is worth doing here and nowhere else: this is the one ordinal whose
+// rows are display text rather than fields, so it is the one place a link can
+// be written at all. GuiMLTextCtrl::onURL (webbrowser.cs:1063) reads the verb
+// from field 0 of the URL and the argument from field 1, and it splits on TAB
+// -- a real tab, not the newline mlLink writes, because a history row is
+// appended verbatim instead of being rejoined out of fields.
+//
+// A marker whose kind is not one of these is left exactly as it stands, braces
+// and all. Silently dropping it would hide the fact that something wrote a
+// marker nothing here knows about.
+func linkRefs(event string) string {
+	var b strings.Builder
+	for {
+		open := strings.IndexByte(event, '{')
+		if open < 0 {
+			break
+		}
+		close := strings.IndexByte(event[open:], '}')
+		colon := strings.IndexByte(event[open:], ':')
+		if close < 0 || colon < 0 || colon > close {
+			break
+		}
+		kind := event[open+1 : open+colon]
+		name := event[open+colon+1 : open+close]
+
+		verb := ""
+		switch kind {
+		case store.RefClan:
+			verb = "tribe"
+		case store.RefWarrior:
+			verb = "player"
+		case store.RefWeb:
+			verb = "wwwlink"
+		}
+
+		b.WriteString(event[:open])
+		if verb == "" {
+			b.WriteString(event[open : open+close+1])
+		} else {
+			b.WriteString("<a:" + verb + "\t" + name + ">" + name + "</a>")
+		}
+		event = event[open+close+1:]
+	}
+	b.WriteString(event)
+	return b.String()
 }
 
 // array 13. Only ever issued for OTHER warriors -- viewing your own tribe list

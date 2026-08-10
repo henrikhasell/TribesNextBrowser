@@ -732,8 +732,15 @@ func (s *Store) AdmitRequester(ctx context.Context, guid string, clanID int64, t
 			clanID, target); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(clanID, 10),
-			"admitted "+target)
+		// The warrior's name, not their GUID, which is what this recorded
+		// until the history started being read by people rather than by us.
+		if err := s.note(ctx, tx, "clan", strconv.FormatInt(clanID, 10),
+			Ref(RefWarrior, warriorNameTx(ctx, tx, target))+
+				" joined, by request"); err != nil {
+			return err
+		}
+		return s.note(ctx, tx, "user", target,
+			"Joined "+Ref(RefClan, clanNameTx(ctx, tx, clanID)))
 	})
 }
 

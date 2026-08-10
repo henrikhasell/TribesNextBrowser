@@ -269,9 +269,44 @@ function TNBBrowserStep7()
    }
    TWBTabView.setSelectedByIndex(0);
 
+   // The history line that founding it wrote. Array 12 is the one ordinal
+   // whose rows are display text rather than fields (webbrowser.cs:1821
+   // appends each one verbatim to a GuiMLTextCtrl), so it is the one place a
+   // row can carry a link -- and the reason a history that used to read
+   // "Created a clan" can now say which, and be clicked.
+   //
+   // Read through a probe rather than the pane: W_Text holds rendered text,
+   // and the markup is exactly what has to be asserted on.
+   if (!isObject(TNBHistoryProbe))
+      new ScriptObject(TNBHistoryProbe) { class = TNBHistoryProbe; };
+
+   $TNBBrowserTest::History = "";
+   PlayerPane.key = LaunchGui.key++;
+   DatabaseQueryArray(12, 0, "orange01", TNBHistoryProbe, "history");
+
+   schedule(2500, 0, "TNBBrowserStep8");
+}
+
+function TNBBrowserStep8()
+{
+   TNBBrowserHas("the history names the tribe it is about",
+                 $TNBBrowserTest::History, $TNBBrowserTest::NewTribe);
+   TNBBrowserHas("and makes the name a link to it",
+                 $TNBBrowserTest::History,
+                 "<a:tribe" TAB $TNBBrowserTest::NewTribe @ ">");
+
    $TNBBrowserTest::Done = 1;
    echo("TNBBROWSERRESULT pass=" @ $TNBBrowserTest::Pass @
         " fail=" @ $TNBBrowserTest::Fail);
+}
+
+function TNBHistoryProbe::onDatabaseQueryResult(%this, %status, %result, %key)
+{
+}
+
+function TNBHistoryProbe::onDatabaseRow(%this, %row, %isLast, %key)
+{
+   $TNBBrowserTest::History = $TNBBrowserTest::History @ %row @ "\n";
 }
 
 echo("TNBrowser: browser_test.cs loaded");

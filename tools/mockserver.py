@@ -199,7 +199,7 @@ MAIL = {
 
 HISTORY = {
     "4510186": [
-        {"time": NOW - 86400, "event": "Joined tribe Test Clan"},
+        {"time": NOW - 86400, "event": "Joined {clan:Test Clan}"},
         {"time": NOW - 200000, "event": "Changed profile text"},
     ],
 }
@@ -260,6 +260,36 @@ def tab(*parts):
 
 def flag(b):
     return "1" if b else "0"
+
+
+# The history's {kind:name} markers, and the link verbs GuiMLTextCtrl::onURL
+# reads them back as (webbrowser.cs:1063). The separator is a real tab, not the
+# newline ml_link writes: a history row is appended verbatim rather than being
+# rejoined out of fields, so nothing turns a newline into a tab on the way.
+#
+# A marker naming a kind this does not know is left as it stands, braces and
+# all, rather than silently dropped.
+REF_VERBS = {"clan": "tribe", "warrior": "player", "web": "wwwlink"}
+
+
+def link_refs(event):
+    out, rest = "", event
+    while True:
+        open_at = rest.find("{")
+        if open_at < 0:
+            break
+        close_at = rest.find("}", open_at)
+        colon = rest.find(":", open_at)
+        if close_at < 0 or colon < 0 or colon > close_at:
+            break
+        kind = rest[open_at + 1:colon]
+        name = rest[colon + 1:close_at]
+        verb = REF_VERBS.get(kind)
+        out += rest[:open_at]
+        out += (rest[open_at:close_at + 1] if verb is None
+                else "<a:%s\t%s>%s</a>" % (verb, name, name))
+        rest = rest[close_at + 1:]
+    return out + rest
 
 
 def quoted(s):
@@ -532,8 +562,9 @@ def get_warrior_history(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     # The only ordinal whose rows are not field-structured: each is one line of
-    # display text, appended verbatim to a GuiMLTextCtrl.
-    return ok_rows([date(h["time"]) + "  " + h["event"]
+    # display text, appended verbatim to a GuiMLTextCtrl -- which is what makes
+    # it the one place a link can be written at all.
+    return ok_rows([date(h["time"]) + "  " + link_refs(h["event"])
                     for h in HISTORY.get(u["guid"], [])])
 
 
@@ -635,6 +666,9 @@ def create_tribe(guid, args):
         "members": [{"guid": guid, "rank": "4", "title": "Leader",
                      "joined": NOW}],
     }
+    HISTORY.setdefault(guid, []).insert(
+        0, {"time": NOW, "event": "Created {clan:%s}" % name})
+
     # The founder's membership as well, because the client re-reads its
     # certificate straight after this (WonUpdateCertificate, webbrowser.cs:774)
     # and builds the tribe's tab from what comes back.

@@ -162,38 +162,54 @@ func (s *Store) CreateClan(ctx context.Context, guid, name, tag string,
 		if err := s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "Clan created"); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "user", guid, "Created clan "+name)
+		return s.note(ctx, tx, "user", guid, "Created "+Ref(RefClan, name))
 	})
 }
 
 // setClanField backs the simple single-value clan setters. minRank differs per
 // field: description and website are officer-level, identity is leadership.
+//
+// event is a function of the clan's own name rather than a finished sentence,
+// so each caller decides where the name belongs -- "Changed the description of
+// X" reads one way and "Renamed X to Y" another. It is passed the name as it
+// was BEFORE the update, which is the only one a rename can be reported
+// against.
 func (s *Store) setClanField(ctx context.Context, guid string, id int64,
-	column, value string, minRank int, event string) error {
+	column, value string, minRank int, event func(clan string) string) error {
 
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		if _, err := requireRank(ctx, tx, id, guid, minRank); err != nil {
 			return err
 		}
+		was := Ref(RefClan, clanNameTx(ctx, tx, id))
+
 		// column is never user input -- it comes from the call sites below.
 		if _, err := tx.Exec(ctx,
 			`UPDATE clans SET `+column+` = $2 WHERE id = $1`, id, value); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), event)
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), event(was))
 	})
 }
 
 func (s *Store) SetClanInfo(ctx context.Context, guid string, id int64, v string) error {
-	return s.setClanField(ctx, guid, id, "info", v, rankToEditInfo, "Changed clan description")
+	return s.setClanField(ctx, guid, id, "info", v, rankToEditInfo,
+		func(clan string) string { return "Changed the description of " + clan })
 }
 
 func (s *Store) SetClanWebsite(ctx context.Context, guid string, id int64, v string) error {
-	return s.setClanField(ctx, guid, id, "website", v, rankToEditInfo, "Changed clan website")
+	return s.setClanField(ctx, guid, id, "website", v, rankToEditInfo,
+		func(clan string) string {
+			if v == "" {
+				return "Cleared the web address of " + clan
+			}
+			return "Changed the web address of " + clan + " to " + Ref(RefWeb, v)
+		})
 }
 
 func (s *Store) SetClanPicture(ctx context.Context, guid string, id int64, v string) error {
-	return s.setClanField(ctx, guid, id, "picture", v, rankToEditInfo, "Changed clan picture")
+	return s.setClanField(ctx, guid, id, "picture", v, rankToEditInfo,
+		func(clan string) string { return "Changed the graphic of " + clan })
 }
 
 func (s *Store) SetClanName(ctx context.Context, guid string, id int64, v string) error {
@@ -201,7 +217,8 @@ func (s *Store) SetClanName(ctx context.Context, guid string, id int64, v string
 	if v == "" {
 		return refuse("a clan needs a name")
 	}
-	return s.setClanField(ctx, guid, id, "name", v, rankToRename, "Renamed clan to "+v)
+	return s.setClanField(ctx, guid, id, "name", v, rankToRename,
+		func(clan string) string { return "Renamed " + clan + " to " + Ref(RefClan, v) })
 }
 
 func (s *Store) SetClanRecruiting(ctx context.Context, guid string, id int64, on bool) error {
@@ -213,11 +230,12 @@ func (s *Store) SetClanRecruiting(ctx context.Context, guid string, id int64, on
 			`UPDATE clans SET recruiting = $2 WHERE id = $1`, id, on); err != nil {
 			return err
 		}
-		event := "Closed recruitment"
+		event := "Closed recruitment for "
 		if on {
-			event = "Opened recruitment"
+			event = "Opened recruitment for "
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), event)
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			event+Ref(RefClan, clanNameTx(ctx, tx, id)))
 	})
 }
 
@@ -235,7 +253,8 @@ func (s *Store) SetClanTag(ctx context.Context, guid string, id int64, tag strin
 			`UPDATE clans SET tag = $2, append = $3 WHERE id = $1`, id, tag, append_); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "Changed clan tag to "+tag)
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			"Changed the tag of "+Ref(RefClan, clanNameTx(ctx, tx, id))+" to "+tag)
 	})
 }
 
@@ -268,7 +287,8 @@ func (s *Store) Invite(ctx context.Context, guid string, id int64, target string
 			id, target, guid, s.now()); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "Invited a player")
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			"Invited "+Ref(RefWarrior, warriorNameTx(ctx, tx, target)))
 	})
 }
 
@@ -362,10 +382,12 @@ func (s *Store) AcceptInvite(ctx context.Context, guid string, id int64) (string
 			return err
 		}
 
-		if err := s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "A player joined"); err != nil {
+		if err := s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			Ref(RefWarrior, warriorNameTx(ctx, tx, guid))+" joined"); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "user", guid, "Joined a clan")
+		return s.note(ctx, tx, "user", guid,
+			"Joined "+Ref(RefClan, clanNameTx(ctx, tx, id)))
 	})
 	return from, err
 }
@@ -411,7 +433,8 @@ func (s *Store) LeaveClan(ctx context.Context, guid string, id int64) ([]string,
 		if err := clearTagIf(ctx, tx, guid, id); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "user", guid, "Left a clan")
+		return s.note(ctx, tx, "user", guid,
+			"Left "+Ref(RefClan, clanNameTx(ctx, tx, id)))
 	})
 	if err != nil {
 		return nil, err
@@ -501,7 +524,8 @@ func (s *Store) SetRank(ctx context.Context, guid string, id int64, target strin
 		if cmd.RowsAffected() == 0 {
 			return refuse("target is not a member")
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "Changed a member's rank")
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			Ref(RefWarrior, warriorNameTx(ctx, tx, target))+" is now "+title)
 	})
 	return before, err
 }
@@ -533,7 +557,8 @@ func (s *Store) Kick(ctx context.Context, guid string, id int64, target string) 
 		if err := clearTagIf(ctx, tx, target, id); err != nil {
 			return err
 		}
-		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "A member was removed")
+		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
+			Ref(RefWarrior, warriorNameTx(ctx, tx, target))+" was removed")
 	})
 }
 
