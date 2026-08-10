@@ -271,9 +271,21 @@ func deleteTribe(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
-	if err := c.Store.Disband(c.Ctx, c.GUID, id, true); err != nil {
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
+
+	// Non-empty only on the authorisation that actually disbands the tribe.
+	// The others change nothing a member could notice, so there is nothing to
+	// tell them yet.
+	told, err := c.Store.Disband(c.Ctx, c.GUID, id, true)
+	if err != nil {
 		return userError(err)
 	}
+	c.notifyAll(told, "Tribe disbanded: "+p.Name,
+		c.Name+" has disbanded "+p.Name+". You are no longer a member of it.")
+
 	return okResult("Your disband authorisation has been recorded."), nil
 }
 
@@ -288,9 +300,19 @@ func kickMember(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
 	if err := c.Store.Kick(c.Ctx, c.GUID, id, target); err != nil {
 		return userError(err)
 	}
+
+	// Nothing else would say so. A kicked warrior's next sight of it is the
+	// tribe tab quietly missing from a pane they may not open for days.
+	c.notify(target, "Removed from "+p.Name,
+		c.Name+" has removed you from "+p.Name+".")
+
 	return okResult("That warrior has been removed from the tribe."), nil
 }
 
@@ -344,10 +366,28 @@ func setMemberProfile(c *Ctx, args string) (Answer, error) {
 	}
 	title := field(args, 2)
 	rank := int(atoi(field(args, 3)))
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
 
-	if err := c.Store.SetRank(c.Ctx, c.GUID, id, target, rank, title); err != nil {
+	before, err := c.Store.SetRank(c.Ctx, c.GUID, id, target, rank, title)
+	if err != nil {
 		return userError(err)
 	}
+
+	// Only when the rank moved. The same dialog sends this ordinal for a title
+	// edit alone, and mailing a member every time somebody tidies their title
+	// would make the ones that matter easy to miss.
+	if rank != before {
+		verb := "promoted"
+		if rank < before {
+			verb = "demoted"
+		}
+		c.notify(target, "Rank changed in "+p.Name,
+			c.Name+" has "+verb+" you to "+title+" in "+p.Name+".")
+	}
+
 	return okResult("That member's profile has been updated."), nil
 }
 
@@ -386,9 +426,18 @@ func leaveTribe(c *Ctx, args string) (Answer, error) {
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
-	if err := c.Store.LeaveClan(c.Ctx, c.GUID, id); err != nil {
+	p, err := c.Store.TribeProfile(c.Ctx, id)
+	if err != nil {
+		return notFound(err, "There is no tribe by that name.")
+	}
+
+	admins, err := c.Store.LeaveClan(c.Ctx, c.GUID, id)
+	if err != nil {
 		return userError(err)
 	}
+	c.notifyAll(admins, "Member left "+p.Name,
+		c.Name+" has left "+p.Name+".")
+
 	return okResult("You have left the tribe."), nil
 }
 
@@ -486,7 +535,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 	}
 
 	if verb == "cancel" {
-		if err := c.Store.CancelInvite(c.Ctx, c.GUID, id, subject); err != nil {
+		if _, err := c.Store.CancelInvite(c.Ctx, c.GUID, id, subject); err != nil {
 			return userError(err)
 		}
 		return okResult(p.Name), nil
@@ -499,21 +548,47 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 		}
 	}
 
+	// Whichever way round it goes, the party who raised the invitation is told
+	// how it ended: the client has no query that lists answered invitations, so
+	// to the side that did not answer, an acceptance and a rejection look
+	// identical -- the row is simply gone from the pane that showed it.
+	var tell, mailSubject, mailBody string
+
 	switch {
 	case verb == "accept" && asAdmin:
-		err = c.Store.AdmitRequester(c.Ctx, c.GUID, id, subject)
+		if err = c.Store.AdmitRequester(c.Ctx, c.GUID, id, subject); err == nil {
+			tell = subject
+			mailSubject = "Join request accepted: " + p.Name
+			mailBody = c.Name + " has accepted your request to join " + p.Name + "."
+		}
 	case verb == "reject" && asAdmin:
-		err = c.Store.CancelInvite(c.Ctx, c.GUID, id, subject)
+		var removed bool
+		// Only when a request was actually withdrawn. The ordinal answers
+		// success for a reject that matched nothing, and that is not an
+		// outcome to mail anyone about.
+		if removed, err = c.Store.CancelInvite(c.Ctx, c.GUID, id, subject); err == nil && removed {
+			tell = subject
+			mailSubject = "Join request declined: " + p.Name
+			mailBody = c.Name + " has declined your request to join " + p.Name + "."
+		}
 	case verb == "accept":
-		err = c.Store.AcceptInvite(c.Ctx, c.GUID, id)
+		if tell, err = c.Store.AcceptInvite(c.Ctx, c.GUID, id); err == nil {
+			mailSubject = "Invitation accepted: " + p.Name
+			mailBody = c.Name + " has accepted your invitation to join " + p.Name + "."
+		}
 	case verb == "reject":
-		err = c.Store.RejectInvite(c.Ctx, c.GUID, id)
+		if tell, err = c.Store.RejectInvite(c.Ctx, c.GUID, id); err == nil {
+			mailSubject = "Invitation declined: " + p.Name
+			mailBody = c.Name + " has declined your invitation to join " + p.Name + "."
+		}
 	default:
 		return fail("%q is not something that can be done with an invitation.", verb), nil
 	}
 	if err != nil {
 		return userError(err)
 	}
+	c.notify(tell, mailSubject, mailBody)
+
 	return okResult(p.Name), nil
 }
 

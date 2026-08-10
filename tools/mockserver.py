@@ -524,6 +524,38 @@ def get_warrior_tribe_list(guid, args):
 
 # -- browser: writes --------------------------------------------------------
 
+# -- notifications ----------------------------------------------------------
+#
+# Tribe membership changes hands through panes that show no history, so the
+# party who did not perform the change has no way to learn of it: a kicked
+# warrior sees a tab quietly missing, a tribe never hears that somebody left,
+# and an answered invitation simply disappears from the list that held it. Mail
+# is the only channel the client already checks by itself, and the shipped
+# scripts already use it for the invitation these answer.
+#
+# Mirrored from the Go backend rather than from TribesNext's PHP, which sent
+# none of these -- the one place this fixture deliberately models the new
+# backend, so the client suites can assert the same behaviour against both.
+
+def _notify(to_guid, from_guid, subject, body):
+    if to_guid and to_guid != from_guid and to_guid in USERS:
+        _deliver(to_guid, from_guid, subject, body)
+
+
+def _notify_all(to_guids, from_guid, subject, body):
+    for g in to_guids:
+        _notify(g, from_guid, subject, body)
+
+
+def _members_except(clan, guid):
+    return [m["guid"] for m in clan["members"] if m["guid"] != guid]
+
+
+def _admins_except(clan, guid):
+    return [m["guid"] for m in clan["members"]
+            if m["guid"] != guid and num(m["rank"]) >= 2]
+
+
 def _clan_write(guid, args, message, min_rank=2):
     c = clan_by_name(field(args, 0))
     if c is None:
@@ -593,8 +625,21 @@ def set_warrior_description(guid, args):
 
 @on("scalar", 18)
 def delete_tribe(guid, args):
-    return _clan_write(guid, args,
-                       "Your disband authorisation has been recorded.", 4)
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 4:
+        return fail("You do not have the rank to do that.")
+
+    # Disbanding is an authorisation, not a delete: every leader has to record
+    # one. This fixture keeps no votes, so a clan with a single leader -- which
+    # every fixture clan has -- disbands on the first, matching what the backend
+    # does in that case.
+    _notify_all(_members_except(c, guid), guid,
+                "Tribe disbanded: " + c["name"],
+                USERS[guid]["name"] + " has disbanded " + c["name"] +
+                ". You are no longer a member of it.")
+    return ok_result("Your disband authorisation has been recorded.")
 
 
 @on("scalar", 19)
@@ -604,6 +649,11 @@ def kick_member(guid, args):
         return fail("There is no tribe by that name.")
     if rank_in(c, guid) < 2:
         return fail("You do not have the rank to do that.")
+
+    u = user_by_name(field(args, 0))
+    if u is not None:
+        _notify(u["guid"], guid, "Removed from " + c["name"],
+                USERS[guid]["name"] + " has removed you from " + c["name"] + ".")
     return ok_result("That warrior has been removed from the tribe.")
 
 
@@ -624,13 +674,42 @@ def toggle_tribe_flag(guid, args):
 
 @on("scalar", 21)
 def set_member_profile(guid, args):
-    return _clan_write(guid, args, "That member's profile has been updated.", 3)
+    c = clan_by_name(field(args, 0))
+    if c is None:
+        return fail("There is no tribe by that name.")
+    if rank_in(c, guid) < 3:
+        return fail("You do not have the rank to do that.")
+
+    u = user_by_name(field(args, 1))
+    if u is None:
+        return fail("There is no warrior by that name.")
+    title, rank = field(args, 2), num(field(args, 3))
+
+    for m in c["members"]:
+        if m["guid"] != u["guid"]:
+            continue
+        before = num(m["rank"])
+        m["rank"], m["title"] = str(rank), title
+        # Not for a title edit alone: the same dialog sends this ordinal for
+        # one, and mail nobody needs buries the mail they do.
+        if rank != before:
+            verb = "promoted" if rank > before else "demoted"
+            _notify(u["guid"], guid, "Rank changed in " + c["name"],
+                    "%s has %s you to %s in %s."
+                    % (USERS[guid]["name"], verb, title, c["name"]))
+        break
+
+    return ok_result("That member's profile has been updated.")
 
 
 @on("scalar", 24)
 def leave_tribe(guid, args):
-    if clan_by_name(field(args, 0)) is None:
+    c = clan_by_name(field(args, 0))
+    if c is None:
         return fail("There is no tribe by that name.")
+
+    _notify_all(_admins_except(c, guid), guid, "Member left " + c["name"],
+                USERS[guid]["name"] + " has left " + c["name"] + ".")
     return ok_result("You have left the tribe.")
 
 
@@ -683,6 +762,35 @@ def answer_invitation(guid, args):
     if verb not in ("accept", "reject", "cancel"):
         return fail('"%s" is not something that can be done with an '
                     'invitation.' % verb)
+
+    # Field 2 names somebody else only when an admin is answering a request the
+    # warrior made; otherwise it is a warrior answering their own invitation.
+    subject = guid
+    named = user_by_name(field(args, 2))
+    if named is not None and rank_in(c, guid) >= 2:
+        subject = named["guid"]
+
+    box = CLAN_INVITES.get(c["id"], [])
+    inv = next((i for i in box if i["guid"] == subject), None)
+    if inv is None:
+        return ok_result(c["name"])
+    box.remove(inv)
+
+    if verb == "cancel":
+        return ok_result(c["name"])
+
+    # Whoever raised it hears how it ended. Nothing else would tell them: no
+    # client query lists answered invitations, so from the other side an
+    # acceptance and a rejection look identical.
+    request = inv["kind"] == "request"
+    tell = subject if request else inv["from"]
+    what = "request to join" if request else "invitation to join"
+    outcome = "accepted" if verb == "accept" else "declined"
+    heading = "Join request" if request else "Invitation"
+    _notify(tell, guid, "%s %s: %s" % (heading, outcome, c["name"]),
+            "%s has %s your %s %s."
+            % (USERS[guid]["name"], outcome, what, c["name"]))
+
     return ok_result(c["name"])
 
 

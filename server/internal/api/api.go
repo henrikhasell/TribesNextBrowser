@@ -225,6 +225,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 		Store: s.Store,
 		GUID:  id.GUID,
 		Name:  id.Name,
+		Log:   s.Log,
 	}, true
 }
 

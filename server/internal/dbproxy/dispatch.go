@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,41 @@ type Ctx struct {
 	// GUID and Name identify the player asking, as TribesNext vouched for them.
 	GUID string
 	Name string
+	// Log is where a failure that must not fail the request goes. May be nil;
+	// use c.log() rather than reaching for it directly.
+	Log *slog.Logger
+}
+
+func (c *Ctx) log() *slog.Logger {
+	if c.Log == nil {
+		return slog.Default()
+	}
+	return c.Log
+}
+
+// notify sends one player a message from the player whose action caused it.
+//
+// Deliberately not fatal, and the reason is the same one the welcome mail gives
+// (api.go:217): the mutation has already been committed by the time anything
+// gets mailed about it, so answering an error here would tell a player that the
+// kick, promotion or disband they just performed had failed when it had not --
+// and the client's only response to a failed write is to show the sentence in a
+// MessageBoxOK and leave the pane as it was. A notification nobody receives is
+// worth a log line, not a lie.
+func (c *Ctx) notify(to, subject, body string) {
+	if to == "" || to == c.GUID {
+		return
+	}
+	if err := c.Store.Deliver(c.Ctx, to, c.GUID, c.Name, subject, body); err != nil {
+		c.log().Error("notification mail", "err", err, "to", to, "subject", subject)
+	}
+}
+
+// notifyAll is notify over a list, for the events a whole roster hears about.
+func (c *Ctx) notifyAll(to []string, subject, body string) {
+	for _, guid := range to {
+		c.notify(guid, subject, body)
+	}
 }
 
 // Handler answers one ordinal. args is the raw tab-separated string the call

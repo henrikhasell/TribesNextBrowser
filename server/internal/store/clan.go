@@ -331,9 +331,20 @@ func (s *Store) requireRankOutsideTx(ctx context.Context, id int64, guid string,
 	return rank, nil
 }
 
-// AcceptInvite joins the clan, at the bottom rank.
-func (s *Store) AcceptInvite(ctx context.Context, guid string, id int64) error {
-	return s.tx(ctx, func(tx pgx.Tx) error {
+// AcceptInvite joins the clan, at the bottom rank. It answers with the GUID of
+// whoever issued the invitation, who is the one party to the exchange with no
+// other way to learn how it ended: the client has no query that lists a tribe's
+// answered invitations, so an invitation the recipient has dealt with simply
+// disappears from the pane that showed it.
+func (s *Store) AcceptInvite(ctx context.Context, guid string, id int64) (string, error) {
+	var from string
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx,
+			`SELECT from_guid FROM clan_invites WHERE clan_id = $1 AND guid = $2`,
+			id, guid).Scan(&from); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+
 		tagCmd, err := tx.Exec(ctx,
 			`DELETE FROM clan_invites WHERE clan_id = $1 AND guid = $2`, id, guid)
 		if err != nil {
@@ -356,20 +367,39 @@ func (s *Store) AcceptInvite(ctx context.Context, guid string, id int64) error {
 		}
 		return s.note(ctx, tx, "user", guid, "Joined a clan")
 	})
+	return from, err
 }
 
-func (s *Store) RejectInvite(ctx context.Context, guid string, id int64) error {
-	return s.tx(ctx, func(tx pgx.Tx) error {
+// RejectInvite answers with the inviter, for the reason AcceptInvite gives.
+func (s *Store) RejectInvite(ctx context.Context, guid string, id int64) (string, error) {
+	var from string
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx,
+			`SELECT from_guid FROM clan_invites WHERE clan_id = $1 AND guid = $2`,
+			id, guid).Scan(&from); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
 		_, err := tx.Exec(ctx,
 			`DELETE FROM clan_invites WHERE clan_id = $1 AND guid = $2`, id, guid)
 		return err
 	})
+	return from, err
 }
 
 // LeaveClan removes the caller from a clan, clearing their tag if they were
-// wearing that clan's.
-func (s *Store) LeaveClan(ctx context.Context, guid string, id int64) error {
-	return s.tx(ctx, func(tx pgx.Tx) error {
+// wearing that clan's. It answers with the clan's administrators, who are the
+// ones left to notice: nothing tells a tribe its roster has shrunk, and the
+// leaver is under no obligation to say.
+//
+// Read before the delete, so a leaving administrator is not in their own list.
+func (s *Store) LeaveClan(ctx context.Context, guid string, id int64) ([]string, error) {
+	var admins []string
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		var err error
+		if admins, err = clanAdmins(ctx, tx, id, guid); err != nil {
+			return err
+		}
+
 		cmd, err := tx.Exec(ctx,
 			`DELETE FROM clan_members WHERE clan_id = $1 AND guid = $2`, id, guid)
 		if err != nil {
@@ -383,6 +413,33 @@ func (s *Store) LeaveClan(ctx context.Context, guid string, id int64) error {
 		}
 		return s.note(ctx, tx, "user", guid, "Left a clan")
 	})
+	if err != nil {
+		return nil, err
+	}
+	return admins, nil
+}
+
+// clanAdmins lists the members who can act for a clan, skipping one GUID --
+// always the player whose own action is being reported, who does not need
+// telling. rankToInvite is the same threshold RequestInvite mails.
+func clanAdmins(ctx context.Context, tx pgx.Tx, id int64, except string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT guid FROM clan_members WHERE clan_id = $1 AND rank >= $2 AND guid <> $3`,
+		id, rankToInvite, except)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // clearTagIf drops the player's worn tag when they lose membership of the clan
@@ -408,21 +465,31 @@ func clearTagIf(ctx context.Context, tx pgx.Tx, guid string, clanID int64) error
 // stops a blank title reaching here, and a member whose title is the empty
 // string renders as a gap in the roster column with no way to tell it from a
 // rendering fault.
-func (s *Store) SetRank(ctx context.Context, guid string, id int64, target string, rank int, title string) error {
+// It answers with the rank the member held before, so a caller can tell a
+// promotion from a demotion -- and tell both from the title-only edit the same
+// dialog sends, which is not news worth mailing anyone.
+func (s *Store) SetRank(ctx context.Context, guid string, id int64, target string,
+	rank int, title string) (int, error) {
+
 	if rank < RankRecruit || rank > RankLeader {
-		return refuse("rank must be an integer 0 to 4")
+		return 0, refuse("rank must be an integer 0 to 4")
 	}
 	if strings.TrimSpace(title) == "" {
-		return refuse("A member's title cannot be blank.")
+		return 0, refuse("A member's title cannot be blank.")
 	}
 
-	return s.tx(ctx, func(tx pgx.Tx) error {
+	var before int
+	err := s.tx(ctx, func(tx pgx.Tx) error {
 		mine, err := requireRank(ctx, tx, id, guid, rankToPromote)
 		if err != nil {
 			return err
 		}
 		if rank > mine {
 			return refuse("cannot promote above your own rank")
+		}
+
+		if before, err = rankIn(ctx, tx, id, target); err != nil {
+			return err
 		}
 
 		cmd, err := tx.Exec(ctx, `
@@ -436,6 +503,7 @@ func (s *Store) SetRank(ctx context.Context, guid string, id int64, target strin
 		}
 		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10), "Changed a member's rank")
 	})
+	return before, err
 }
 
 // Kick removes a member. Equal or higher rank cannot be kicked, so leaders
@@ -472,8 +540,15 @@ func (s *Store) Kick(ctx context.Context, guid string, id int64, target string) 
 // Disband records or withdraws one leader's authorisation. The clan is only
 // deactivated once every leader has voted, which is what made this an
 // "authorise" rather than a "delete" in the original.
-func (s *Store) Disband(ctx context.Context, guid string, id int64, authorise bool) error {
-	return s.tx(ctx, func(tx pgx.Tx) error {
+//
+// It answers with the members to tell, and only on the vote that actually
+// disbands the clan -- the earlier authorisations change nothing anyone can
+// see. The list is empty every other time, which is what makes "did this
+// disband the clan?" answerable without a second query.
+func (s *Store) Disband(ctx context.Context, guid string, id int64, authorise bool) ([]string, error) {
+	var told []string
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		told = nil
 		if _, err := requireRank(ctx, tx, id, guid, rankToDisband); err != nil {
 			return err
 		}
@@ -507,6 +582,12 @@ func (s *Store) Disband(ctx context.Context, guid string, id int64, authorise bo
 		}
 
 		if votes >= leaders && leaders > 0 {
+			// Before the update, while the roster is still whole.
+			members, err := clanMembers(ctx, tx, id, guid)
+			if err != nil {
+				return err
+			}
+			told = members
 			if _, err := tx.Exec(ctx,
 				`UPDATE clans SET active = FALSE WHERE id = $1`, id); err != nil {
 				return err
@@ -520,4 +601,29 @@ func (s *Store) Disband(ctx context.Context, guid string, id int64, authorise bo
 		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
 			"A leader authorised disbanding")
 	})
+	if err != nil {
+		return nil, err
+	}
+	return told, nil
+}
+
+// clanMembers lists a clan's whole roster, skipping one GUID for the reason
+// clanAdmins does.
+func clanMembers(ctx context.Context, tx pgx.Tx, id int64, except string) ([]string, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT guid FROM clan_members WHERE clan_id = $1 AND guid <> $2`, id, except)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var g string
+		if err := rows.Scan(&g); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }

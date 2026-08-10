@@ -334,6 +334,17 @@ function TNBMailStep9()
    schedule(3000, 0, "TNBMailStep10");
 }
 
+// Tribe membership changes are delivered by mail.
+//
+// The browser panes show no history, so the party who did not perform a change
+// has no way to learn of it: a promoted or kicked member sees a tab that has
+// silently changed or gone, and a tribe never hears that somebody left. The
+// backends mail both directions, and this is the guard on that -- from the
+// affected warrior's own mailbox, which is the only place it can be observed.
+//
+// Read through the row probe rather than the pane: EmailGui holds one mailbox
+// at a time and these steps switch identity, which is also why $TNB::UUID is
+// cleared each time -- the session travels with every request.
 function TNBMailStep10()
 {
    // That fetch armed the next poll on its way out; leave nothing behind.
@@ -341,9 +352,65 @@ function TNBMailStep10()
       cancel(EmailGui.checkSchedule);
    EmailGui.checkSchedule = "";
 
+   // As the leader of Test Clan: promote Shifter, an officer of it.
+   $TNBMailTest::LastStatus = "";
+   DatabaseQuery(21, "Test Clan" TAB "Shifter" TAB "Senior Member" TAB 3,
+                 TNBMailProbe, "promote");
+   schedule(3000, 0, "TNBMailStep11");
+}
+
+function TNBMailStep11()
+{
+   TNBMailEq("promoting a member succeeds",
+             getField($TNBMailTest::LastStatus, 0), 0);
+
+   TNBMailReadAs("4120041");
+   schedule(3000, 0, "TNBMailStep12");
+}
+
+function TNBMailStep12()
+{
+   TNBMailHas("a promoted member is told", $TNBMailTest::Raw,
+              "Rank changed in Test Clan");
+   TNBMailHas("and by whom, to what", $TNBMailTest::Raw,
+              "orange01 has promoted you to Senior Member in Test Clan.");
+
+   // Still as Shifter: leave the tribe, which its administrators hear about.
+   $TNBMailTest::LastStatus = "";
+   DatabaseQuery(24, "Test Clan", TNBMailProbe, "leave");
+   schedule(3000, 0, "TNBMailStep13");
+}
+
+function TNBMailStep13()
+{
+   TNBMailEq("leaving a tribe succeeds",
+             getField($TNBMailTest::LastStatus, 0), 0);
+
+   TNBMailReadAs("4510186");
+   schedule(3000, 0, "TNBMailStep14");
+}
+
+function TNBMailStep14()
+{
+   TNBMailHas("a tribe's administrators are told when a member leaves",
+              $TNBMailTest::Raw, "Member left Test Clan");
+   TNBMailHas("and who left", $TNBMailTest::Raw,
+              "Shifter has left Test Clan.");
+
    $TNBMailTest::Done = 1;
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @
         " fail=" @ $TNBMailTest::Fail);
+}
+
+// Read a mailbox as somebody else. The high-water mark is 0, so this is the
+// whole inbox rather than what has arrived since the last poll.
+function TNBMailReadAs(%guid)
+{
+   $TNB::GuidOverride = %guid;
+   $TNB::UUID = "";
+
+   $TNBMailTest::Raw = "";
+   DatabaseQueryArray(1, 0, "0", TNBMailRowProbe, "rows");
 }
 
 //-----------------------------------------------------------------------------
@@ -369,6 +436,9 @@ function TNBMailRowProbe::onDatabaseRow(%this, %row, %isLast, %key)
 {
    // Exactly what webemail.cs:1147 does.
    $TNBMailTest::Rows = $TNBMailTest::Rows @ getFields(%row, 17) @ "\n";
+   // And the whole row beside it, for the steps that read a subject (field 15)
+   // as well as a body.
+   $TNBMailTest::Raw = $TNBMailTest::Raw @ %row @ "\n";
 }
 
 echo("TNBrowser: mail_test.cs loaded");

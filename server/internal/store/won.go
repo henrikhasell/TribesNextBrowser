@@ -673,18 +673,31 @@ func (s *Store) RequestInvite(ctx context.Context, guid string, clanID int64) ([
 }
 
 // CancelInvite answers the "cancel" verb of scalar 28: the tribe withdrawing an
-// invitation, or a warrior withdrawing their own request.
-func (s *Store) CancelInvite(ctx context.Context, guid string, clanID int64, target string) error {
-	return s.tx(ctx, func(tx pgx.Tx) error {
+// invitation, or a warrior withdrawing their own request. It also serves the
+// admin's "reject", which is why it reports whether there was anything to
+// remove -- a reject that matched no row is not an outcome to mail anyone
+// about, and the ordinal answers success either way.
+func (s *Store) CancelInvite(ctx context.Context, guid string, clanID int64, target string) (bool, error) {
+	removed := false
+	err := s.tx(ctx, func(tx pgx.Tx) error {
+		removed = false
 		if target != guid {
 			if _, err := requireRank(ctx, tx, clanID, guid, rankToInvite); err != nil {
 				return err
 			}
 		}
-		_, err := tx.Exec(ctx,
+		cmd, err := tx.Exec(ctx,
 			`DELETE FROM clan_invites WHERE clan_id = $1 AND guid = $2`, clanID, target)
-		return err
+		if err != nil {
+			return err
+		}
+		removed = cmd.RowsAffected() > 0
+		return nil
 	})
+	if err != nil {
+		return false, err
+	}
+	return removed, nil
 }
 
 // AdmitRequester is the accept verb of scalar 28 read the other way round: an
