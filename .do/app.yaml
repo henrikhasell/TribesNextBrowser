@@ -27,7 +27,7 @@ services:
 
     github:
       repo: henrikhasell/TribesNextBrowser
-      branch: won-ordinals
+      branch: main
       # Deliberately off. App Platform's push trigger does not know whether the
       # tests passed, so deployment is driven from CI after `go test ./...` is
       # green -- see .github/workflows/server.yml.
