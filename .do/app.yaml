@@ -100,6 +100,17 @@ databases:
     version: "16"
     cluster_name: tnb-db
     production: true
+    # Not defaultdb and not doadmin. doadmin is the cluster superuser, and an
+    # internet-facing service has no business holding one.
+    #
+    # The database is owned by this user rather than merely granted on: since
+    # PostgreSQL 15 the public schema is owned by pg_database_owner and grants
+    # CREATE to nobody else, so a normal user in a doadmin-owned database
+    # cannot create a table at all -- `permission denied for schema public`,
+    # which is how the migration would fail. Ownership is the fix that does not
+    # need re-granting every time a migration adds an object.
+    db_name: tnbrowser
+    db_user: tnbrowser
 
 domains:
   # The zone k8s.henrik.si is already managed in DigitalOcean DNS, so the CNAME
