@@ -84,6 +84,19 @@ function TNBMailCertLoaded(%ctx, %status, %result)
    EmailGui.checkingEmail = "";
    EmailGui.soundPlayed = false;
 
+   // Stop onWake reloading the mailbox this suite persisted last time.
+   //
+   // EmailGui::getCache reads webcache/<guid>/email1 when EmailGui.cacheFile is
+   // empty, and accepts it when the file's first line matches
+   // getField(WONGetAuthInfo(), 3). That check used to fail -- the mod answered
+   // "" until the community certificate arrived -- so the cache was silently
+   // rejected and every run started clean by accident. Now that
+   // WONGetAuthInfo falls back to the account certificate, the GUID matches and
+   // the cache loads, which is correct behaviour and leaves the previous run's
+   // messages in the list. Setting cacheFile is what dumpCache does, and it is
+   // what makes getCache skip the read.
+   EmailGui.cacheFile = $EmailFileName;
+
    Canvas.setContent(EmailGui);
 
    // onWake's own fetch is guarded by EmailGui.checkingEmail and a pending
@@ -119,7 +132,13 @@ function TNBMailStep1()
              getField(getRecord(%msg, 1), 0), "Shifter");
    TNBMailEq("the sender quad carries the GUID in field 3",
              getField(getRecord(%msg, 1), 3), "4120041");
-   TNBMailEq("record 2 is the read flag", getRecord(%msg, 2), 0);
+   // Read the flag off the SECOND message, not the first. EM_Browser::onSelect
+   // issues markMailRead (webemail.cs:1328) whenever a row is selected, so the
+   // pane marks whatever it lands on as read just by showing it -- which makes
+   // an assertion on row 0's flag a race against the control. The fixture's
+   // second message is read to begin with and nothing selects it.
+   TNBMailEq("record 2 is the read flag",
+             getRecord(EmailMessageVector.getLineText(1), 2), 1);
    TNBMailEq("record 3 is the received date", getRecord(%msg, 3), "2026-07-25");
    TNBMailEq("record 6 is the subject", getRecord(%msg, 6), "Scrim on Tuesday?");
    TNBMailHas("records 7.. are the body", EmailGetBody(%msg),

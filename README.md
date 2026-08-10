@@ -54,11 +54,25 @@ goes back to framing `dbqax`, and `WONGetAuthInfo` goes back to not existing.
 Established by reading the extracted `base/scripts.vl2` and probing a running
 TribesNext client:
 
-1. **Every WON native is absent on a TribesNext-patched binary.**
-   `WONGetAuthInfo`, `WONUpdateCertificate`, `WONLoginIRC` and `WONStartLogin`
-   all answer *"Unable to find function"*. So there is nothing to shadow —
-   defining them is the whole job. The entire identity surface the community
-   scripts touch is two names.
+1. **The WON natives are gone, but `WONGetAuthInfo` is not.** `WONLoginIRC`,
+   `WONStartLogin` and `IRCGetTriple` answer *"Unable to find function"* — the
+   patched binary does not register them, so defining them is the whole job.
+   `WONGetAuthInfo` is different: **TribesNext defines it itself**, in
+   `t2csri/clientSide.cs:12`, on any client that can go online. Overriding it
+   is therefore a real override with a real predecessor — and the predecessor
+   did something besides answer. It assigned `$LoginCertificate` on the way
+   past, which is the only thing that populates that global on the ordinary
+   login path (`loginScreens.cs:339` does too, but only when *creating* an
+   account).
+
+   Missing that cost a live bug: a player who really was logged in got *"You
+   are not logged in to a TribesNext account"*, because the override removed
+   the side effect the session layer was leaning on. It looked absent only
+   under `-nologin`, which skips the whole `t2csri` script layer — so the
+   original probe was run in the one configuration where the claim happened to
+   be true. `TNBSessionGuid` now asks the account subsystem directly, and the
+   override falls back to TribesNext's own record layout until the community
+   certificate arrives.
 2. **Overriding `DatabaseQuery` steps over the chat gate.** `DatabaseQueryi`
    refuses to send anything unless `$IRCClient::state $= IDIRC_CONNECTED`
    (`webstuff.cs:183`) and answers a *fabricated* `1\tORA-04061` when it is

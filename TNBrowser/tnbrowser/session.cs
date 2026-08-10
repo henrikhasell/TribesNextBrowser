@@ -52,11 +52,45 @@ function TNBSessionReady()
 
 // The account GUID. $TNB::GuidOverride exists so the mod can be driven against
 // the mock backend on a client that has never logged in.
+//
+// $LoginCertificate cannot be trusted to hold anything on its own. Nothing in
+// TribesNext assigns it on the ordinary login path -- loginScreens.cs:339 does,
+// but only in the account-CREATION branch. What normally fills it is a side
+// effect of TribesNext's own WONGetAuthInfo (t2csri/clientSide.cs:12), which
+// assigns it before returning.
+//
+// This mod overrides that function, so the side effect stopped happening: a
+// player who really was logged in got "You are not logged in to a TribesNext
+// account", because the global still held the "-1" that the pre-login call had
+// left in it. So ask the account subsystem directly rather than relying on
+// somebody else having asked recently.
 function TNBSessionGuid()
 {
    if ($TNB::GuidOverride !$= "")
       return $TNB::GuidOverride;
+
+   %guid = getField($LoginCertificate, 1);
+   if (%guid !$= "")
+      return %guid;
+
+   $LoginCertificate = TNBAccountCertificate();
    return getField($LoginCertificate, 1);
+}
+
+// The account certificate, or "" if there is no account subsystem.
+//
+// t2csri_getAccountCertificate exists only when the patch registered its
+// console functions, which -nologin skips entirely. A missing function does not
+// return empty in this engine -- it prints "Unable to find function" and the
+// assignment still yields a meaningless number -- so the answer is checked for
+// the shape of a certificate before it is trusted. A real one has five fields;
+// anything with fewer than two cannot carry a GUID in field 1.
+function TNBAccountCertificate()
+{
+   %cert = t2csri_getAccountCertificate();
+   if (getFieldCount(%cert) < 2)
+      return "";
+   return %cert;
 }
 
 // Hex modulus of the account key; its length sizes the nonce.

@@ -42,11 +42,30 @@ package TNBrowser
 
    //-- the identity ----------------------------------------------------------
 
-   // Absent natives on a TribesNext client, so these define rather than
-   // override. See dbproxy.cs for the record layout and what pins it.
+   // NOT an absent native, whatever -nologin suggests: TribesNext defines this
+   // itself in t2csri/clientSide.cs:12, and on any client that can go online it
+   // is already there. So this is a real override with a real predecessor, and
+   // the predecessor did something besides answer -- it assigned
+   // $LoginCertificate on the way past, which is the only thing that populates
+   // that global on the ordinary login path. TNBSessionGuid no longer depends
+   // on it; see session.cs.
+   //
+   // Falling back matters for the same reason. TribesNext's version drives the
+   // yellow active-account highlight on the warrior screen and suppresses a
+   // warning when leaving a server, so answering "" until the community
+   // certificate lands would break both. The two layouts agree where it counts:
+   // field 0 is the name and field 3 the GUID either way.
    function WONGetAuthInfo()
    {
-      return TNBCertGet();
+      %cert = TNBCertGet();
+      if (%cert !$= "")
+         return %cert;
+
+      %account = TNBAccountCertificate();
+      if (%account $= "")
+         return "";
+
+      return getField(%account, 0) @ "\t\t0\t" @ getField(%account, 1) @ "\n";
    }
 
    // Eight sites call this after an operation that changes a tribe and two use
