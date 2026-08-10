@@ -204,7 +204,7 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 		return nil, false
 	}
 
-	created, err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name)
+	created, err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name, id.Created)
 	if err != nil {
 		s.Log.Error("ensure account", "err", err, "guid", id.GUID)
 		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")

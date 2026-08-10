@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -63,6 +64,9 @@ func testStore(t *testing.T) *store.Store {
 // The stand-in echoes the guid back, because the verifier refuses a 200 whose
 // profile is for somebody else: a pairing that upstream did not actually
 // enforce would otherwise let any token authorise any account.
+//
+// It also answers a fixed creation date, which is where accounts.created comes
+// from for a player this server has never seen. upstreamCreation is that date.
 func newServer(t *testing.T, st *store.Store) *httptest.Server {
 	t.Helper()
 
@@ -75,7 +79,8 @@ func newServer(t *testing.T, st *store.Store) *httptest.Server {
 			}
 			guid := r.FormValue("guid")
 			_, _ = io.WriteString(w,
-				`{"guid":"`+guid+`","name":"warrior-`+guid+`"}`)
+				`{"guid":"`+guid+`","name":"warrior-`+guid+
+					`","creation":"`+strconv.FormatInt(upstreamCreation, 10)+`"}`)
 		}))
 	t.Cleanup(upstream.Close)
 
@@ -139,9 +144,23 @@ func account(t *testing.T, ts *httptest.Server, guid string) string {
 	return mark
 }
 
+// upstreamCreation is the registration date the stand-in oracle reports:
+// 2011-03-13, chosen only for being a date no clock in this test could produce
+// by accident.
+const upstreamCreation = 1300000000
+
 func statusCode(answer map[string]any) string {
 	s, _ := answer["status"].(string)
 	return strings.SplitN(s, "\t", 2)[0]
+}
+
+func statusField(answer map[string]any, i int) string {
+	s, _ := answer["status"].(string)
+	f := strings.Split(s, "\t")
+	if i >= len(f) {
+		return ""
+	}
+	return f[i]
 }
 
 func rows(t *testing.T, answer map[string]any) []string {
@@ -152,6 +171,44 @@ func rows(t *testing.T, answer map[string]any) []string {
 		out[i], _ = r.(string)
 	}
 	return out
+}
+
+// A new account's registration date is TribesNext's, not the moment this
+// server first saw them -- otherwise every profile reads as registered today.
+//
+// Asserted through scalar 23, the ordinal the shipped warrior profile actually
+// issues, so this covers the whole path from the upstream field to the pane:
+// status field 6 is the registered date (webbrowser.cs reads it as such) and
+// date() renders it as YYYY-MM-DD.
+func TestRegistrationDateComesFromUpstream(t *testing.T) {
+	ts := newServer(t, testStore(t))
+	account(t, ts, "1002")
+
+	answer := db(t, ts, "1002", "scalar", "23", "warrior-1002")
+	if got, want := statusField(answer, 6), "2011-03-13"; got != want {
+		t.Errorf("registered = %q, want %q", got, want)
+	}
+}
+
+// The date is written once. A player authenticating again must not have their
+// registration date moved -- and in particular must not have last_seen
+// backdated to it, which would report them offline forever.
+func TestRegistrationDateSurvivesLaterRequests(t *testing.T) {
+	ts := newServer(t, testStore(t))
+	account(t, ts, "1003")
+
+	db(t, ts, "1003", "scalar", "5", "")
+
+	answer := db(t, ts, "1003", "scalar", "23", "warrior-1003")
+	if got, want := statusField(answer, 6), "2011-03-13"; got != want {
+		t.Errorf("registered = %q, want %q", got, want)
+	}
+	// Field 7 is the online flag, which online() derives from last_seen. The
+	// player just made a request, so anything but 1 means last_seen was
+	// clobbered by the registration date.
+	if got := statusField(answer, 7); got != "1" {
+		t.Errorf("online = %q, want 1 -- last_seen was overwritten", got)
+	}
 }
 
 func TestUnauthenticatedIsRefused(t *testing.T) {

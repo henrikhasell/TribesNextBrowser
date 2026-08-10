@@ -128,21 +128,37 @@ func (s *Store) note(ctx context.Context, q pgx.Tx, subjectType, subjectID, even
 // Called on every verified request, so a player exists here as soon as they log
 // in once -- there is no separate registration step.
 //
+// registered is the account's TribesNext registration date, which internal/auth
+// reads out of the same userview round trip that verifies the session. It is
+// used only by the INSERT -- the DO UPDATE deliberately does not list created,
+// so a player's registration date is written once and never moved afterwards.
+// Pass 0 when upstream had none to give and this falls back to first sighting,
+// which is what every row created before this existed holds.
+//
 // Reports whether THIS call created the account, which is what makes the
 // welcome mail exactly-once: of two concurrent first requests, one INSERTs and
 // the other takes the DO UPDATE branch, so only one sees xmax = 0. The cost of
 // claiming it here rather than after a successful delivery is that a failed
 // welcome is never retried -- acceptable for a greeting that must never stop a
 // new player from using the service.
-func (s *Store) EnsureAccount(ctx context.Context, guid, name string) (bool, error) {
+func (s *Store) EnsureAccount(ctx context.Context, guid, name string, registered int64) (bool, error) {
+	now := s.now()
+	if registered <= 0 {
+		registered = now
+	}
+
+	// created and last_seen take separate parameters because they are separate
+	// clocks now. Feeding both from one -- as this did while created was always
+	// "now" -- would set every returning player's last_seen to their
+	// registration date, and online() would report the server empty.
 	var created bool
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO accounts (guid, name, created, last_seen)
-		VALUES ($1, $2, $3, $3)
+		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (guid) DO UPDATE
 		   SET name = EXCLUDED.name, last_seen = EXCLUDED.last_seen
 		RETURNING (xmax = 0)`,
-		guid, name, s.now()).Scan(&created)
+		guid, name, registered, now).Scan(&created)
 	return created, err
 }
 

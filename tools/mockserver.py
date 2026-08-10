@@ -1223,6 +1223,11 @@ class Handler(BaseHTTPRequestHandler):
         pair is live, and gets the authoritative display name back in the same
         round trip. That is a third-party oracle, not a protocol we serve to
         players, and it is why the conformance run needs this route.
+
+        "creation" is a decimal string, matching how every other timestamp
+        crosses this protocol. The backend reads it as the account's
+        registration date for a player it has never seen before, so without it
+        a conformance run would never exercise that path.
         """
         guid = self._authorised(get)
         if guid is None:
@@ -1231,6 +1236,7 @@ class Handler(BaseHTTPRequestHandler):
         u = USERS[guid]
         return self._json({"guid": guid, "name": u["name"],
                            "tag": u["tag"], "append": u["append"],
+                           "creation": str(u["creation"]),
                            "online": u["online"], "memberships": []})
 
     def _authinfo(self, get):

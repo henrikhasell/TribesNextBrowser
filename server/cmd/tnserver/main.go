@@ -80,9 +80,12 @@ func main() {
 		return
 	}
 
+	verifier := auth.NewVerifier(*upstream, *ttl)
+	verifier.SetLogger(log)
+
 	srv := &api.Server{
 		Store:    store.New(pool),
-		Verifier: auth.NewVerifier(*upstream, *ttl),
+		Verifier: verifier,
 		Log:      log,
 	}
 
