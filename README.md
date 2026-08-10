@@ -163,9 +163,21 @@ The mod also became backend-exclusive, as above.
 cd server && TNB_TEST_DSN=postgres://... go test ./...
 ```
 
-**123 assertions inside the real game, 0 failures**: 66 parser, 7 sweep, 28
-browser, 22 mail. Plus the Go suite against a real PostgreSQL, because what is
-worth testing there is the SQL.
+**124 assertions inside the real game against the mock, 0 failures**: 66
+parser, 7 sweep, 29 browser, 22 mail. **58 more against the Go backend on
+PostgreSQL, 0 failures** -- the same suites, the same fixtures, a different
+server, so a failure there is a real behavioural difference between the two.
+Plus the Go suite itself, because what is worth testing there is the SQL.
+
+`run-conformance.sh` needs the backend verifying sessions against the *mock*,
+since the mock is what mints them:
+
+```sh
+./tnserver -dsn ... -upstream http://127.0.0.1:8099/tn/json/json_browser.php
+```
+
+It checks that before it starts, because getting it wrong produces a wall of
+empty panes that reads exactly like a backend fault.
 
 The suites divide the work deliberately:
 

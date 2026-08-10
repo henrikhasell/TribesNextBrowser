@@ -32,6 +32,35 @@ sleep 0.4
 (setsid python3 "$ROOT/tools/mockserver.py" --port 8099 > /tmp/tnbrowser-mock.log 2>&1 &)
 sleep 1
 
+# Preflight: the Go server has to verify sessions against the MOCK, because the
+# mock is what mints them here. Started against the real TribesNext instead,
+# every request 401s and the suites report a wall of empty panes that looks like
+# a backend fault -- which cost two wrong diagnoses before this check existed.
+#
+#   ./tnserver -dsn ... -upstream http://127.0.0.1:8099/tn/json/json_browser.php
+preflight() {
+    local uuid
+    uuid=$(curl -s "$AUTH_LOCAL/tn/robot/robot_login.php?guid=4510186&nonce=ab" \
+           | sed -n 's/^UUID: //p')
+    [ -n "$uuid" ] || { echo "The mock did not mint a session token." >&2; exit 1; }
+
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' \
+           --data "guid=4510186&uuid=$uuid&payload={\"form\":\"scalar\",\"ordinal\":\"0\",\"args\":\"\"}" \
+           "$DATA_LOCAL/db")
+    if [ "$code" = "401" ]; then
+        echo "The backend rejected a mock-minted session (401)." >&2
+        echo "Start it with -upstream $AUTH_LOCAL/tn/json/json_browser.php" >&2
+        exit 1
+    fi
+    [ "$code" = "200" ] || { echo "The backend answered /db with $code." >&2; exit 1; }
+}
+
+# The same two services as seen from the host rather than from the container.
+AUTH_LOCAL="http://127.0.0.1:8099"
+DATA_LOCAL="http://127.0.0.1:8080"
+preflight
+
 "$ROOT/tools/deploy.sh" "$PORT" >/dev/null || exit 1
 
 # The shim is loaded by the mod's own autoexec at boot; only the tests need

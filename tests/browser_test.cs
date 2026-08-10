@@ -49,6 +49,20 @@ function TNBBrowserHas(%name, %haystack, %needle)
    }
 }
 
+// The certificate record for one tribe, by name. Record 1 is the count and the
+// tribe records follow it (webbrowser.cs:101, :1909-1926).
+function TNBCertTribe(%name)
+{
+   %count = getRecord($TNB::Cert, 1);
+   for (%i = 0; %i < %count; %i++)
+   {
+      %rec = getRecord($TNB::Cert, %i + 2);
+      if (getField(%rec, 0) $= %name)
+         return %rec;
+   }
+   return "";
+}
+
 function TNBBrowserSelfTest(%host)
 {
    $TNBBrowserTest::Pass = 0;
@@ -74,10 +88,17 @@ function TNBBrowserCertLoaded(%ctx, %status, %result)
    TNBBrowserEq("record 0 field 3 is the GUID",
                 getField(getRecord($TNB::Cert, 0), 3), "4510186");
    TNBBrowserEq("record 1 is the tribe count", getRecord($TNB::Cert, 1), 2);
-   TNBBrowserEq("a tribe record carries its id in field 3",
-                getField(getRecord($TNB::Cert, 2), 3), 7);
+   // Found by name rather than by position. Nothing in the shipped scripts
+   // depends on the order of these records -- webbrowser.cs:1909-1926 walks
+   // all of them -- so asserting on record 2 would be testing something the
+   // client does not read, and did fail once for no better reason than the
+   // two backends sorting differently.
+   %tc = TNBCertTribe("Test Clan");
+   TNBBrowserEq("a tribe record carries its id in field 3", getField(%tc, 3), 7);
    TNBBrowserEq("a tribe record carries the admin level in field 4",
-                getField(getRecord($TNB::Cert, 2), 4), 4);
+                getField(%tc, 4), 4);
+   TNBBrowserEq("a tribe record carries the title in field 5",
+                getField(%tc, 5), "Leader");
 
    // webemail.cs computes this at file scope, before any identity exists.
    TNBBrowserEq("the mail cache is namespaced by GUID",

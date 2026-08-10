@@ -62,13 +62,22 @@ INSERT INTO history (subject_type, subject_id, event, at) VALUES
 -- reseed.
 ALTER TABLE mail ALTER COLUMN id DROP IDENTITY IF EXISTS;
 
+-- to_list is what the client shows back on the To: line: field 13 of a mail
+-- row is a display string the pane never resolves, so it has to be seeded
+-- rather than derived, or the message pane renders a blank To: and CC:.
 INSERT INTO mail (id, owner_guid, from_guid, from_name, to_guid, to_name,
-                  subject, body, sent, unread, folder) VALUES
+                  subject, body, sent, unread, folder, to_list, cc_list) VALUES
   (11, '4510186', '4120041', 'Shifter', '4510186', 'orange01',
    'Scrim on Tuesday?', 'We are short a defender. Interested?',
-   1785000000 - 3600, TRUE, 'inbox'),
+   1785000000 - 3600, TRUE, 'inbox', 'orange01', ''),
   (12, '4510186', '4200999', 'Ravage', '4510186', 'orange01',
-   'gg', E'Good games last night.\n\n-- Ravage',
-   1785000000 - 86400, FALSE, 'inbox');
+   'gg', E'Good games last night.\n-- Ravage',
+   1785000000 - 86400, FALSE, 'inbox', 'orange01', ''),
+  -- The Deleted folder needs an occupant of its own: array 14 is a separate
+  -- ordinal from array 1 and an empty folder cannot tell a working one from a
+  -- broken one.
+  (9, '4510186', '4120041', 'Shifter', '4510186', 'orange01',
+   'Old news', 'Already thrown away.',
+   1785000000 - 20*86400, FALSE, 'deleted', 'orange01', '');
 
 ALTER TABLE mail ALTER COLUMN id ADD GENERATED ALWAYS AS IDENTITY (START WITH 100);

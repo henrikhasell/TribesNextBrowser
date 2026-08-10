@@ -1053,7 +1053,11 @@ def certificate(guid):
         return ""
     records = [tab(u["name"], u["tag"], u["append"], guid),
                str(len(u["memberships"]))]
-    for m in u["memberships"]:
+    # Sorted by name, because the Go backend's WarriorTribes orders that way
+    # and a difference the client cannot observe is still a difference the
+    # conformance run reports. Nothing in the shipped scripts depends on the
+    # order of these records.
+    for m in sorted(u["memberships"], key=lambda m: m["name"]):
         records.append(tab(m["name"], m["tag"], m["append"], m["id"],
                            m["rank"], m["title"]))
     return "\n".join(records)
