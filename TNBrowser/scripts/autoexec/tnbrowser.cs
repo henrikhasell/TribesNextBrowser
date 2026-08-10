@@ -131,6 +131,49 @@ package TNBrowser
          %this.checkSchedule = schedule($TNB::MailRetryMs, 0, "CheckEmail", true);
    }
 
+   // Fetch on opening the pane.
+   //
+   // The shipped wake does start a fetch, but only through
+   // rbInbox.setValue(1) -> EMailGui.ButtonClick(0) -> GetEMailBtnClick(), and
+   // only inside the `!cacheLoaded || EM_Browser.rowCount() == 0` branch
+   // (webemail.cs:995). So the pane fetches when it has nothing to show and
+   // does not when it has: once the cache holds messages, opening EMAIL renders
+   // the cache and then waits out the rest of the five-minute poll. Mail that
+   // arrived in between is simply not there, and the player has no way to know
+   // the difference between that and an empty mailbox.
+   //
+   // onWake rather than any of the routes in, because every route ends here --
+   // a tab click and viewLastTab (both through LaunchTabView::onSelect above),
+   // the initial viewTab inside OpenLaunchTabs, and LaunchEmail() from the
+   // toolbar menu (webemail.cs:37).
+   function EmailGui::onWake(%this)
+   {
+      // Parent:: first: it loads the cache and clears checkingEmail (:997),
+      // and that flag is set at boot by console_client_patches.cs:1821 -- so a
+      // fetch before this returns at CheckEmail's first line on the one wake
+      // that most needs it.
+      Parent::onWake(%this);
+
+      // Already fetching, either from that shipped branch or from a poll still
+      // in flight. Its answer lands in the handlers below either way.
+      if (%this.checkingEmail)
+         return;
+
+      // The guard TNBCertEnsure uses, for the reason it uses it: with no
+      // TribesNext account there is no session to negotiate, and a player on
+      // the way to a LAN game should not meet a MessageBoxOK about it. Nothing
+      // is waited on beyond this -- the request queue negotiates the session
+      // lazily and replays the request (api.cs:147), so a fetch issued before
+      // the certificate lands still completes.
+      if (TNBSessionGuid() $= "")
+         return;
+
+      // false, not true: this is the player asking, the same as GET MAIL. It
+      // cancels the pending timer (webemail.cs:377) instead of leaving the
+      // fetch to it.
+      CheckEmail(false);
+   }
+
    // TribesNext forces EMAIL, CHAT and BROWSER inactive (console_client_patches.cs)
    // because the WON services behind all three shut down in 2003. Two of them
    // work again; the third does not, and a dead tab is worse than no tab.

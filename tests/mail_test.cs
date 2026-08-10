@@ -99,10 +99,11 @@ function TNBMailCertLoaded(%ctx, %status, %result)
 
    Canvas.setContent(EmailGui);
 
-   // onWake's own fetch is guarded by EmailGui.checkingEmail and a pending
-   // schedule, both of which survive a previous suite in the same session, so
-   // the poll is asked for explicitly -- the same call the GET MAIL button
-   // makes.
+   // The pane fetches on wake now (the mod's EmailGui::onWake), but only when
+   // this setContent actually wakes it -- and a previous suite in the same
+   // session may have left EmailGui as the content already, in which case
+   // setContent does nothing at all. So the poll is still asked for explicitly,
+   // and TNBMailFetch stands down if the wake got there first.
    schedule(1000, 0, "TNBMailFetch");
    schedule(4000, 0, "TNBMailStep1");
 }
@@ -127,6 +128,12 @@ function TNBMailClearCache()
 
 function TNBMailFetch()
 {
+   // Clearing the flag and firing regardless would issue a SECOND query with
+   // the same $EmailNextSeq of 0 while the wake's is still out, and both
+   // answers carry both messages -- four rows where step 1 expects two.
+   if (EmailGui.checkingEmail)
+      return;
+
    EmailGui.checkingEmail = "";
    EmailGui.btnClicked = true;
    CheckEmail(false);
@@ -301,6 +308,38 @@ function TNBMailStep8()
       cancel(EmailGui.checkSchedule);
    EmailGui.checkSchedule = "";
    $TNB::Host = $TNBMailTest::HostWas;
+
+   schedule(500, 0, "TNBMailStep9");
+}
+
+// Opening the pane fetches, whatever is in the cache.
+//
+// The shipped wake only fetches through rbInbox when the cache is empty
+// (webemail.cs:995), so by this point -- two messages cached -- stock would do
+// nothing and the mailbox would sit until the five-minute poll came round. The
+// mod's EmailGui::onWake is what closes that.
+//
+// onWake() directly rather than Canvas.setContent: EmailGui is already the
+// content, and setting the content to what it already is wakes nothing.
+function TNBMailStep9()
+{
+   EmailGui.checkingEmail = "";
+   EmailGui.checkSchedule = "";
+   EmailGui.state = "";
+
+   EmailGui.onWake();
+
+   TNBMailEq("opening the mail pane fetches", EmailGui.checkingEmail, 1);
+
+   schedule(3000, 0, "TNBMailStep10");
+}
+
+function TNBMailStep10()
+{
+   // That fetch armed the next poll on its way out; leave nothing behind.
+   if (isEventPending(EmailGui.checkSchedule))
+      cancel(EmailGui.checkSchedule);
+   EmailGui.checkSchedule = "";
 
    $TNBMailTest::Done = 1;
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @
