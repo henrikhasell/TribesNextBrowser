@@ -26,9 +26,25 @@
 //
 // Timing is the only awkward part. onConnect is synchronous and an HTTP lookup
 // is not, so this keeps a cache: a player who has connected recently is tagged
-// immediately, and a cache miss is tagged a moment later by renaming them, using
-// the same addTaggedString/setTargetName pair the stock duplicate-name handling
-// uses.
+// with no round trip at all. A cache miss holds the connection instead --
+// onConnect returns without calling Parent::, and the reply re-enters it, this
+// time with the record in hand.
+//
+// Holding it is cheaper than repairing it afterwards, because a name is not one
+// value. It is the server-side %client.name, the client target, AND a PlayerRep
+// on every connected machine, built once from the MsgClientJoin broadcast
+// (message.cs:59) and changed thereafter only by a MsgClientNameChanged
+// message. A late rename that sets the first two leaves every scoreboard in the
+// game showing the old name, which is what this mod used to do.
+//
+// The pattern is TribesNext's own: t2csri/serverSide.cs:239 stashes the connect
+// arguments, arms a 15-second expiry and returns, then resumes with
+// %client.onConnect(%client.tname, ...) once its challenge phase completes. Two
+// things follow from sitting inside that mechanism. The wait here must stay well
+// under those 15 seconds or t2csri kicks the player mid-hold -- hence
+// $TNBS::WaitMs. And a player who quits while held is still "authenticating" as
+// far as t2csri's onDrop override is concerned, so no join or leave message is
+// broadcast for a connect that never finished.
 
 //-----------------------------------------------------------------------------
 // Cache
@@ -90,18 +106,27 @@ function TNBSPump()
    }
 
    $TNBS::Busy = 1;
+   $TNBS::Gen++;
    %guid = $TNBS::QGuid[$TNBS::QHead];
 
    if (isObject(TNBSConnection))
       TNBSConnection.delete();
    new HTTPObject(TNBSConnection);
 
+   TNBSConnection.gen = $TNBS::Gen;
    TNBSConnection.buffer = "";
    TNBSConnection.setHeader("Accept", "text/plain");
 
    // The query string has to be part of the request-URI: this build's
    // HTTPObject ignores the third argument.
    TNBSConnection.get($TNBS::Host, $TNBS::AuthInfoURI @ "?guid=" @ %guid, "");
+
+   // Give up on a transfer that never finishes. A backend that accepts the
+   // connection and then says nothing leaves this build's HTTPObject waiting
+   // forever -- there is no onConnectFailed to hear -- and $TNBS::Busy would
+   // stay set, so every later lookup queues behind it and no player is ever
+   // tagged again until the server restarts. Observed, not theorised.
+   $TNBS::XferExpire = schedule($TNBS::WaitMs, 0, "TNBSAbandon", $TNBS::Gen);
 }
 
 function TNBSConnection::onLine(%this, %line)
@@ -113,24 +138,59 @@ function TNBSConnection::onLine(%this, %line)
 
 function TNBSConnection::onDisconnect(%this)
 {
+   // A transfer we already gave up on, finishing late. Its slot has moved on,
+   // so acting here would advance the queue a second time.
+   if (%this.gen != $TNBS::Gen)
+      return;
+
+   if (isEventPending($TNBS::XferExpire))
+      cancel($TNBS::XferExpire);
+
+   TNBSAdvance(trim(%this.buffer));
+}
+
+function TNBSAbandon(%gen)
+{
+   if (%gen != $TNBS::Gen || !$TNBS::Busy)
+      return;
+
+   error("TNBrowserServer: lookup timed out, abandoning it");
+   TNBSAdvance("");
+}
+
+// Retire the request at the head of the queue with whatever came back -- a
+// record, or nothing at all -- and start the next one.
+//
+// Bumping the generation is what makes an abandoned transfer harmless: its
+// onDisconnect, whenever it arrives, no longer matches.
+function TNBSAdvance(%info)
+{
    %h = $TNBS::QHead;
    if (%h >= $TNBS::QTail)
       return;                       // stray callback after the queue was reset
 
    $TNBS::QHead = %h + 1;
    $TNBS::Busy = 0;
+   $TNBS::Gen++;
 
-   %guid = $TNBS::QGuid[%h];
-   %client = $TNBS::QClient[%h];
-   %info = trim(%this.buffer);
-
-   TNBSHandleRecord(%client, %guid, %info);
+   TNBSHandleRecord($TNBS::QClient[%h], $TNBS::QGuid[%h], %info);
 
    schedule(32, 0, "TNBSPump");
 }
 
 function TNBSHandleRecord(%client, %guid, %info)
 {
+   // Every path below resumes the connect, including both failures. A player
+   // waits out $TNBS::WaitMs only when the backend accepts the connection and
+   // then never answers; anything the server actually says, even nothing, lets
+   // them in immediately.
+   //
+   // One tick later, not from here: this runs inside the HTTP connection's own
+   // callback, and onConnect sends the mission info and broadcasts to every
+   // client in the game. Re-entering the engine that hard from inside a libcurl
+   // callback is the mistake this file already warns about for transfers.
+   if (isObject(%client))
+      schedule(0, 0, "TNBSResume", %client);
 
    if (%info $= "")
    {
@@ -153,11 +213,6 @@ function TNBSHandleRecord(%client, %guid, %info)
    if ($TNBS::Debug)
       echo("TNBrowserServer: cached tag for " @ %guid @
            " [" @ getField(getRecord(%info, 0), 1) @ "]");
-
-   // If the player is still connected and was tagged from a cold cache, fix
-   // their name now.
-   if (isObject(%client) && %client.tnbPendingTag)
-      TNBSApplyLate(%client, %info);
 }
 
 // There is deliberately no onConnectFailed handler: this build's libcurl-backed
@@ -165,37 +220,31 @@ function TNBSHandleRecord(%client, %guid, %info)
 // buffer, which the empty check above already treats as "no record".
 
 //-----------------------------------------------------------------------------
-// Applying the tag
+// Resuming a held connect
 //-----------------------------------------------------------------------------
 
-// Rebuild a player's displayed name from a record, after the fact.
+// Let a held connection finish, by re-entering onConnect with the arguments it
+// was called with the first time.
 //
-// Mirrors what stock server.cs does inline at connect time, including the
-// colour codes, so a late tag is indistinguishable from a timely one.
-function TNBSApplyLate(%client, %info)
+// Re-entry rather than a direct Parent:: call, because Parent:: resolves only
+// inside the packaged function -- the same reason t2csri resumes its own auth
+// phase with %client.onConnect(%client.tname, ...) instead.
+//
+// Two callers race deliberately: the reply and the expiry timer. Whichever
+// arrives first wins and the other does nothing, so a slow answer that lands
+// after the timeout cannot connect the player twice. Its record is still cached
+// by then, which is what makes the next join instant.
+function TNBSResume(%client)
 {
-   %client.tnbPendingTag = 0;
-
-   %header = getRecord(%info, 0);
-   %tag = getField(%header, 1);
-   %append = getField(%header, 2);
-   if (%tag $= "")
+   if (!isObject(%client) || %client.tnbResumed)
       return;
 
-   %client.t2csri_authInfo = %info;
+   %client.tnbResumed = 1;
+   if (isEventPending(%client.tnbExpire))
+      cancel(%client.tnbExpire);
 
-   %base = getField(%header, 0);
-   if (%append)
-      %name = "\cp\c6" @ %base @ "\c7" @ %tag @ "\co";
-   else
-      %name = "\cp\c7" @ %tag @ "\c6" @ %base @ "\co";
-
-   %client.name = addTaggedString(%name);
-   if (%client.target > 0)
-      setTargetName(%client.target, %client.name);
-
-   if ($TNBS::Debug)
-      echo("TNBrowserServer: applied late tag to " @ %base);
+   %client.onConnect(%client.tnbName, %client.tnbRaceGender, %client.tnbSkin,
+                     %client.tnbVoice, %client.tnbVoicePitch);
 }
 
 //-----------------------------------------------------------------------------
@@ -204,8 +253,14 @@ function TNBSApplyLate(%client, %info)
 
 package TNBrowserServer
 {
-   // Runs before the stock onConnect reads the auth info, so a cached record is
-   // already in place by the time the tag is rendered.
+   // Runs before the stock onConnect reads the auth info, so the record is in
+   // place by the time the tag is rendered -- out of the cache if it is warm,
+   // and otherwise by holding the connect until it is.
+   //
+   // Package order against t2csri does not matter. This acts only once
+   // getAuthInfo() yields a GUID, which is true on whichever entry follows
+   // t2csri's challenge phase, whether this wraps that override or it wraps
+   // this one.
    function GameConnection::onConnect(%client, %name, %raceGender, %skin, %voice, %voicePitch)
    {
       // getAuthInfo(), not the raw field. For a remote client t2csri fills
@@ -224,11 +279,26 @@ package TNBrowserServer
             // membership list the game exposes through getAuthInfo().
             %client.t2csri_authInfo = %cached;
          }
-         else
+         else if (!%client.tnbWaited)
          {
-            // Cold cache. Let them in untagged and fix it when the reply lands.
-            %client.tnbPendingTag = 1;
+            // Cold cache. Hold the connection: nothing downstream has run yet,
+            // so nobody has been told a name that would have to be taken back.
+            //
+            // tnbWaited is set here and never cleared, so the resumed call
+            // falls straight through this branch. A lookup that failed leaves
+            // the cache cold, and the player joins untagged rather than
+            // waiting again -- the old failure mode, reached without hanging.
+            %client.tnbWaited = 1;
+
+            %client.tnbName = %name;
+            %client.tnbRaceGender = %raceGender;
+            %client.tnbSkin = %skin;
+            %client.tnbVoice = %voice;
+            %client.tnbVoicePitch = %voicePitch;
+
+            %client.tnbExpire = schedule($TNBS::WaitMs, 0, "TNBSResume", %client);
             TNBSFetch(%client, %guid);
+            return;
          }
       }
 

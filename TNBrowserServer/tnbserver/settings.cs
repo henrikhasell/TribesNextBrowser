@@ -42,6 +42,26 @@ if ($TNBS::AuthInfoURI $= "")
 if ($TNBS::CacheSeconds $= "")
    $TNBS::CacheSeconds = 300;
 
+// How long a connecting player is held while their tag is looked up, in
+// milliseconds. Only a cold cache waits, and only until the backend answers --
+// this is the cap for a backend that accepts the connection and then says
+// nothing.
+//
+// It caps the HTTP transfer as well, since there is no reason to wait longer
+// for an answer than we are willing to hold a player for it. The two clocks
+// start at different moments: a player's begins when they connect, a transfer's
+// when it reaches the head of the queue. So somebody queued behind a slow
+// lookup joins untagged on time rather than waiting for a stranger's request,
+// and the record that arrives afterwards still warms the cache for their next
+// join.
+//
+// There is a hard ceiling above this and it is not ours: TribesNext arms a
+// 15-second expiry before its own auth phase (t2csri/serverSide.cs:226) and
+// cancels it only after the connect completes, so a hold that outlasts it gets
+// the player kicked with "This is a TribesNext server." Keep well clear.
+if ($TNBS::WaitMs $= "")
+   $TNBS::WaitMs = 2000;
+
 // Print what the mod is doing. Useful while setting a server up; noisy after.
 if ($TNBS::Debug $= "")
    $TNBS::Debug = 0;

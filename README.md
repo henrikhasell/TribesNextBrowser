@@ -265,6 +265,17 @@ Things that cost real time here and are easy to trip over again:
 - **`$PlayerGfx` and `$TribeGfx` are read and never assigned** by any shipped
   script, so a profile that carries no graphic renders permanently blank. The
   server sends the default each shipped dialog names for itself.
+- **A player's name is three things, and renaming after connect only fixes two.**
+  `%client.name` and the client target both update on the spot, but every
+  connected machine also holds a `PlayerRep` built once from the `MsgClientJoin`
+  broadcast — the scoreboard and lobby draw *that*, and only a
+  `MsgClientNameChanged` message changes it (`message.cs:121`).
+- **`GameConnection::onConnect` can be held.** Return without calling
+  `Parent::`, stash the five arguments, and re-enter with
+  `%client.onConnect(...)` when you are ready — which is how TribesNext gates
+  its own auth phase (`t2csri/serverSide.cs:239`). Cheaper than repairing a name
+  afterwards. Its 15-second expiry is armed before yours and cancelled after, so
+  any hold has to finish well inside it.
 - **Clear a queue before running its callbacks, not after.** Callbacks routinely
   enqueue new work; resetting afterwards silently discards it.
 - **Register at most one "wait for session" callback**, or the session layer
