@@ -77,6 +77,17 @@ if ($TNB::CertURI $= "")
 if ($TNB::SessionRefresh $= "")
    $TNB::SessionRefresh = 10 * 60;
 
+// How long to wait before polling for mail again after a poll failed, in
+// milliseconds.
+//
+// The shipped client has no such interval because it never retries: its error
+// branch leaves EmailGui.checkingEmail set and no timer armed, so a single
+// failed poll costs the whole session's mail. Shorter than the five minutes a
+// successful poll waits, since the usual reason to be here is a race the next
+// attempt will win.
+if ($TNB::MailRetryMs $= "")
+   $TNB::MailRetryMs = 30 * 1000;
+
 // Emit protocol chatter to the console. Never log the full request URI at
 // level 1 -- it carries the session UUID.
 if ($TNB::Debug $= "")

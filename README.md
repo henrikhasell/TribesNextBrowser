@@ -262,6 +262,17 @@ Things that cost real time here and are easy to trip over again:
   takes the branch that skips the GUID check (`webemail.cs:1203`). A suite that
   wants an empty mailbox has to truncate the file — otherwise it passes once and
   then inherits its own previous run.
+- **`$EmailCachePath` must be settled before any pane wakes.** `webemail.cs:15`
+  computes it at file scope, during boot, from an identity nobody has yet, and
+  `loadCache` is destructive — it clears the browser and the message vector and
+  refills them only from the file it reads. Move the path afterwards and the
+  next wake empties the inbox.
+- **One failed mail poll costs the whole session's mail.** `CheckEmail` clears
+  `checkSchedule` and sets `checkingEmail` before querying, and only its success
+  branches restore either; the error branch stops at a `MessageBoxOK`. Every
+  later poll then returns at its first line, GET MAIL included.
+- **`Canvas.setContent` on the content it already holds does nothing** — no
+  `onSleep`, no `onWake`. To re-run a pane's wake logic, call `onWake()`.
 - **`$PlayerGfx` and `$TribeGfx` are read and never assigned** by any shipped
   script, so a profile that carries no graphic renders permanently blank. The
   server sends the default each shipped dialog names for itself.

@@ -249,6 +249,59 @@ function TNBMailStep6()
    $TNB::GuidOverride = "4510186";
    $TNB::UUID = "";
 
+   // The cache path, which is where a mailbox goes to die.
+   //
+   // webemail.cs:15 computes $EmailCachePath at file scope, during boot, with
+   // nobody logged in -- so it bakes to "webcache//". If it is only corrected
+   // when the community certificate lands, it MOVES while the pane is using it,
+   // and EmailGui::onWake then reads a file that does not exist. onWake starts
+   // by clearing EM_Browser and the message vector, so the inbox goes to zero
+   // rows with nothing due to poll again for five minutes. That is the whole of
+   // the "opens on EMAIL and no mail appears" report.
+   $TNB::Cert = "";
+   $EmailCachePath = "webcache//";
+   TNBCachePathSync();
+   TNBMailEq("the cache path is settled without a certificate",
+             $EmailCachePath, "webcache/4510186/");
+
+   schedule(500, 0, "TNBMailStep7");
+}
+
+// A poll that fails must not cost the session its mail.
+//
+// CheckEmail (webemail.cs:369) clears checkSchedule and sets checkingEmail
+// before issuing the query, and only its success branches restore either. The
+// error branch stops at a MessageBoxOK -- so without the mod's override,
+// checkingEmail stays set, every later CheckEmail returns at its first line,
+// and no timer is armed. Nothing polls again, ever, and GET MAIL takes the same
+// early return.
+function TNBMailStep7()
+{
+   $TNBMailTest::HostWas = $TNB::Host;
+   $TNB::Host = "http://172.17.0.1:9";      // nothing listens here
+
+   EmailGui.checkingEmail = "";
+   EmailGui.checkSchedule = "";
+   EmailGui.state = "";
+   CheckEmail(false);
+
+   schedule(4000, 0, "TNBMailStep8");
+}
+
+function TNBMailStep8()
+{
+   TNBMailEq("a failed poll reports failure", EmailGui.state, "error");
+   TNBMailEq("a failed poll releases the in-progress flag",
+             EmailGui.checkingEmail, 0);
+   TNBMailEq("and arms another attempt",
+             isEventPending(EmailGui.checkSchedule), 1);
+
+   // Leave nothing armed: it would fire in the middle of another suite.
+   if (isEventPending(EmailGui.checkSchedule))
+      cancel(EmailGui.checkSchedule);
+   EmailGui.checkSchedule = "";
+   $TNB::Host = $TNBMailTest::HostWas;
+
    $TNBMailTest::Done = 1;
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @
         " fail=" @ $TNBMailTest::Fail);

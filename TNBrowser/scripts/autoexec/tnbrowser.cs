@@ -90,12 +90,45 @@ package TNBrowser
    // not exist.
    function OpenLaunchTabs(%gotoWarriorSetup)
    {
+      // Before Parent::, because Parent:: opens a pane -- and with the launch
+      // screen set to Email or Browser (OptionsDlg, $pref::Shell::LaunchGui,
+      // read at LaunchLanGui.cs:165) that pane wakes and reads the identity
+      // inside this call. Both of these have to be true by then.
+      TNBCachePathSync();
+      TNBCertEnsure("");
+
       %was = $PlayingOnline;
       $PlayingOnline = true;
 
       Parent::OpenLaunchTabs(%gotoWarriorSetup);
 
       $PlayingOnline = %was;
+   }
+
+   // Make a failed mail poll recoverable.
+   //
+   // CheckEmail (webemail.cs:369) clears checkSchedule and sets checkingEmail
+   // before issuing the query, and only the success branches put either back.
+   // The error branch (:1096) shows a MessageBoxOK and stops -- so checkingEmail
+   // stays set, every later CheckEmail returns at its first line, no timer is
+   // armed, and mail is dead for the rest of the session. GET MAIL does not help
+   // either; it goes through the same early return.
+   //
+   // Stock could afford that: a WON client had its chat socket up long before
+   // the shell, so the fabricated ORA-04061 that DatabaseQueryi answers with no
+   // connection (webstuff.cs:186) almost never fired. Here the first poll can
+   // genuinely lose a race with the session, and one lost race should not cost
+   // the session's mail.
+   function EMailGui::onDatabaseQueryResult(%this, %status, %result, %key)
+   {
+      Parent::onDatabaseQueryResult(%this, %status, %result, %key);
+
+      if (%this.state !$= "error")
+         return;
+
+      %this.checkingEmail = false;
+      if (!isEventPending(%this.checkSchedule))
+         %this.checkSchedule = schedule($TNB::MailRetryMs, 0, "CheckEmail", true);
    }
 
    // TribesNext forces EMAIL, CHAT and BROWSER inactive (console_client_patches.cs)
@@ -147,9 +180,18 @@ activatePackage(TNBrowser);
 // logged in" into a tab that does nothing when clicked, which is a worse
 // failure than the shipped screens' own -- they put whatever the server says
 // in a MessageBoxOK, which is at least a sentence the player can act on.
+//
+// The account check is the one thing that must not be skipped when this is
+// called from the shell rather than from a tab. TNBSessionStart answers a
+// missing account by calling error() with "You are not logged in to a
+// TribesNext account" (session.cs:166), and a player who never intended to use
+// any of this should not meet that on the way to a LAN game. It is a
+// synchronous read, so it costs nothing to ask.
 function TNBCertEnsure(%gui)
 {
    if (TNBCertReady() || $TNB::CertPending)
+      return;
+   if (TNBSessionGuid() $= "")
       return;
 
    $TNB::CertPending = 1;
@@ -165,8 +207,18 @@ function TNBCertEnsureDone(%gui, %status, %result)
 
    // onWake reads the warrior name out of the certificate and opens that
    // warrior's page, so the pane has to be woken again now there is one.
-   if (isObject(%gui) && Canvas.getContent() $= %gui)
-      Canvas.setContent(%gui);
+   //
+   // Called directly, not through Canvas.setContent: setting the content to
+   // what it already is does not re-wake anything, so the setContent this used
+   // to do was silently doing nothing at all.
+   //
+   // The browser only. EmailGui reads no identity on wake beyond the cache
+   // path, which TNBCachePathSync has already settled -- and its onWake starts
+   // by clearing EM_Browser and the message vector, so waking it here would
+   // empty a mailbox that had just arrived.
+   if (isObject(%gui) && %gui $= TribeandWarriorBrowserGui &&
+       Canvas.getContent() $= %gui)
+      %gui.onWake();
 }
 
 // The request queue's indices have to start from a known state.

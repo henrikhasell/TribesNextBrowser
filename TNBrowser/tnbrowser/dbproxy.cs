@@ -200,20 +200,7 @@ function TNBCertLoaded(%ctx, %status, %result)
    if (%status $= "ok")
    {
       $TNB::Cert = TNBJsonStr(%result, "cert");
-
-      // webemail.cs:15 computes $EmailCachePath at file scope --
-      //
-      //    $EmailCachePath = "webcache/" @ getField(getRecord(wonGetAuthInfo(),0),3) @ "/";
-      //
-      // -- which on a WON client ran after the login, because the login was the
-      // first thing the shell did. Here the certificate arrives once the shell
-      // is already up, so that global is baked as "webcache//" and every
-      // account on the machine shares one cache file. The client defends
-      // itself (getCache rejects a cache whose first line is a different GUID),
-      // so the symptom is not mixed-up mail but a cache that is permanently
-      // stale for whoever logged in second. Recompute it now that there is an
-      // identity to compute it from.
-      $EmailCachePath = "webcache/" @ getField(getRecord($TNB::Cert, 0), 3) @ "/";
+      TNBCachePathSync();
    }
 
    %cb = $TNB::CertCb;
@@ -222,6 +209,45 @@ function TNBCertLoaded(%ctx, %status, %result)
    if (%cb !$= "")
       call(%cb, $TNB::CertCbCtx, %status,
            (%status $= "ok" ? $TNB::Cert : %result));
+}
+
+// Point the mail cache at the account whose mail it holds.
+//
+// webemail.cs:15 computes $EmailCachePath at file scope --
+//
+//    $EmailCachePath = "webcache/" @ getField(getRecord(wonGetAuthInfo(),0),3) @ "/";
+//
+// -- which on a WON client ran after the login, because the login was the first
+// thing the shell did. Here it runs during boot, with nobody logged in, and
+// bakes to "webcache//".
+//
+// Leaving it to be repaired when the community certificate lands is too late,
+// and the failure is worse than a stale cache: EmailGui reads and writes that
+// global on every wake, and loadCache (webemail.cs:1229) is destructive -- it
+// clears EM_Browser and EmailMessageVector and repopulates them only from the
+// file it reads. Move the path after mail has been written under the old one
+// and the next wake empties the inbox, with nothing due to poll again for five
+// minutes. Observed: EmailGui.onWake() takes a two-message inbox to zero rows.
+//
+// Nothing had to wait for the certificate anyway. TNBSessionGuid reads the
+// TribesNext account certificate directly (session.cs), so the GUID is known
+// synchronously from the moment the player is logged in -- and it is the same
+// GUID, because the backend issues a certificate for the account its session
+// was negotiated with. Calling this again on arrival recomputes the same value.
+//
+// The session guid rather than WONGetAuthInfo's, because it is the identity
+// every request is actually made as: it honours $TNB::GuidOverride, so a client
+// driven against the mock caches under the account it is pretending to be
+// rather than not at all.
+function TNBCachePathSync()
+{
+   %guid = TNBSessionGuid();
+   if (%guid $= "")
+      %guid = getField(getRecord(WONGetAuthInfo(), 0), 3);
+   if (%guid $= "")
+      return;                    // nothing to compute it from yet
+
+   $EmailCachePath = "webcache/" @ %guid @ "/";
 }
 
 // True once the identity is known. Every pane reads the warrior name out of the
