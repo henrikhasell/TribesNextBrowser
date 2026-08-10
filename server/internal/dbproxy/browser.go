@@ -247,12 +247,20 @@ func setTribeDescription(c *Ctx, args string) (Answer, error) {
 	return okResult("The tribe description has been updated."), nil
 }
 
+// scalar 16. Six fields, not three: the create dialog sends the recruiting flag
+// and the description as well (webbrowser.cs:166-171), the description behind
+// its own line count exactly as ordinal 15 sends it. Reading only the first
+// three founded every UI-created tribe with an empty description and
+// recruitment closed.
 func createTribe(c *Ctx, args string) (Answer, error) {
 	name := field(args, 0)
 	tag := field(args, 1)
 	appendTag := truthy(field(args, 2))
+	recruiting := truthy(field(args, 3))
+	info := fieldsFrom(args, 5)
 
-	if err := c.Store.CreateClan(c.Ctx, c.GUID, name, tag, appendTag); err != nil {
+	if err := c.Store.CreateClan(c.Ctx, c.GUID, name, tag, appendTag,
+		recruiting, info); err != nil {
 		return userError(err)
 	}
 	return okResult(name), nil

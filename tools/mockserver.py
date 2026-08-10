@@ -546,11 +546,42 @@ def set_tribe_description(guid, args):
 
 @on("scalar", 16)
 def create_tribe(guid, args):
+    """The dialog sends six fields, and the last two are the description.
+
+    This used to answer ok and store nothing, which made it useless as a
+    fixture for the one thing the ordinal is easy to get wrong: the Go backend
+    read three of the six fields and dropped the description, and a mock that
+    keeps no clan cannot tell anyone. It now founds the clan, so a test can ask
+    for the profile back.
+    """
     name = field(args, 0)
     if not name:
         return fail("A tribe needs a name.")
     if clan_by_name(name) is not None:
         return fail("There is already a tribe by that name.")
+
+    new_id = str(max([num(i) for i in CLANS] + [100]) + 1)
+    CLANS[new_id] = {
+        "id": new_id,
+        "name": name,
+        "tag": field(args, 1),
+        "append": flag(field(args, 2) in ("1", "yes", "true")),
+        "recruiting": flag(field(args, 3) in ("1", "yes", "true")),
+        "website": "",
+        # Field 4 is the client's own line count; the description is the tail,
+        # exactly as ordinal 15 sends it.
+        "info": "\n".join(fields(args)[5:]),
+        "creation": NOW,
+        "picture": "",
+        "members": [{"guid": guid, "rank": "4", "title": "Leader",
+                     "joined": NOW}],
+    }
+    # The founder's membership as well, because the client re-reads its
+    # certificate straight after this (WonUpdateCertificate, webbrowser.cs:774)
+    # and builds the tribe's tab from what comes back.
+    USERS[guid]["memberships"].append(
+        {"id": new_id, "name": name, "rank": "4", "title": "Leader",
+         "tag": CLANS[new_id]["tag"], "append": CLANS[new_id]["append"]})
     return ok_result(name)
 
 

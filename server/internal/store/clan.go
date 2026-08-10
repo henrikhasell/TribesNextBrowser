@@ -118,7 +118,16 @@ func (s *Store) ClanHistory(ctx context.Context, id int64) ([]model.HistoryEntry
 // unmodified (:167, :2413), trimming only to test it for blankness. Trimming
 // here silently deleted the one character a player typed to fix the very thing
 // they were previewing.
-func (s *Store) CreateClan(ctx context.Context, guid, name, tag string, append_ bool) error {
+// The description and the recruiting flag are set here rather than left to a
+// follow-up call, because the create dialog is the only place the client ever
+// offers them together: it collects both (CreateTribeDescription and
+// $CreateTribeRecruiting) and sends them in the one ordinal, with no second
+// query behind it. Dropping them meant a tribe founded through the UI came out
+// with an empty description and closed recruitment whatever the player typed --
+// and the pane they land on next is the profile that shows exactly that.
+func (s *Store) CreateClan(ctx context.Context, guid, name, tag string,
+	append_, recruiting bool, info string) error {
+
 	name = strings.TrimSpace(name)
 	if name == "" || strings.TrimSpace(tag) == "" {
 		return refuse("a new clan needs both a name and a tag")
@@ -137,9 +146,9 @@ func (s *Store) CreateClan(ctx context.Context, guid, name, tag string, append_ 
 
 		var id int64
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO clans (name, tag, append, created)
-			VALUES ($1, $2, $3, $4) RETURNING id`,
-			name, tag, append_, s.now()).Scan(&id); err != nil {
+			INSERT INTO clans (name, tag, append, recruiting, info, created)
+			VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
+			name, tag, append_, recruiting, info, s.now()).Scan(&id); err != nil {
 			return err
 		}
 

@@ -213,6 +213,62 @@ function TNBBrowserStep5()
    TNBBrowserHas("the tribe tag survives into the search row",
                  BrowserSearchMatchList.getRowText(0), "[TC]");
 
+   // Founding a tribe, through the dialog's own controls.
+   //
+   // The description is the point. It is the fourth thing the create dialog
+   // collects and it rides in the same ordinal as the name (scalar 16, six
+   // fields: name, tag, append, recruiting, line count, description), so a
+   // backend that reads only the first few founds the tribe correctly and
+   // silently drops what the player typed -- and the pane the client lands on
+   // straight afterwards is the profile that would have shown it. Nothing
+   // reports an error, which is why this needs a test rather than a look.
+   $TNBBrowserTest::NewTribe = "Fixture Clan";
+   $TNBBrowserTest::NewDesc = "Founded by the test suite.";
+
+   CreateTribe();                        // loads and pushes the dialog
+   $CreateTribeName = $TNBBrowserTest::NewTribe;
+   $CreateTribeTag = "[FX]";
+   $CreateTribeAppend = false;
+   $CreateTribeRecruiting = true;
+   CreateTribeDescription.setValue($TNBBrowserTest::NewDesc);
+   CreateTribeProcess();
+
+   schedule(3000, 0, "TNBBrowserStep6");
+}
+
+function TNBBrowserStep6()
+{
+   // Read it back the way the tribe pane does, rather than trusting the
+   // create call's own answer -- which is just the name echoed back.
+   TribePane.key = LaunchGui.key++;
+   TribePane.state = "getTribeProfile";
+   TProfileHdr.Desc = "";
+   DatabaseQuery(22, $TNBBrowserTest::NewTribe, TribePane, TribePane.key);
+
+   schedule(2500, 0, "TNBBrowserStep7");
+}
+
+function TNBBrowserStep7()
+{
+   TNBBrowserEq("a tribe created through the dialog exists",
+                TProfileHdr.tribeName, $TNBBrowserTest::NewTribe);
+   TNBBrowserEq("and kept its tag", TProfileHdr.tribeTag, "[FX]");
+   TNBBrowserHas("and kept the description it was created with",
+                 TProfileHdr.Desc, $TNBBrowserTest::NewDesc);
+
+   // Put the tab strip back. Creating a tribe opens a tab for it
+   // (TWBTabView.view, webbrowser.cs:774) and the strip is built only once,
+   // when onWake finds it empty -- so a leftover tab is still there on the next
+   // run of this suite in the same client, and step 1's count fails against a
+   // reseeded backend. The shipped leaveTribe handler tidies up the same way
+   // (webbrowser.cs:1737-1741).
+   for (%i = 0; %i < TWBTabView.tabCount(); %i++)
+   {
+      if (TWBTabView.getTabText(%i) $= $TNBBrowserTest::NewTribe)
+         TWBTabView.removeTabByIndex(%i);
+   }
+   TWBTabView.setSelectedByIndex(0);
+
    $TNBBrowserTest::Done = 1;
    echo("TNBBROWSERRESULT pass=" @ $TNBBrowserTest::Pass @
         " fail=" @ $TNBBrowserTest::Fail);

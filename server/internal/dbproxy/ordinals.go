@@ -359,9 +359,15 @@ var Table = map[Key]Ordinal{
 	},
 	k(Scalar, "16"): {
 		Name: "createTribe", Pane: "browser",
-		Where:    "webbrowser.cs:166",
-		Args:     "<name> \\t <tag> \\t <append>",
+		Where: "webbrowser.cs:166",
+		Args: "<name> \\t <tag> \\t <append> \\t <recruiting> \\t " +
+			"<lineCount> \\t <description>",
 		ParsedBy: "webbrowser.cs:761 CreateTribeDlg::onDatabaseQueryResult",
+		Note: "The last two fields are the pair ordinal 15 sends, and for the " +
+			"same reason -- the description is free text behind the client's " +
+			"own getRecordCount. This entry named three fields for a while " +
+			"and the handler followed it, which is how a tribe created " +
+			"through the dialog lost the description just typed into it.",
 	},
 	k(Scalar, "17"): {
 		Name: "setWarriorDescription", Pane: "browser",
