@@ -25,6 +25,7 @@ import (
 
 	"github.com/henrik/tnbrowser-server/internal/api"
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/migrate"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -34,6 +35,13 @@ func main() {
 		dsn      = flag.String("dsn", envOr("TNB_DSN", ""), "PostgreSQL connection string")
 		upstream = flag.String("upstream", envOr("TNB_UPSTREAM", auth.DefaultUpstream), "TribesNext endpoint used to verify sessions")
 		ttl      = flag.Duration("verify-ttl", 10*time.Minute, "how long a verified session is cached")
+		// Also readable from TNB_MIGRATE so a deployment can select this mode
+		// with an environment variable alone. The App Platform pre-deploy job
+		// runs the image's default command, and overriding that command would
+		// mean relying on how the platform quotes it against an image with no
+		// shell in it.
+		migrateOnly = flag.Bool("migrate", envOr("TNB_MIGRATE", "") != "",
+			"apply pending schema migrations and exit")
 	)
 	flag.Parse()
 
@@ -57,6 +65,19 @@ func main() {
 	if err := pool.Ping(ctx); err != nil {
 		log.Error("database unreachable", "err", err)
 		os.Exit(1)
+	}
+
+	// Migrating is a separate run, not something serving does on startup. With
+	// more than one instance, startup migration means every instance racing to
+	// change the schema underneath the ones already serving requests; as its
+	// own step it either succeeds before any new instance takes traffic, or
+	// fails the deploy and leaves the running one alone.
+	if *migrateOnly {
+		if err := migrate.Apply(ctx, pool, log); err != nil {
+			log.Error("migrate", "err", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	srv := &api.Server{

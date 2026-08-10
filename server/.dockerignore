@@ -1,0 +1,5 @@
+# The build needs the Go sources and the migrations. Nothing else.
+tnserver
+*.test
+testdata/
+README.md

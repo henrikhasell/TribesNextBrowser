@@ -52,11 +52,8 @@ docker run -d --name tnb-postgres \
   -e POSTGRES_PASSWORD=tnbrowser -e POSTGRES_USER=tnbrowser -e POSTGRES_DB=tnbrowser \
   -p 5433:5432 postgres:16-alpine
 
-for m in migrations/*.sql; do
-  psql "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" -f "$m"
-done
-
 go build -o tnserver ./cmd/tnserver
+./tnserver -dsn "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser" -migrate
 ./tnserver -dsn "postgres://tnbrowser:tnbrowser@127.0.0.1:5433/tnbrowser"
 ```
 
@@ -66,6 +63,20 @@ go build -o tnserver ./cmd/tnserver
 | `-dsn` | `TNB_DSN` | PostgreSQL connection string, required |
 | `-upstream` | `TNB_UPSTREAM` | TribesNext endpoint used to verify sessions |
 | `-verify-ttl` | | how long a verified session is cached, default 10m |
+| `-migrate` | `TNB_MIGRATE` | apply pending migrations and exit, instead of serving |
+
+`migrations/` is compiled into the binary, so `-migrate` needs no psql and no
+copy of this repository — which is what lets the deployed image be a distroless
+one with no shell in it. Files are applied in filename order, each in its own
+transaction, and recorded in `schema_migrations` so a second run does nothing.
+Running it against a database migrated by hand before this existed is safe: the
+initial schema is written with `IF NOT EXISTS` throughout, so it records the row
+it was missing and moves on.
+
+Serving never migrates. With more than one instance that would mean every
+instance racing to change the schema underneath the ones already answering
+requests, so it is a separate run that either finishes first or fails the
+deploy.
 
 Point the client at it from the game console:
 
@@ -106,6 +117,37 @@ Plain HTTP by default, which works immediately on a LAN. For anything
 internet-facing put it behind a reverse proxy holding a real certificate: the
 patched client verifies TLS against `curl-ca-bundle.crt`, so a self-signed
 certificate is rejected outright and there is no client-side way to relax that.
+
+## Deploying
+
+`.do/app.yaml` is a DigitalOcean App Platform specification: one service, one
+pre-deploy migration job, an existing managed PostgreSQL cluster, and a custom
+domain. It is deployed from CI rather than on push, so an untested commit cannot
+reach players -- see `.github/workflows/server.yml`.
+
+```sh
+doctl apps create --spec .do/app.yaml            # first time
+doctl apps update <app-id> --spec .do/app.yaml   # afterwards
+```
+
+That arrangement answers Transport above without a reverse proxy to run: App
+Platform terminates TLS with a Let's Encrypt certificate, and a Let's Encrypt
+chain is already known to verify cleanly against the patched client's
+`curl-ca-bundle.crt`.
+
+Three things it depends on that live outside this repository, and none of which
+fail loudly if they are wrong:
+
+- The managed cluster is named `tnb-db` and sits in the same region as the app.
+  A cluster in another region binds fine and then pays a round trip per query.
+- The app is in the cluster's **trusted sources**. The connection string is
+  supplied by the binding either way, so a database open to the internet looks
+  identical from here.
+- The `k8s.henrik.si` zone is not being pruned by an external-dns policy of
+  `sync`, which would delete the record App Platform creates.
+
+The image itself is ordinary, so none of this is required: `docker build
+-t tnserver server/` and a `TNB_DSN` will run it anywhere.
 
 ## API
 

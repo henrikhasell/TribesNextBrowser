@@ -1,0 +1,87 @@
+# Test the backend, then deploy it.
+#
+# App Platform's own push trigger is switched off in .do/app.yaml, because it
+# would deploy a red build as happily as a green one. Deployment is the last
+# step here instead, so it can only happen after the tests pass.
+
+name: server
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'server/**'
+      - '.do/app.yaml'
+      - '.github/workflows/server.yml'
+  pull_request:
+    paths:
+      - 'server/**'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    # The suite runs against a real PostgreSQL because what is worth testing is
+    # the SQL -- rank gates, cascades, transactional mutations. Without a DSN
+    # the database tests skip themselves, so a missing service here would turn
+    # into a green run that tested nothing.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: tnbrowser
+          POSTGRES_PASSWORD: tnbrowser
+          POSTGRES_DB: tnbrowser
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DSN: postgres://tnbrowser:tnbrowser@127.0.0.1:5432/tnbrowser?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+
+      - name: Vet
+        working-directory: server
+        run: go vet ./...
+
+      # Building the schema with the same command production uses means the
+      # migrations are exercised on every run, rather than only on deploy day.
+      - name: Apply migrations
+        working-directory: server
+        run: go run ./cmd/tnserver -dsn "$DSN" -migrate
+
+      - name: Test
+        working-directory: server
+        env:
+          TNB_TEST_DSN: ${{ env.DSN }}
+        run: go test ./...
+
+      # Catches a broken Dockerfile here rather than half way through a deploy.
+      - name: Build image
+        run: docker build -t tnserver:ci server
+
+  deploy:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      # --wait so a failing pre-deploy migration fails this job too, instead of
+      # reporting success for a deploy that rolled back a minute later.
+      - name: Deploy
+        run: doctl apps create-deployment ${{ secrets.DO_APP_ID }} --wait

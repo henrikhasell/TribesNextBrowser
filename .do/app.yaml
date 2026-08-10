@@ -1,0 +1,128 @@
+# DigitalOcean App Platform specification for the TNBrowser backend.
+#
+# Apply with:
+#   doctl apps create --spec .do/app.yaml          # first time
+#   doctl apps update <app-id> --spec .do/app.yaml # afterwards
+#
+# Only the Go server is deployed here. The client mod is a .vl2 players copy
+# into their own game directory and the server mod runs inside someone else's
+# game server; neither is a service and neither is served from this host.
+
+name: tnbrowser
+
+# Frankfurt is the closest region to the playerbase this is aimed at. The
+# managed database must be created in this same region -- App Platform will
+# happily bind to a cluster in another one, and then every query pays a
+# transatlantic round trip.
+region: fra
+
+services:
+  - name: api
+    # dockerfile_path is resolved from the repository root while source_dir sets
+    # the build context. If a build fails saying it cannot find the Dockerfile,
+    # this platform wants it relative to source_dir instead: drop the prefix and
+    # write `dockerfile_path: Dockerfile`.
+    source_dir: server
+    dockerfile_path: server/Dockerfile
+
+    github:
+      repo: henrikhasell/TribesNextBrowser
+      branch: main
+      # Deliberately off. App Platform's push trigger does not know whether the
+      # tests passed, so deployment is driven from CI after `go test ./...` is
+      # green -- see .github/workflows/server.yml.
+      deploy_on_push: false
+
+    http_port: 8080
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 10
+      period_seconds: 10
+      failure_threshold: 3
+
+    envs:
+      - key: TNB_ADDR
+        scope: RUN_TIME
+        value: ":8080"
+
+      # DATABASE_URL is injected by the database binding below and already ends
+      # in `?sslmode=require`, which is why the pool limit appends with `&`.
+      # If a future platform change drops that query string this becomes an
+      # invalid DSN and the server will refuse to start -- loudly, at deploy
+      # time, which is the failure mode to want.
+      #
+      # pgxpool otherwise defaults to about four connections per instance. The
+      # smallest managed cluster allows around 22 in total, so the cap is what
+      # stops a scale-out from locking the database against itself.
+      - key: TNB_DSN
+        scope: RUN_TIME
+        value: "${tnb-db.DATABASE_URL}&pool_max_conns=5"
+
+jobs:
+  # Schema changes run once, before any new instance takes traffic. A failure
+  # here fails the deploy and leaves the currently running version serving.
+  - name: migrate
+    kind: PRE_DEPLOY
+    source_dir: server
+    dockerfile_path: server/Dockerfile
+
+    github:
+      repo: henrikhasell/TribesNextBrowser
+      branch: main
+      deploy_on_push: false
+
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-0.5gb
+
+    # No run_command on purpose. The image is distroless and has no shell in it,
+    # so a command override would depend on whether the platform execs it
+    # directly or wraps it in `sh -c`. Selecting the mode with an environment
+    # variable works either way.
+    envs:
+      - key: TNB_MIGRATE
+        scope: RUN_TIME
+        value: "1"
+      - key: TNB_DSN
+        scope: RUN_TIME
+        value: "${tnb-db.DATABASE_URL}"
+
+databases:
+  # An existing managed cluster, not one App Platform creates. cluster_name must
+  # match it exactly. After the first deploy, check the cluster's trusted
+  # sources actually lists this app: the binding supplies the connection string,
+  # but a database still reachable from the whole internet is a separate
+  # setting, and the DSN alone will not tell you which you have.
+  - name: tnb-db
+    engine: PG
+    version: "16"
+    cluster_name: tnb-db
+    production: true
+
+domains:
+  # The zone k8s.henrik.si is already managed in DigitalOcean DNS, so the CNAME
+  # is created automatically and Let's Encrypt issues once it resolves.
+  #
+  # If that zone is driven by external-dns from a Kubernetes cluster, confirm
+  # the policy is upsert-only before deploying. A sync policy deletes records it
+  # does not recognise, which would silently remove this one and take the
+  # backend offline for every player at once.
+  - domain: tnb.k8s.henrik.si
+    type: PRIMARY
+    zone: k8s.henrik.si
+
+ingress:
+  rules:
+    # The client calls fixed paths (/db, /cert, /tn/server/authinfo), so
+    # everything goes to the one service.
+    - component:
+        name: api
+      match:
+        path:
+          prefix: /
+
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
