@@ -69,6 +69,21 @@ if ($TNB::DbURI $= "")
 if ($TNB::CertURI $= "")
    $TNB::CertURI = "/cert";
 
+// The clan certificate: the signed record a game server renders into your name.
+// Relative to $TNB::Host. See tnbrowser/clancert.cs.
+if ($TNB::ClanCertURI $= "")
+   $TNB::ClanCertURI = "/clancert";
+
+// How long to wait before asking for a clan certificate again after a failed
+// attempt, in milliseconds.
+//
+// Long, because there is nothing to hurry for. A backend with no signing key
+// answers 404 and will keep doing so; the only cost of not having a certificate
+// is that your clan tag does not show, and the only thing a fast retry would
+// achieve is a request every few seconds for the rest of the session.
+if ($TNB::ClanCertRetryMs $= "")
+   $TNB::ClanCertRetryMs = 5 * 60 * 1000;
+
 // How often to ping the session so it stays alive, in seconds. The reference
 // tournament client used 10 minutes.
 if ($TNB::SessionRefresh $= "")

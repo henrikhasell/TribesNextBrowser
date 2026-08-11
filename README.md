@@ -86,9 +86,9 @@ TribesNext client:
 
 | | what it is | who needs it |
 |---|---|---|
-| `TNBrowser/` | the client mod: five script files, no GUI | every player |
+| `TNBrowser/` | the client mod: six script files, no GUI | every player |
 | `server/` | a Go backend answering the 61 ordinals | whoever hosts the community |
-| `TNBrowserServer/` | a server-side mod that puts tribe tags in player names | game-server operators |
+| `TNBrowserServer/` | a server-side mod that renders tribe tags into player names | game-server operators |
 
 ## Authentication is TribesNext's identity, checked locally
 
@@ -112,6 +112,29 @@ upstream still authenticates here.
 What the backend adds is the last hop: `WONGetAuthInfo()` serves that identity
 to the shipped scripts in WON's certificate layout, assembled from the GUID the
 signature vouched for.
+
+### Clan tags travel with the player
+
+The same idea, one layer out. A game server renders a clan tag from
+`getAuthInfo()` inside `onConnect`, synchronously, so the tag has to be in hand
+before the player's name is built. `TNBrowserServer/` used to fetch it over HTTP
+while holding the connection open; it now checks a short-lived certificate the
+player carries, signed by the backend, and makes no network request of its own.
+
+TribesNext shipped this feature and it has been dead for years: its certificates
+are verified through a delegated key whose own certificate expired and can only
+be renewed by its author. Skipping that chain costs nothing here — it exists so
+that an arbitrary community server can convince an arbitrary game server, and
+our issuer and verifier are the same project. What genuinely needs an outside
+authority, that a GUID belongs to a real account, is exactly what the account
+certificate already says, and the game server has checked it a moment earlier.
+
+Nothing in this path can keep somebody out of a game. A bad signature, a lapsed
+certificate, an unknown key, a client that does not run the mod: all of them
+mean a player with no tag. The shipped equivalent disconnects for every one of
+those, and for a fifth case besides — an issuer the server cannot resolve, which
+stalls until a 15-second timer drops the player with a message telling them to
+install the patch they are already running.
 
 ## Requirements
 

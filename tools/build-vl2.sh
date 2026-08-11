@@ -42,6 +42,14 @@
 #                       every normal deployment, which is why this is one flag.
 #                       Default http://localhost:8080.
 #
+#   --clan-key FILE     the public key game servers check clan certificates
+#                       against, as written by `tnserver -genkey` (the
+#                       <key>.pub.cs file beside the private one). It replaces
+#                       tnbserver/clankeys.cs inside TNBrowserServer.vl2.
+#                       Public data: it verifies signatures and cannot make
+#                       them. Without it the server package still installs and
+#                       runs, and simply tags nobody.
+#
 # If your game servers must reach the backend at a different address than
 # players do -- an internal hostname, or split-horizon DNS -- set $TNBS::Host in
 # the game server's autoexec.cs. The baked value keeps its `if empty` guard, so
@@ -50,15 +58,31 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HOST="http://localhost:8080"
+CLANKEY=""
 OUTDIR=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --host)        HOST="${2:?--host needs a URL}"; shift 2 ;;
+        --clan-key)    CLANKEY="${2:?--clan-key needs a file}"; shift 2 ;;
         -*) echo "Unknown option: $1" >&2; exit 1 ;;
         *) OUTDIR="$1"; shift ;;
     esac
 done
+
+if [ -n "$CLANKEY" ]; then
+    [ -f "$CLANKEY" ] || { echo "No such file: $CLANKEY" >&2; exit 1; }
+    # A private key would work here and must never be shipped, so refuse the
+    # one mistake that would publish one.
+    if grep -q 'PRIVATE KEY' "$CLANKEY"; then
+        echo "$CLANKEY looks like a private key. Pass the .pub.cs file beside it." >&2
+        exit 1
+    fi
+    grep -q 'TNBS::ClanKeyN' "$CLANKEY" || {
+        echo "$CLANKEY defines no \$TNBS::ClanKeyN; is it the file -genkey wrote?" >&2
+        exit 1
+    }
+fi
 OUTDIR="${OUTDIR:-$ROOT/dist}"
 
 command -v zip >/dev/null || { echo "zip is required" >&2; exit 1; }
@@ -110,7 +134,14 @@ pack() {
         TNBrowser)
             bake "$stage/tnbrowser/settings.cs" "TNB::Host" "$HOST" ;;
         TNBrowserServer)
-            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$HOST" ;;
+            bake "$stage/tnbserver/settings.cs" "TNBS::Host" "$HOST"
+            # Substituted wholesale rather than rewritten line by line: the
+            # file holds any number of keys, and the one -genkey wrote is
+            # already exactly what the mod execs.
+            if [ -n "$CLANKEY" ]; then
+                cp "$CLANKEY" "$stage/tnbserver/clankeys.cs"
+                echo "  clan key from $CLANKEY" >&2
+            fi ;;
     esac
 
     # Stamp every entry with one timestamp so a rebuild of unchanged sources

@@ -1,9 +1,10 @@
-// Package api is the front door: five routes, and nothing that knows what an
+// Package api is the front door: six routes, and nothing that knows what an
 // ordinal means.
 //
 //	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
 //	POST /cert                the identity WONGetAuthInfo() hands the scripts
+//	POST /clancert            the same record, signed, for a game server to check
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
 //	GET  /healthz
 //
@@ -30,6 +31,7 @@ import (
 	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/dbproxy"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
@@ -38,6 +40,11 @@ type Server struct {
 	Store    *store.Store
 	Sessions *auth.Sessions
 	Log      *slog.Logger
+
+	// ClanCerts signs the clan record a game server renders into a name. Nil
+	// when no key was configured, which is a supported deployment: /clancert
+	// answers 404 and players simply carry no tag.
+	ClanCerts *clancert.Signer
 
 	// TrustGUID accepts a bare guid with no proof of anything, for driving the
 	// in-game test suites: the containers they run in hold no account key
@@ -70,6 +77,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/session", s.handleSession)
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
+	mux.HandleFunc("/clancert", s.handleClanCert)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -237,6 +245,48 @@ func (s *Server) handleCert(w http.ResponseWriter, r *http.Request) {
 		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
 		return
 	}
+	writeJSON(w, struct {
+		Cert string `json:"cert"`
+	}{cert})
+}
+
+// handleClanCert is the same record again, signed, for the player to carry.
+//
+// The client fetches this and hands it to game servers that ask; a game server
+// running TNBrowserServer checks the signature against the public half and
+// renders the tag, with no HTTP request of its own on the connect path. See
+// internal/clancert for why it is a certificate rather than the lookup
+// /tn/server/authinfo still serves.
+//
+// Session-authenticated, unlike that lookup, because this one is issued *to* a
+// player: it says who they are, so it may only be handed to them. The 404 for
+// an unconfigured key comes before authentication, so a deployment without one
+// does no database work to answer a request it cannot serve.
+func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
+	if s.ClanCerts == nil {
+		fatal(w, http.StatusNotFound, "404 Not Found")
+		return
+	}
+
+	c, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+
+	record, err := dbproxy.Certificate(c)
+	if err != nil {
+		s.Log.Error("clan certificate record", "guid", c.GUID, "err", err)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+
+	cert, err := s.ClanCerts.Sign(c.GUID, record, time.Now())
+	if err != nil {
+		s.Log.Error("signing a clan certificate", "guid", c.GUID, "err", err)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+
 	writeJSON(w, struct {
 		Cert string `json:"cert"`
 	}{cert})

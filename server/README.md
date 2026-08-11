@@ -68,6 +68,54 @@ over a bare SHA-1 makes that possible: with `sig^3 ≡ sha1(name \t guid \t e \t
 of them is `N` exactly. `internal/auth/auth_test.go` re-checks it against a real
 certificate on every run, so a wrong constant cannot pass unnoticed.
 
+## Clan tags are signed, not looked up
+
+A game server renders a player's clan tag from `getAuthInfo()`, synchronously,
+inside `onConnect`. The game-server mod used to fill that record by asking this
+server over HTTP while holding the connection open. It now checks a certificate
+the player carries:
+
+```
+KeyID <TAB> Issued <TAB> Expire <TAB> GUID <TAB> HexBlob <TAB> Sig
+```
+
+`HexBlob` is the same record `/cert` serves; `Sig` is raw RSA over a bare SHA-1
+of fields 0–4, which is what the engine's `rsa_mod_exp` can check. The GUID is
+bound to the one TribesNext's own authentication phase established a moment
+earlier, which is why no certificate chain is needed: we assert only the clan,
+and somebody else has already vouched for the identity.
+
+Set it up once:
+
+```sh
+./tnserver -genkey clan.pem          # writes clan.pem and clan.pem.pub.cs
+./tnserver -dsn ... -clan-key clan.pem -clan-key-id 1
+```
+
+`-clan-key` takes either a path or the PEM itself, and `TNB_CLAN_KEY` the same,
+because a platform hands secrets over as environment variables and gives you no
+filesystem to write one to — App Platform runs this from a distroless image with
+no volume. The deployed value is in [.do/app.yaml](../.do/app.yaml) in App
+Platform's encrypted form, which only that app can decrypt.
+
+The public half goes to game servers, either committed to
+`TNBrowserServer/tnbserver/clankeys.cs` or baked at package time with
+`tools/build-vl2.sh --clan-key clan.pem.pub.cs`. It verifies signatures and
+cannot make them, so it is not a secret.
+
+Certificates last 30 minutes by default (`-clan-cert-ttl`). Expiry is the only
+freshness mechanism — there is no revocation — so it is also what stops a player
+who left a clan wearing its tag. It can be that short because **nothing here can
+keep anybody out of a game**: a bad signature, an expired certificate, a key the
+game server has never heard of, or no certificate at all all mean the same
+thing, which is a player with no tag. That is what makes key rotation something
+this server can do alone — stamp a new `-clan-key-id`, and game servers that
+have not been updated show no tags until they are.
+
+Game servers must run **without** `-nologin`. TribesNext's authentication phase
+is what establishes the GUID a certificate is bound to, and it only runs when
+`$PlayingOnline` is set, which omitting that flag does.
+
 ## Running it
 
 ```sh
@@ -202,10 +250,17 @@ Paths and shapes are TribesNext's, so the client needs no new code:
   `blockremove`
 - `/tn/json/json_mail.php` — `count`, `read`, `delete`, `send`, with an optional
   `folder` on read and delete
-- `/tn/server/authinfo` — not a client endpoint; the game-server mod's clan
-  lookup. Unauthenticated: a game server holds no player token, and everything
-  it returns — a name and a clan tag — is on the scoreboard of every server that
-  player joins. It is read-only and reveals nothing a game client could not.
+- `/clancert` — the signed clan record a player carries into a game. Session
+  authenticated, because it says who the holder is and may therefore only be
+  handed to them. Answers 404 when the server was started without `-clan-key`,
+  which is a supported deployment: everything else serves and players simply
+  carry no tag. See [Clan tags](#clan-tags-are-signed-not-looked-up).
+- `/tn/server/authinfo` — not a client endpoint, and no longer used by the mod;
+  the clan-tag lookup the game-server mod made before certificates replaced it.
+  Kept because the deployment probe above uses it to prove a request reached Go
+  and Postgres rather than an edge cache. Unauthenticated: everything it returns
+  — a name and a clan tag — is on the scoreboard of every server that player
+  joins.
 
 Two behavioural differences from TribesNext, both intentional:
 

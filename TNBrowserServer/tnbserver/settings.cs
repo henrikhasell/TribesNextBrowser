@@ -30,40 +30,48 @@
 // Keeping it a loose file rather than putting it in the archive means it
 // survives replacing the .vl2 with a newer build.
 
+// The backend, and it is no longer needed at connect time -- or at all.
+//
+// This mod used to look every connecting player up over HTTP. It now checks a
+// certificate the player carries, so a server can run with the backend
+// unreachable, on a private network, or behind a firewall that lets nothing
+// out, and still show clan tags. The setting is kept because it is where a
+// future key refresh would fetch from, and because an operator who has one
+// configured should not have to remove it.
 if ($TNBS::Host $= "")
    $TNBS::Host = "http://localhost:8080";
 
-if ($TNBS::AuthInfoURI $= "")
-   $TNBS::AuthInfoURI = "/tn/server/authinfo";
-
-// How long a cached lookup stays good, in seconds. Clan membership changes
-// rarely, and a stale tag for a minute is better than a round trip on the
-// connect path.
-if ($TNBS::CacheSeconds $= "")
-   $TNBS::CacheSeconds = 300;
-
-// How long a connecting player is held while their tag is looked up, in
-// milliseconds. Only a cold cache waits, and only until the backend answers --
-// this is the cap for a backend that accepts the connection and then says
-// nothing.
+// How long a connecting player is held while a certificate transfer that is
+// already in progress finishes, in milliseconds.
 //
-// It caps the HTTP transfer as well, since there is no reason to wait longer
-// for an answer than we are willing to hold a player for it. The two clocks
-// start at different moments: a player's begins when they connect, a transfer's
-// when it reaches the head of the queue. So somebody queued behind a slow
-// lookup joins untagged on time rather than waiting for a stranger's request,
-// and the record that arrives afterwards still warms the cache for their next
-// join.
+// Almost never reached. The certificate is requested at the top of TribesNext's
+// authentication phase and arrives long before the connect that needs it, so
+// this covers only the case where the two genuinely race -- and a player whose
+// client sent nothing never waits at all.
 //
 // There is a hard ceiling above this and it is not ours: TribesNext arms a
-// 15-second expiry before its own auth phase (t2csri/serverSide.cs:226) and
+// 15-second expiry before its own auth phase (t2csri/serverSide.cs:260) and
 // cancels it only after the connect completes, so a hold that outlasts it gets
 // the player kicked with "This is a TribesNext server." Keep well clear.
 if ($TNBS::WaitMs $= "")
-   $TNBS::WaitMs = 2000;
+   $TNBS::WaitMs = 1000;
 
-// Print what the mod is doing. Useful while setting a server up; noisy after.
+// What this server calls itself when it asks a client for a certificate. The
+// client does not read it today; the shipped protocol's one extension point was
+// exactly this, and it costs nothing to have one.
+if ($TNBS::Version $= "")
+   $TNBS::Version = "TNBrowserServer 1.0";
+
+// Print what the mod is doing -- including every reason a player went untagged,
+// which is the only way to tell a wrong key from an expired certificate from a
+// client that is not running the mod. Useful while setting a server up; noisy
+// after.
 if ($TNBS::Debug $= "")
    $TNBS::Debug = 0;
 
-echo("TNBrowserServer: settings loaded (" @ $TNBS::Host @ ")");
+// The public keys clan certificates are checked against. A separate file
+// because it is the one an operator replaces, and tools/build-vl2.sh --clan-key
+// substitutes it wholesale rather than rewriting a line in here.
+exec("tnbserver/clankeys.cs");
+
+echo("TNBrowserServer: settings loaded");

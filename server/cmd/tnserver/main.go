@@ -14,10 +14,12 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 
 	"github.com/henrik/tnbrowser-server/internal/api"
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/migrate"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
@@ -49,10 +52,31 @@ func main() {
 		// shell in it.
 		migrateOnly = flag.Bool("migrate", envOr("TNB_MIGRATE", "") != "",
 			"apply pending schema migrations and exit")
+
+		// Clan certificates. Optional throughout: without a key the feature is
+		// off, /clancert answers 404, and everything else serves as before.
+		clanKey = flag.String("clan-key", envOr("TNB_CLAN_KEY", ""),
+			"clan signing key: a path to a PEM file, or the PEM itself")
+		clanKeyID = flag.Int("clan-key-id", envIntOr("TNB_CLAN_KEY_ID", 1),
+			"key number stamped into issued certificates, so a game server can pick the right public key")
+		clanTTL = flag.Duration("clan-cert-ttl", DefaultClanTTL(),
+			"how long an issued clan certificate stays valid")
+		genKey = flag.String("genkey", "",
+			"write a new clan signing key to this path, print the mod settings, and exit")
 	)
 	flag.Parse()
 
 	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+
+	// Before the database: generating a key is a local, offline errand and an
+	// operator doing it should not need a DSN to hand.
+	if *genKey != "" {
+		if err := writeClanKey(*genKey, *clanKeyID, *clanTTL); err != nil {
+			log.Error("genkey", "err", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if *dsn == "" {
 		log.Error("no database configured; set -dsn or TNB_DSN")
@@ -91,11 +115,33 @@ func main() {
 		log.Warn("-dev-trust-guid is set: any guid is accepted without proof")
 	}
 
+	// A configured key that will not load is fatal: the operator asked for this
+	// and a silent fallback to "no tags for anyone" is the kind of failure that
+	// gets diagnosed a week later.
+	var signer *clancert.Signer
+	if *clanKey != "" {
+		// A path on a machine somebody administers, the PEM itself when a
+		// platform hands it over as an environment variable and gives you no
+		// filesystem to put it on.
+		if clancert.IsPEM(*clanKey) {
+			signer, err = clancert.Parse([]byte(*clanKey), *clanKeyID, *clanTTL)
+		} else {
+			signer, err = clancert.Load(*clanKey, *clanKeyID, *clanTTL)
+		}
+		if err != nil {
+			log.Error("clan signing key", "err", err)
+			os.Exit(1)
+		}
+		log.Info("clan certificates enabled",
+			"keyid", signer.KeyID(), "key", signer.Fingerprint(), "ttl", signer.TTL())
+	}
+
 	srv := &api.Server{
 		Store:     store.New(pool),
 		Sessions:  auth.NewSessions(*ttl),
 		Log:       log,
 		TrustGUID: *trustGUID,
+		ClanCerts: signer,
 	}
 
 	httpSrv := &http.Server{
@@ -126,3 +172,67 @@ func envOr(key, fallback string) string {
 	}
 	return fallback
 }
+
+func envIntOr(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// DefaultClanTTL is the flag default, read from the environment first so a
+// deployment can set it without editing a command line.
+func DefaultClanTTL() time.Duration {
+	if v := os.Getenv("TNB_CLAN_CERT_TTL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			return d
+		}
+	}
+	return clancert.DefaultTTL
+}
+
+// writeClanKey is the -genkey errand: make a key, write it where nothing else
+// can read it, and print the two lines that go into the game-server mod.
+//
+// Printing the settings rather than the numbers is the point. The alternative
+// is an operator transcribing 512 hex characters by hand and discovering the
+// typo as tags that silently never appear.
+func writeClanKey(path string, keyID int, ttl time.Duration) error {
+	if _, err := os.Stat(path); err == nil {
+		return fmt.Errorf("%s already exists; refusing to overwrite a signing key", path)
+	}
+
+	key, err := clancert.Generate(clancert.KeyBits)
+	if err != nil {
+		return fmt.Errorf("generating a key: %w", err)
+	}
+	if err := os.WriteFile(path, clancert.MarshalPEM(key), 0o600); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+
+	// The public half goes beside it, as the exact file the mod wants. That is
+	// what tools/build-vl2.sh --clan-key takes, so the whole path from key to
+	// installed package is two commands and no transcription.
+	signer := clancert.FromKey(key, keyID, ttl)
+	pub := path + ".pub.cs"
+	if err := os.WriteFile(pub, []byte(clanKeyHeader+signer.ModSettings()+"\n"), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", pub, err)
+	}
+
+	fmt.Printf("Wrote %s -- the signing key. Keep it secret; nothing but this server needs it.\n", path)
+	fmt.Printf("Wrote %s -- the public half, for game servers.\n\n", pub)
+	fmt.Printf("Serve with:\n    tnserver -clan-key %s -clan-key-id %d\n\n", path, keyID)
+	fmt.Printf("Build the game-server package with:\n    tools/build-vl2.sh --clan-key %s\n\n", pub)
+	fmt.Printf("Or paste these into a loose autoexec.cs beside the .vl2:\n\n%s\n", signer.ModSettings())
+	return nil
+}
+
+const clanKeyHeader = `// TNBrowserServer -- the public keys clan certificates are checked against.
+//
+// Written by "tnserver -genkey". These are public: they verify a signature and
+// cannot make one. Keep an old key's lines when adding a new one, so
+// certificates issued under it stay checkable until they expire.
+
+`

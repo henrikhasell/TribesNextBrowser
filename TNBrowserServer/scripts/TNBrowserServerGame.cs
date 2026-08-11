@@ -28,7 +28,7 @@
 if (!isActivePackage(TNBrowserServer))
 {
    exec("tnbserver/settings.cs");
-   exec("tnbserver/authinfo.cs");
+   exec("tnbserver/clancert.cs");
 
    echo("TNBrowserServer: loaded at server start");
 }

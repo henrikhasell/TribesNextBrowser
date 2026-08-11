@@ -20,6 +20,7 @@ exec("tnbrowser/json.cs");
 exec("tnbrowser/session.cs");
 exec("tnbrowser/api.cs");
 exec("tnbrowser/dbproxy.cs");
+exec("tnbrowser/clancert.cs");
 
 package TNBrowser
 {
@@ -76,6 +77,11 @@ package TNBrowser
    function WONUpdateCertificate()
    {
       TNBCertRefresh();
+
+      // The clan certificate carries the same record, so whatever just changed
+      // a tribe has invalidated it too. Re-issuing here is what lets a player
+      // wear a new tag without relaunching.
+      TNBClanCertFetch();
       return true;
    }
 
@@ -183,9 +189,6 @@ package TNBrowser
    // shipped function and sets the flag again on the way down.
    function LaunchTabView::addLaunchTab(%this, %text, %gui, %makeInactive)
    {
-      if (%text $= "CHAT")
-         return;
-
       %index = %this.tabCount();
       Parent::addLaunchTab(%this, %text, %gui, %makeInactive);
 
@@ -232,9 +235,17 @@ activatePackage(TNBrowser);
 // synchronous read, so it costs nothing to ask.
 function TNBCertEnsure(%gui)
 {
-   if (TNBCertReady() || $TNB::CertPending)
-      return;
    if (TNBSessionGuid() $= "")
+      return;
+
+   // The clan certificate is fetched from here too, and before the early
+   // return below: the identity being in hand says nothing about whether we
+   // hold a signed clan record, and this is the moment a player is known to
+   // have a session and to be somewhere other than in a game. It guards itself
+   // against refetching one we already have.
+   TNBClanCertEnsure();
+
+   if (TNBCertReady() || $TNB::CertPending)
       return;
 
    $TNB::CertPending = 1;
@@ -259,8 +270,7 @@ function TNBCertEnsureDone(%gui, %status, %result)
    // path, which TNBCachePathSync has already settled -- and its onWake starts
    // by clearing EM_Browser and the message vector, so waking it here would
    // empty a mailbox that had just arrived.
-   if (isObject(%gui) && %gui $= TribeandWarriorBrowserGui &&
-       Canvas.getContent() $= %gui)
+   if (isObject(%gui) && Canvas.getContent() $= %gui)
       %gui.onWake();
 }
 

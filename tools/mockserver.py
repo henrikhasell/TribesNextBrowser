@@ -34,6 +34,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import random
 import re
@@ -1309,6 +1310,69 @@ def certificate(guid):
 
 
 # --------------------------------------------------------------------------
+# Clan certificates
+# --------------------------------------------------------------------------
+#
+# The same record as certificate(), signed, for a game server to check offline.
+# See server/internal/clancert -- this mirrors it so the in-game suites and a
+# live server test can exercise the client and game-server halves without the
+# Go backend running.
+#
+# A fixed key, committed in the open, because it is a fixture: it signs test
+# certificates for test players on a test server. The matching public half is
+# what a test game server gets in tnbserver/clankeys.cs. Nothing that matters
+# is verified with it, and pow() is the whole of RSA when there is no padding
+# scheme to implement.
+
+CLAN_KEY_ID = 9
+CLAN_KEY_E = 0x10001
+CLAN_KEY_N = int(
+    "be69cfda44ea8f1a2bde711efd14a58976704a5b8051b16b10702650ead0c015c"
+    "654f9f7760289aff7db77d3f368376150c14b65d6663553dd35ecff9194a3372"
+    "5c811b69b1497138b026d4cafe276d7b97cdcda58fd57a8c8317458885944d8a"
+    "0a934ac1b49ae2a4ea8d2970628ebcb5f0bf3dc6890aef32350db0226ef5cf1e"
+    "8e5334aca7545e783305e5640fd6c34911e51ded492568e506e03f0c6d23ecc4"
+    "6901c7dd2f80b0c7a455c5ebf23ef241cb4578dffa06b48648903323bf62d09d"
+    "1e5f5c467805588f2cfacb38f9fc48970c1cb338d6255256272c782a9795029d"
+    "f3e3e30e14c5bef2c649b09764cc341f1c87a3c055c96ae7c9878f902a5cd39", 16)
+CLAN_KEY_D = int(
+    "139555d97cbb83febcd2ca9f1587cd53a330fed0c4d4821301148bb848423273"
+    "3adbebfe79ae5ea350b24b736ac605e616145f3108d927b4699c9d7496702b4e"
+    "256e5b7604a29c3c1810a6959bc446953ec03b05a0dfe3675a398dddfa1df640"
+    "f25b1cadf3bb82f45a752dfd76d67813c9417531eeb62cac186e7d2bce3dd178"
+    "e95353109264af05331391230f6f82171f65fdf66e81540e4dff2413060e41e3"
+    "11d045828a4057603f1d3b50e4fa8d592d8cb72589c5aea3dafe1316edbdfea2"
+    "8c7321df900713496ee9b10074b224e6b4eeac04ecbcad75297de0393fee1dd8"
+    "77582d78dd5e571f63ac2f439696eebc0a3e6759371d19da6d5fa73d1c4b7521", 16)
+
+# Half an hour, matching clancert.DefaultTTL. The client refreshes at half life
+# and discards at nine tenths, so a suite that runs for minutes never sees
+# either.
+CLAN_CERT_TTL = 30 * 60
+
+
+def clan_certificate(guid):
+    """KeyID TAB Issued TAB Expire TAB GUID TAB HexBlob TAB Sig."""
+    record = certificate(guid)
+    if not record:
+        return ""
+
+    now = int(time.time())
+    fields = [str(CLAN_KEY_ID), str(now), str(now + CLAN_CERT_TTL), guid,
+              record.encode("utf-8").hex()]
+
+    # Raw RSA over a bare SHA-1 of fields 0..4: the number signed is the
+    # integer whose hex representation is the digest, because that is what the
+    # game server compares rsa_mod_exp's output against as a string.
+    digest = hashlib.sha1("\t".join(fields).encode("utf-8")).hexdigest()
+    sig = pow(int(digest, 16), CLAN_KEY_D, CLAN_KEY_N)
+
+    width = (CLAN_KEY_N.bit_length() + 3) // 4
+    fields.append("%0*x" % (width, sig))
+    return "\t".join(fields)
+
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
@@ -1365,6 +1429,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._db(get)
         if parsed.path == "/cert":
             return self._cert(get)
+        if parsed.path == "/clancert":
+            return self._clancert(get)
         if parsed.path == "/tn/server/authinfo":
             return self._authinfo(get)
         if parsed.path.endswith("json_browser.php"):
@@ -1496,6 +1562,19 @@ class Handler(BaseHTTPRequestHandler):
             return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
                                    "Authentication Required</h2>")
         return self._json({"cert": certificate(guid)})
+
+    def _clancert(self, get):
+        guid = self._authorised(get)
+        if guid is None:
+            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
+                                   "Authentication Required</h2>")
+        cert = clan_certificate(guid)
+        if not cert:
+            # No such player, so nothing to assert about them. The Go server
+            # answers 404 when it holds no signing key at all; either way the
+            # client shrugs and the player carries no tag.
+            return self._deny(404, "<h1>Fatal Error</h1><h2>404 Not Found</h2>")
+        return self._json({"cert": cert})
 
     def _oracle(self, get):
         """TribesNext's own verification endpoint, which this mock also stands

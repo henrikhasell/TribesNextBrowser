@@ -12,10 +12,12 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -653,5 +655,129 @@ func TestDatabaseRequiresASession(t *testing.T) {
 	srv.TrustGUID = true
 	if code := post(url.Values{"guid": {"1001"}, "payload": {string(payload)}}); code != http.StatusOK {
 		t.Errorf("the dev bypass refused a bare guid: %d", code)
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Clan certificates
+//-----------------------------------------------------------------------------
+
+// clanCertServer is newServer with a signing key, and hands back the key so a
+// test can check a certificate exactly as the game server will.
+func clanCertServer(t *testing.T, st *store.Store) (*httptest.Server, *clancert.Signer) {
+	t.Helper()
+
+	key, err := clancert.Generate(1024) // small on purpose: these run per test
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	signer := clancert.FromKey(key, 3, 30*time.Minute)
+
+	sessions := auth.NewSessions(0)
+	for guid := 1000; guid < 1010; guid++ {
+		g := strconv.Itoa(guid)
+		sessions.GrantToken("session-"+g, auth.Identity{GUID: g, Name: "warrior-" + g})
+	}
+
+	srv := &Server{
+		Store:     st,
+		Sessions:  sessions,
+		Log:       slog.New(slog.NewTextHandler(io.Discard, nil)),
+		ClanCerts: signer,
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts, signer
+}
+
+func clanCert(t *testing.T, ts *httptest.Server, guid string) (string, int) {
+	t.Helper()
+
+	resp, err := ts.Client().PostForm(ts.URL+"/clancert", url.Values{
+		"guid": {guid}, "uuid": {"session-" + guid},
+	})
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", resp.StatusCode
+	}
+	var out struct {
+		Cert string `json:"cert"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out.Cert, resp.StatusCode
+}
+
+// The certificate a player carries has to say the same thing /cert says, and
+// say it in a form a game server can check without asking anyone.
+func TestClanCertificateCarriesTheSignedRecord(t *testing.T) {
+	st := testStore(t)
+	ts, signer := clanCertServer(t, st)
+
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
+	db(t, ts, "1001", "scalar", "25", "Big Sucka Fishes")
+
+	cert, code := clanCert(t, ts, "1001")
+	if code != http.StatusOK {
+		t.Fatalf("status %d", code)
+	}
+
+	e, n := signer.PublicHex()
+	if err := clancert.Check(e, n, cert, "1001", time.Now()); err != nil {
+		t.Fatalf("the game server would refuse this: %v", err)
+	}
+
+	record, err := clancert.Record(cert)
+	if err != nil {
+		t.Fatalf("record: %v", err)
+	}
+
+	// Same producer as /cert, so the tag the browser shows and the tag the game
+	// renders cannot drift apart.
+	quad := strings.Split(strings.Split(record, "\n")[0], "\t")
+	if len(quad) != 4 || quad[3] != "1001" {
+		t.Fatalf("record 0 = %q, want a quad ending in the GUID", record)
+	}
+	if quad[1] != "[BSF]" {
+		t.Errorf("worn tag = %q, want [BSF]", quad[1])
+	}
+	if got := certField(t, ts, "1001", 1); got != quad[1] {
+		t.Errorf("/cert says %q and /clancert says %q", got, quad[1])
+	}
+}
+
+// The certificate says who the holder is, so it is only ever handed to them.
+func TestClanCertificateNeedsASession(t *testing.T) {
+	ts, _ := clanCertServer(t, testStore(t))
+
+	resp, err := ts.Client().PostForm(ts.URL+"/clancert", url.Values{"guid": {"1001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d, want 401", resp.StatusCode)
+	}
+}
+
+// A deployment with no signing key is a supported one: it serves everything
+// else and players simply carry no tag.
+func TestClanCertificateIsOffWithoutAKey(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st) // no ClanCerts
+
+	if _, code := clanCert(t, ts, "1001"); code != http.StatusNotFound {
+		t.Fatalf("status %d, want 404", code)
+	}
+
+	// And the rest of the front door is unaffected.
+	if _, code := db(t, ts, "1001", "scalar", "5", "")["status"]; !code {
+		t.Error("/db stopped answering")
 	}
 }
