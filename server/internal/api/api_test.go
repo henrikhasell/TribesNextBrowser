@@ -588,6 +588,56 @@ func TestInvitationArrivesAsMailWithAWorkingLink(t *testing.T) {
 	if !strings.Contains(joined, "<a:rejectinvite\t") {
 		t.Errorf("no reject link in the body: %q", joined)
 	}
+
+	// The tribe's own name is a link to its profile, in this body and in every
+	// other mail this server sends about a tribe.
+	if !strings.Contains(joined, "<a:tribe\tBig Sucka Fishes>Big Sucka Fishes</a>") {
+		t.Errorf("the tribe is not a link in the body: %q", joined)
+	}
+}
+
+// Every mail about a tribe names it as a link, not just the invitation.
+//
+// Asserted on the TAB rather than on the newline clanLink writes, because the
+// tab is what GuiMLTextCtrl::onURL splits the URL on (webbrowser.cs:1063) and
+// what the client actually receives -- bodyLines splits the stored body into
+// row fields, and getFields(%row,17) rejoins them TAB-separated. A test written
+// against the stored form would pass for a body no control could follow.
+func TestTribeMailNamesTheTribeAsALink(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
+	mark := account(t, ts, "1002")
+	db(t, ts, "1001", "scalar", "27", "Big Sucka Fishes\twarrior-1002")
+	db(t, ts, "1002", "scalar", "28", "accept\tBig Sucka Fishes")
+
+	// A promotion and then a kick: the two ends of what a member hears about,
+	// and the two the client shows in a mailbox rather than in a dialog.
+	db(t, ts, "1001", "scalar", "21", "Big Sucka Fishes\twarrior-1002\tWarlord\t2")
+	db(t, ts, "1001", "scalar", "19", "warrior-1002\tBig Sucka Fishes")
+
+	want := "<a:tribe\tBig Sucka Fishes>Big Sucka Fishes</a>"
+	seen := map[string]bool{}
+	for _, r := range rows(t, db(t, ts, "1002", "array", "1", mark)) {
+		f := strings.Split(r, "\t")
+		subject, body := f[15], strings.Join(f[17:], "\t")
+		seen[subject] = strings.Contains(body, want)
+	}
+
+	for _, subject := range []string{
+		"Rank changed in Big Sucka Fishes",
+		"Removed from Big Sucka Fishes",
+	} {
+		linked, ok := seen[subject]
+		if !ok {
+			t.Errorf("no mail with subject %q", subject)
+			continue
+		}
+		if !linked {
+			t.Errorf("%q does not name the tribe as a link", subject)
+		}
+	}
 }
 
 //-----------------------------------------------------------------------------

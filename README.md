@@ -232,8 +232,8 @@ The mod also became backend-exclusive, as above.
 cd server && TNB_TEST_DSN=postgres://... go test ./...
 ```
 
-**124 assertions inside the real game against the mock, 0 failures**: 66
-parser, 7 sweep, 29 browser, 22 mail. **58 more against the Go backend on
+**142 assertions inside the real game against the mock, 0 failures**: 66
+parser, 8 sweep, 34 browser, 34 mail. **76 more against the Go backend on
 PostgreSQL, 0 failures** -- the same suites, the same fixtures, a different
 server, so a failure there is a real behavioural difference between the two.
 Plus the Go suite itself, because what is worth testing there is the SQL.

@@ -201,12 +201,12 @@ func getWarriorHistory(c *Ctx, args string) (Answer, error) {
 
 // linkRefs turns the store's {kind:name} markers into links the client follows.
 //
-// Which is worth doing here and nowhere else: this is the one ordinal whose
-// rows are display text rather than fields, so it is the one place a link can
-// be written at all. GuiMLTextCtrl::onURL (webbrowser.cs:1063) reads the verb
-// from field 0 of the URL and the argument from field 1, and it splits on TAB
-// -- a real tab, not the newline mlLink writes, because a history row is
-// appended verbatim instead of being rejoined out of fields.
+// This is the one ordinal whose rows are display text rather than fields, which
+// is why the expansion happens here. GuiMLTextCtrl::onURL (webbrowser.cs:1063)
+// reads the verb from field 0 of the URL and the argument from field 1, and it
+// splits on TAB -- a real tab, not the newline mlLink writes, because a history
+// row is appended verbatim instead of being rejoined out of fields. Mail says
+// the same thing through clanLink, and differs only in that separator.
 //
 // A marker whose kind is not one of these is left exactly as it stands, braces
 // and all. Silently dropping it would hide the fact that something wrote a
@@ -339,7 +339,8 @@ func deleteTribe(c *Ctx, args string) (Answer, error) {
 		return userError(err)
 	}
 	c.notifyAll(told, "Tribe disbanded: "+p.Name,
-		c.Name+" has disbanded "+p.Name+". You are no longer a member of it.")
+		c.Name+" has disbanded "+clanLink(p.Name)+
+			". You are no longer a member of it.")
 
 	if len(told) > 0 {
 		return okMessage("The tribe " + p.Name + " has been disbanded."), nil
@@ -370,7 +371,7 @@ func kickMember(c *Ctx, args string) (Answer, error) {
 	// Nothing else would say so. A kicked warrior's next sight of it is the
 	// tribe tab quietly missing from a pane they may not open for days.
 	c.notify(target, "Removed from "+p.Name,
-		c.Name+" has removed you from "+p.Name+".")
+		c.Name+" has removed you from "+clanLink(p.Name)+".")
 
 	who, err := c.Store.Quad(c.Ctx, target)
 	if err != nil {
@@ -460,7 +461,7 @@ func setMemberProfile(c *Ctx, args string) (Answer, error) {
 			verb = "demoted"
 		}
 		c.notify(target, "Rank changed in "+p.Name,
-			c.Name+" has "+verb+" you to "+title+" in "+p.Name+".")
+			c.Name+" has "+verb+" you to "+title+" in "+clanLink(p.Name)+".")
 	}
 
 	who, err := c.Store.Quad(c.Ctx, target)
@@ -524,7 +525,7 @@ func leaveTribe(c *Ctx, args string) (Answer, error) {
 		return userError(err)
 	}
 	c.notifyAll(admins, "Member left "+p.Name,
-		c.Name+" has left "+p.Name+".")
+		c.Name+" has left "+clanLink(p.Name)+".")
 
 	return okMessage("You have left " + p.Name + "."), nil
 }
@@ -584,7 +585,7 @@ func inviteToTribe(c *Ctx, args string) (Answer, error) {
 	}
 
 	body := strings.Join([]string{
-		c.Name + " has invited you to join " + p.Name + ".",
+		c.Name + " has invited you to join " + clanLink(p.Name) + ".",
 		"",
 		mlLink("Accept", "acceptinvite", p.Name, who.Name) + "    " +
 			mlLink("Reject", "rejectinvite", p.Name, who.Name),
@@ -648,7 +649,8 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 		if err = c.Store.AdmitRequester(c.Ctx, c.GUID, id, subject); err == nil {
 			tell = subject
 			mailSubject = "Join request accepted: " + p.Name
-			mailBody = c.Name + " has accepted your request to join " + p.Name + "."
+			mailBody = c.Name + " has accepted your request to join " +
+				clanLink(p.Name) + "."
 			said = "That warrior's request to join " + p.Name + " has been accepted."
 		}
 	case verb == "reject" && asAdmin:
@@ -659,19 +661,22 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 		if removed, err = c.Store.CancelInvite(c.Ctx, c.GUID, id, subject); err == nil && removed {
 			tell = subject
 			mailSubject = "Join request declined: " + p.Name
-			mailBody = c.Name + " has declined your request to join " + p.Name + "."
+			mailBody = c.Name + " has declined your request to join " +
+				clanLink(p.Name) + "."
 			said = "That warrior's request to join " + p.Name + " has been declined."
 		}
 	case verb == "accept":
 		if tell, err = c.Store.AcceptInvite(c.Ctx, c.GUID, id); err == nil {
 			mailSubject = "Invitation accepted: " + p.Name
-			mailBody = c.Name + " has accepted your invitation to join " + p.Name + "."
+			mailBody = c.Name + " has accepted your invitation to join " +
+				clanLink(p.Name) + "."
 			said = "You have joined " + p.Name + "."
 		}
 	case verb == "reject":
 		if tell, err = c.Store.RejectInvite(c.Ctx, c.GUID, id); err == nil {
 			mailSubject = "Invitation declined: " + p.Name
-			mailBody = c.Name + " has declined your invitation to join " + p.Name + "."
+			mailBody = c.Name + " has declined your invitation to join " +
+				clanLink(p.Name) + "."
 			said = "You have declined the invitation to join " + p.Name + "."
 		}
 	default:
@@ -705,7 +710,7 @@ func requestInvite(c *Ctx, args string) (Answer, error) {
 	}
 
 	body := strings.Join([]string{
-		c.Name + " has asked to join " + p.Name + ".",
+		c.Name + " has asked to join " + clanLink(p.Name) + ".",
 		"",
 		mlLink("Accept", "acceptinvite", p.Name, c.Name) + "    " +
 			mlLink("Reject", "rejectinvite", p.Name, c.Name),

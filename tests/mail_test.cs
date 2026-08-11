@@ -372,7 +372,15 @@ function TNBMailStep12()
    TNBMailHas("a promoted member is told", $TNBMailTest::Raw,
               "Rank changed in Test Clan");
    TNBMailHas("and by whom, to what", $TNBMailTest::Raw,
-              "orange01 has promoted you to Senior Member in Test Clan.");
+              "orange01 has promoted you to Senior Member in ");
+
+   // The tribe's name in the body is a link to its profile, and the assertion
+   // is on the TAB rather than on the sentence: the server writes newlines,
+   // and what proves the round trip is that they arrive here as tabs -- which
+   // is what GuiMLTextCtrl::onURL splits on. Written the other way, this would
+   // pass against a body no control could follow.
+   TNBMailHas("and the tribe is a link to it", $TNBMailTest::Raw,
+              "<a:tribe" TAB "Test Clan>Test Clan</a>");
 
    // Still as Shifter: leave the tribe, which its administrators hear about.
    $TNBMailTest::LastStatus = "";
@@ -394,7 +402,7 @@ function TNBMailStep14()
    TNBMailHas("a tribe's administrators are told when a member leaves",
               $TNBMailTest::Raw, "Member left Test Clan");
    TNBMailHas("and who left", $TNBMailTest::Raw,
-              "Shifter has left Test Clan.");
+              "Shifter has left <a:tribe" TAB "Test Clan>Test Clan</a>.");
 
    $TNBMailTest::Done = 1;
    echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @

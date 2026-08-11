@@ -321,3 +321,20 @@ func mlLink(label, verb string, args ...string) string {
 	return "<a:" + strings.Join(append([]string{verb}, args...), "\n") + ">" +
 		label + "</a>"
 }
+
+// clanLink names a tribe in a mail body the way the history already names one:
+// as a link to its profile.
+//
+// The verb and the argument are the same, because scalar 22 takes a tribe name
+// rather than an id (ordinals.go, "<tribeName>") -- so the thing the player
+// reads is also the handle the pane queries with. linkRefs writes the identical
+// link for a {clan:...} marker, with a real tab instead of the newline, because
+// a history row is appended verbatim rather than rejoined out of fields.
+//
+// Every mail this server sends about a tribe goes through here. A tribe name
+// containing a tab or a newline would break the URL, and nothing escapes one --
+// but such a name cannot exist, because the ordinal protocol itself is
+// tab-separated and the name would not have survived being created.
+func clanLink(name string) string {
+	return mlLink(name, "tribe", name)
+}

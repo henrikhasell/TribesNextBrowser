@@ -331,6 +331,16 @@ def ml_link(label, verb, *args):
     """
     return "<a:" + "\n".join((verb,) + args) + ">" + label + "</a>"
 
+def clan_link(name):
+    """A tribe named in a mail body, as a link to its profile.
+
+    Verb and argument are the same because scalar 22 takes a tribe name rather
+    than an id, so what the player reads is also the handle the pane queries
+    with. Mirrors dbproxy's clanLink; the history's {clan:...} markers expand
+    to the same link with a real tab (see REF_VERBS above).
+    """
+    return ml_link(name, "tribe", name)
+
 
 def ok_status(msg="", *extra):
     """A success. msg is field 1 -- the sentence the client shows.
@@ -704,8 +714,8 @@ def delete_tribe(guid, args):
     # does in that case.
     _notify_all(_members_except(c, guid), guid,
                 "Tribe disbanded: " + c["name"],
-                USERS[guid]["name"] + " has disbanded " + c["name"] +
-                ". You are no longer a member of it.")
+                USERS[guid]["name"] + " has disbanded " +
+                clan_link(c["name"]) + ". You are no longer a member of it.")
     return ok_message("The tribe " + c["name"] + " has been disbanded.")
 
 
@@ -721,7 +731,8 @@ def kick_member(guid, args):
     if u is None:
         return fail("There is no warrior by that name.")
     _notify(u["guid"], guid, "Removed from " + c["name"],
-            USERS[guid]["name"] + " has removed you from " + c["name"] + ".")
+            USERS[guid]["name"] + " has removed you from " +
+            clan_link(c["name"]) + ".")
     return ok_message("Player " + u["name"] + " has been kicked from " +
                       c["name"] + ".")
 
@@ -770,7 +781,8 @@ def set_member_profile(guid, args):
             verb = "promoted" if rank > before else "demoted"
             _notify(u["guid"], guid, "Rank changed in " + c["name"],
                     "%s has %s you to %s in %s."
-                    % (USERS[guid]["name"], verb, title, c["name"]))
+                    % (USERS[guid]["name"], verb, title,
+                       clan_link(c["name"])))
         if rank == before:
             return ok_message("%s is now titled %s in %s."
                               % (u["name"], title, c["name"]))
@@ -787,7 +799,8 @@ def leave_tribe(guid, args):
         return fail("There is no tribe by that name.")
 
     _notify_all(_admins_except(c, guid), guid, "Member left " + c["name"],
-                USERS[guid]["name"] + " has left " + c["name"] + ".")
+                USERS[guid]["name"] + " has left " +
+                clan_link(c["name"]) + ".")
     return ok_message("You have left " + c["name"] + ".")
 
 
@@ -822,7 +835,8 @@ def invite_to_tribe(guid, args):
     # No client query lists a player's own invitations, so the invitation is
     # mailed with links that answer it.
     body = "\n".join([
-        USERS[guid]["name"] + " has invited you to join " + c["name"] + ".",
+        USERS[guid]["name"] + " has invited you to join " +
+        clan_link(c["name"]) + ".",
         "",
         ml_link("Accept", "acceptinvite", c["name"], u["name"]) + "    " +
         ml_link("Reject", "rejectinvite", c["name"], u["name"]),
@@ -881,7 +895,7 @@ def answer_invitation(guid, args):
     heading = "Join request" if request else "Invitation"
     _notify(tell, guid, "%s %s: %s" % (heading, outcome, c["name"]),
             "%s has %s your %s %s."
-            % (USERS[guid]["name"], outcome, what, c["name"]))
+            % (USERS[guid]["name"], outcome, what, clan_link(c["name"])))
 
     if request:
         said = ("That warrior's request to join %s has been %s."
@@ -949,7 +963,8 @@ def request_invite(guid, args):
         return fail("You are already a member of that tribe.")
 
     body = "\n".join([
-        USERS[guid]["name"] + " has asked to join " + c["name"] + ".",
+        USERS[guid]["name"] + " has asked to join " +
+        clan_link(c["name"]) + ".",
         "",
         ml_link("Accept", "acceptinvite", c["name"], USERS[guid]["name"]) +
         "    " +
