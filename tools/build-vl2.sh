@@ -88,6 +88,11 @@ OUTDIR="${OUTDIR:-$ROOT/dist}"
 command -v zip >/dev/null || { echo "zip is required" >&2; exit 1; }
 mkdir -p "$OUTDIR"
 
+# Absolute from here on: pack() cds into the staging directory before running
+# zip, so a relative output path given on the command line would be resolved
+# from there and fail with "Could not create output file".
+OUTDIR="$(cd "$OUTDIR" && pwd)"
+
 # SOURCE_DATE_EPOCH is the reproducible-builds convention; honour it if set.
 STAMP="${SOURCE_DATE_EPOCH:-$(git -C "$ROOT" log -1 --format=%ct 2>/dev/null || date +%s)}"
 
