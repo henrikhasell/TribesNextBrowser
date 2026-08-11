@@ -122,7 +122,7 @@ is what establishes the GUID a certificate is bound to, and it only runs when
 `scripts/ChatGui.cs`, which is a hundred TorqueScript functions over a plaintext
 `TCPObject`. The mod replaces two of those functions — `IRCClient::send` and
 `IRCTCP::onLine` — so the lines this server produces reach a completely
-unmodified chat client over TLS.
+unmodified chat client, polled over HTTPS.
 
 Three properties of that client shape everything here, and each has a test:
 
@@ -146,9 +146,18 @@ checked against `clan_members`; rank 2 and above gets channel operator, the same
 rung the shipped screens treat as administrative.
 
 **Nothing is stored.** Messages exist in a 256-line ring per connection, which
-is there so a stream that drops can resume from its cursor rather than lose what
-arrived, and nowhere else. A connection outlives its stream by 30 seconds, so a
-reconnect is invisible to everyone else in the room.
+is there so a poll that fails costs nothing -- the cursor does not move, and the
+next one asks from the same place -- and nowhere else. Presence is "polled
+recently": a connection survives 45 seconds without a poll, so a stall is
+invisible to everyone else in the room.
+
+**Nothing is held open**, and that is not a preference. Two `HTTPObject`
+transfers started close together against a real HTTPS endpoint wedge one of
+them permanently in this client -- no callback of any kind, ever -- so a chat
+connection held open makes every boot a race, and when the request queue loses
+it, mail and the browser die with chat. Measured on a live client; the earlier
+design did exactly that. Chat therefore rides the same single-transfer queue as
+every other call the mod makes.
 
 State is in memory, which is what `auth.Sessions` already is and what
 `instance_count: 1` in `.do/app.yaml` already assumes. Chat is the first thing a
@@ -299,12 +308,10 @@ Paths and shapes are TribesNext's, so the client needs no new code:
   handed to them. Answers 404 when the server was started without `-clan-key`,
   which is a supported deployment: everything else serves and players simply
   carry no tag. See [Clan tags](#clan-tags-are-signed-not-looked-up).
-- `/chat/stream` — a held-open response carrying IRC lines to one player, one
-  per line as `<seq>\t<line>`. Session authenticated. See [Chat](#chat).
-- `/chat/send` — the lines going the other way, as a `lines` form field with one
-  per line. Answers 204 with no body at all, so anything in the body is an
-  error; 409 means the player has no stream open, which is not an
-  authentication failure and should not be treated as one.
+- `/chat` — one poll, carrying lines both ways in a single round trip. The
+  payload is the client's cursor followed by whatever it is sending, one per
+  line; the answer is `{"seq":…,"lines":…,"reset":…}`. Session authenticated.
+  See [Chat](#chat).
 - `/tn/server/authinfo` — not a client endpoint, and no longer used by the mod;
   the clan-tag lookup the game-server mod made before certificates replaced it.
   Kept because the deployment probe above uses it to prove a request reached Go

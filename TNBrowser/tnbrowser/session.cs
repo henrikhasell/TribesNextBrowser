@@ -192,6 +192,30 @@ function TNBSessionStart()
    if ($TNB::SessionBusy && (getSimTime() - $TNB::SessionSentAt) < 30000)
       return;
 
+   // Never two transfers at once, which is the harder rule and the one that
+   // matters more.
+   //
+   // This object is the last thing in the mod that does not go through the
+   // request queue, and it cannot: the queue waits on the session, so a session
+   // that waited on the queue would wait on itself. What it can do is stay out
+   // of the way. Two HTTPObject transfers started close together against a real
+   // HTTPS endpoint wedge one of them permanently -- no callback of any kind,
+   // ever -- and when the wedged one is the queue's, every pane in the mod dies
+   // behind it. Measured on a live client; see tnbrowser/chat.cs.
+   //
+   // Only the keepalive can collide. A negotiation cannot: the queue declines to
+   // send until the session is ready, so while one is running nothing else is in
+   // flight. The keepalive runs *because* the session is up, which is exactly
+   // when the queue is free to be busy -- so it defers, and a refresh that is a
+   // few seconds late costs nothing against a thirty-minute expiry.
+   if ($TNB::UUID !$= "" && $TNB::Busy)
+   {
+      if (isEventPending($TNB::Schedule))
+         cancel($TNB::Schedule);
+      $TNB::Schedule = schedule(2000, 0, "TNBSessionStart");
+      return;
+   }
+
    if (isEventPending($TNB::Schedule))
       cancel($TNB::Schedule);
    $TNB::Schedule = "";

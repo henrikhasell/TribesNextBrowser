@@ -4,8 +4,8 @@
 // Tribes 2's IRC client is not in the executable. It is roughly a hundred
 // IRCClient::* functions of TorqueScript in scripts/ChatGui.cs, and the whole
 // of its transport is two leaf functions -- IRCClient::send and
-// IRCTCP::onLine. The mod replaces those two with an HTTPS stream, so the lines
-// this package produces reach a completely unmodified client: the channel
+// IRCTCP::onLine. The mod replaces those two with a poll over HTTPS, so the
+// lines this package produces reach a completely unmodified client: the channel
 // model, the member lists, the tribe-tag rendering and every screen are the
 // shipped ones.
 //
@@ -36,7 +36,6 @@
 package chat
 
 import (
-	"context"
 	"log/slog"
 	"sort"
 	"strings"
@@ -45,14 +44,15 @@ import (
 )
 
 const (
-	// ringSize is how many lines a disconnected client can miss and still
-	// receive on reconnect. At chat speeds this is minutes of a busy room.
+	// ringSize is how many lines a client can miss between polls and still
+	// receive. At chat speeds this is minutes of a busy room.
 	ringSize = 256
 
-	// defaultGrace is how long a connection's presence survives its stream
-	// dropping. Long enough that a reconnect is invisible to everyone else in
-	// the room, short enough that a player who closed the game leaves it.
-	defaultGrace = 30 * time.Second
+	// defaultIdle is how long a connection's presence survives without a poll.
+	// A client polls every couple of seconds, so this is twenty missed polls --
+	// long enough to ride out a stall, short enough that someone who closed the
+	// game leaves the room while people still remember them.
+	defaultIdle = 45 * time.Second
 
 	// Rate limiting, per connection: a steady five lines a second with twenty
 	// in hand. The client itself bursts -- joining a room sends a JOIN and
@@ -62,8 +62,8 @@ const (
 	rateBurst  = 20.0
 )
 
-// Identity is who a connection belongs to, resolved once when the stream
-// opens. It is the same data dbproxy.Certificate assembles, and from the same
+// Identity is who a connection belongs to, resolved once when the connection
+// is made. It is the same data dbproxy.Certificate assembles, and from the same
 // two store calls, because it answers the same question: what does this
 // warrior's name look like, and which tribes are they in.
 type Identity struct {
@@ -95,9 +95,9 @@ type Hub struct {
 	nicks map[string]*Conn // by folded wire nick
 	rooms map[string]*room // by folded channel name
 
-	log   *slog.Logger
-	grace time.Duration
-	now   func() time.Time
+	log  *slog.Logger
+	idle time.Duration
+	now  func() time.Time
 }
 
 type roomKind int
@@ -128,7 +128,7 @@ func New(log *slog.Logger, public []string) *Hub {
 		nicks: map[string]*Conn{},
 		rooms: map[string]*room{},
 		log:   log,
-		grace: defaultGrace,
+		idle:  defaultIdle,
 		now:   time.Now,
 	}
 	for _, name := range public {
@@ -150,41 +150,33 @@ func New(log *slog.Logger, public []string) *Hub {
 // Conn is one player's presence: their identity, the rooms they are in, and
 // the ring of lines waiting to reach them.
 //
-// It outlives the HTTP request that carries its stream. That is the whole point
-// of Attach/Detach: a stream that drops and comes back within the grace period
-// finds the same Conn, still in the same rooms, with the lines it missed still
-// in the ring -- and nobody else in the room saw anything happen.
+// It outlives any single request. A player is present because they polled
+// recently, not because they are holding a connection -- so a poll that is late,
+// retried, or lost costs nothing, and nobody else in the room sees anything.
 type Conn struct {
 	hub  *Hub
 	id   Identity
 	nick string
 	who  string // the "nick!guid@tnb" prefix on everything they say
 
-	mu       sync.Mutex
-	seq      int64
-	ring     []entry
-	notify   chan struct{}
-	attached bool
-	reap     *time.Timer
+	mu   sync.Mutex
+	seq  int64
+	ring []entry
 
-	away   string
-	tokens float64
-	last   time.Time
+	lastPoll time.Time
+	away     string
+	tokens   float64
+	last     time.Time
 }
 
-// Attach registers a stream for this identity and returns the connection it
-// should read from, and whether that connection is a new one.
+// Ensure returns this identity's connection, making one if there is none, and
+// reports whether it had to make it.
 //
-// A second stream for the same GUID takes over the existing connection rather
-// than making another one: one warrior is one presence, and the shipped client
-// has no concept of being in a room twice.
-//
-// The fresh flag is what a reconnecting client needs to know. If its stream
-// dropped and came back inside the grace period it finds the same connection,
-// still in the same rooms, and should carry on as though nothing happened. If
-// it finds a new one, everything the hub knew about it is gone and it has to
-// re-join -- and only the hub can tell the two apart.
-func (h *Hub) Attach(id Identity) (conn *Conn, fresh bool) {
+// The fresh flag is what a returning client needs to know. If the hub still has
+// its connection it is still in its rooms and should carry on; if this one is
+// new, everything the hub knew about it is gone and it has to re-join. Only the
+// hub can tell those apart, which is why the answer travels back in the reply.
+func (h *Hub) Ensure(id Identity) (conn *Conn, fresh bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
@@ -195,68 +187,75 @@ func (h *Hub) Attach(id Identity) (conn *Conn, fresh bool) {
 			hub:    h,
 			id:     id,
 			nick:   Nick(id.Name, id.Tag, id.Append),
-			notify: make(chan struct{}, 1),
 			tokens: rateBurst,
 			last:   h.now(),
 		}
 		c.who = c.nick + "!" + id.GUID + "@" + Host
 		h.conns[id.GUID] = c
 		h.nicks[fold(c.nick)] = c
-	} else if c.reap != nil {
-		// Reviving one that was on its way out. Identity is deliberately not
-		// refreshed: a tag change would mean a new nick, and a new nick means
-		// NICK, which this client cannot absorb. It applies on the next
-		// connection instead -- the same conclusion webbrowser.cs:1787 reached.
-		c.reap.Stop()
-		c.reap = nil
-	}
-	c.attached = true
 
-	// The client reaches IDIRC_CONNECTED through IRCClient::onChalRespReply and
-	// nowhere else on this path, so this line is what makes the chat window
-	// live. The mod's override of that function drops the WONLoginIRC() check
-	// the shipped one does -- there is no WON session to check against, and the
-	// session that authorised this stream is a stronger proof than the one it
-	// replaces. See TNBrowser/tnbrowser/chat.cs.
-	c.send(":" + ServerName + " CHALRESP_REPLY " + c.nick + " " + c.id.GUID + "@" + Host + " OK")
+		// The client reaches IDIRC_CONNECTED through IRCClient::onChalRespReply
+		// and nowhere else on this path, so this line is what makes the chat
+		// window live. The mod's override of that function drops the
+		// WONLoginIRC() check the shipped one does -- there is no WON session to
+		// check against, and the session that authorised this request is a
+		// stronger proof than the one it replaces.
+		//
+		// Sent once per connection rather than once per poll, which is the
+		// difference between "you are connected" and thirty of those a minute.
+		c.send(":" + ServerName + " CHALRESP_REPLY " + c.nick + " " + c.id.GUID + "@" + Host + " OK")
+	}
+
+	// Identity is deliberately not refreshed on an existing connection: a tag
+	// change would mean a new nick, and a new nick means NICK, which this client
+	// cannot absorb. It applies on the next connection instead -- the same
+	// conclusion webbrowser.cs:1787 reached.
+	c.lastPoll = h.now()
 	return c, fresh
 }
 
-// Detach gives up the stream. Presence survives for the grace period, so a
-// reconnect inside it is invisible to every other player.
-func (h *Hub) Detach(c *Conn) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-
-	c.attached = false
-	if c.reap != nil {
-		c.reap.Stop()
-	}
-	c.reap = time.AfterFunc(h.grace, func() { h.reapConn(c) })
-}
-
-// Conn finds a live connection by GUID, for the send endpoint.
+// Conn finds a live connection by GUID.
 func (h *Hub) Conn(guid string) *Conn {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.conns[guid]
 }
 
-// reapConn is the grace period expiring: the player is gone.
-func (h *Hub) reapConn(c *Conn) {
+// Touch marks a connection as still present and returns it, or nil if this hub
+// has never heard of that GUID.
+//
+// This is the ordinary path: a poll from somebody already connected costs a map
+// lookup and a timestamp, and never a database query. Ensure is for the first
+// poll only, because that is the one that has to know their name and tribes.
+func (h *Hub) Touch(guid string) *Conn {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if c.attached {
-		return // came back while the timer was in flight
+	c := h.conns[guid]
+	if c != nil {
+		c.lastPoll = h.now()
 	}
-	if h.conns[c.id.GUID] != c {
-		return // already replaced
-	}
+	return c
+}
 
-	h.partAll(c, "Connection closed")
-	delete(h.conns, c.id.GUID)
-	delete(h.nicks, fold(c.nick))
+// Sweep drops connections that have stopped polling.
+//
+// Called from the poll handler rather than from a timer: the only thing that
+// needs presence to be current is a poll, there are never many connections, and
+// a hub with nobody in it should not be waking up to check.
+func (h *Hub) Sweep() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	cutoff := h.now().Add(-h.idle)
+	for guid, c := range h.conns {
+		if c.lastPoll.After(cutoff) {
+			continue
+		}
+		h.partAll(c, "Connection closed")
+		delete(h.conns, guid)
+		delete(h.nicks, fold(c.nick))
+	}
 }
 
 // partAll removes a connection from every room and tells the rooms about it
@@ -297,16 +296,12 @@ func (h *Hub) dropIfEmpty(key string, r *room) {
 // here, which is what makes the dispatch-table assertion in the tests possible.
 func (c *Conn) send(line string) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.seq++
 	c.ring = append(c.ring, entry{c.seq, line})
 	if len(c.ring) > ringSize {
 		c.ring = append([]entry(nil), c.ring[len(c.ring)-ringSize:]...)
-	}
-	c.mu.Unlock()
-
-	select {
-	case c.notify <- struct{}{}:
-	default:
 	}
 }
 
@@ -349,21 +344,6 @@ func (c *Conn) Seq() int64 {
 
 // Nick is the wire nick, for logging.
 func (c *Conn) Nick() string { return c.nick }
-
-// Wait blocks until there is something new, the deadline passes, or the request
-// is cancelled. It reports whether new lines are waiting.
-func (c *Conn) Wait(ctx context.Context, d time.Duration) bool {
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-c.notify:
-		return true
-	case <-t.C:
-		return false
-	case <-ctx.Done():
-		return false
-	}
-}
 
 //-----------------------------------------------------------------------------
 // Rooms

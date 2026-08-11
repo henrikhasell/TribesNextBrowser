@@ -1388,12 +1388,10 @@ CHAT_CONNS = {}     # guid -> {"nick", "seq", "ring", "event", "joined"}
 CHAT_ROOMS = {}     # folded name -> {"name", "topic", "members", "ops"}
 CHAT_PUBLIC = ["#Tribes2", "#Pickup", "#Newbies"]
 
-CHAT_KEEPALIVE = 3.0
-CHAT_LIFETIME = 600.0
-# The grace period the Go hub has, and for the same reason: a stream that drops
-# and comes back must not cost the player their rooms, and a send that arrives
-# between the two must not meet a 409.
-CHAT_GRACE = 5.0
+# How long a connection survives without a poll, matching the Go hub's idea of
+# presence: a player is here because they polled recently, not because they are
+# holding anything open.
+CHAT_IDLE = 45.0
 CHAT_SERVER = "tnb"
 
 
@@ -1427,7 +1425,6 @@ def chat_push(guid, line):
     conn["seq"] += 1
     conn["ring"].append((conn["seq"], line))
     del conn["ring"][:-256]
-    conn["event"].set()
 
 
 def chat_numeric(guid, code, rest):
@@ -1435,35 +1432,34 @@ def chat_numeric(guid, code, rest):
 
 
 def chat_attach(guid):
+    """The connection for this player, making one if there is none.
+
+    Returns (conn, fresh). The fresh flag is what tells a returning client that
+    the hub has forgotten it and its rooms have to be asked for again.
+    """
     with CHAT_LOCK:
         for name in CHAT_PUBLIC:
             chat_room(name)
 
-        # Reaped lazily rather than on a timer: a fixture has nowhere to run
-        # one, and the only observer that matters is the next attach.
-        conn = CHAT_CONNS.get(guid)
-        if conn is not None and not conn["attached"] \
-                and time.time() - conn["detached"] > CHAT_GRACE:
-            chat_quit(guid)
-
         fresh = guid not in CHAT_CONNS
         if fresh:
             CHAT_CONNS[guid] = {"nick": chat_nick(guid), "seq": 0, "ring": [],
-                                "event": threading.Event(), "attached": False,
-                                "detached": 0.0}
+                                "polled": 0.0}
+            # Once per connection, not once per poll: this is the line that
+            # moves the client to IDIRC_CONNECTED.
+            chat_push(guid, ":%s CHALRESP_REPLY %s %s@%s OK"
+                      % (CHAT_SERVER, chat_nick(guid), guid, CHAT_SERVER))
         conn = CHAT_CONNS[guid]
-        conn["attached"] = True
-        chat_push(guid, ":%s CHALRESP_REPLY %s %s@%s OK"
-                  % (CHAT_SERVER, chat_nick(guid), guid, CHAT_SERVER))
+        conn["polled"] = time.time()
         return conn, fresh
 
 
-def chat_detach(guid):
+def chat_sweep():
+    """Drop connections that stopped polling, and tell their rooms."""
     with CHAT_LOCK:
-        conn = CHAT_CONNS.get(guid)
-        if conn is not None:
-            conn["attached"] = False
-            conn["detached"] = time.time()
+        cutoff = time.time() - CHAT_IDLE
+        for guid in [g for g, c in CHAT_CONNS.items() if c["polled"] < cutoff]:
+            chat_quit(guid)
 
 
 def chat_quit(guid):
@@ -1653,10 +1649,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._cert(get)
         if parsed.path == "/clancert":
             return self._clancert(get)
-        if parsed.path == "/chat/stream":
-            return self._chat_stream(get)
-        if parsed.path == "/chat/send":
-            return self._chat_send(get)
+        if parsed.path == "/chat":
+            return self._chat(get)
         if parsed.path == "/tn/server/authinfo":
             return self._authinfo(get)
         if parsed.path.endswith("json_browser.php"):
@@ -1874,74 +1868,45 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- chat --------------------------------------------------------------
 
-    def _chat_stream(self, get):
-        """The held-open half. One line per event, "<seq>TAB<irc line>".
+    def _chat(self, get):
+        """One poll: lines up, lines down, nothing held open.
 
-        Short-lived compared to the Go server's ten minutes: the suites want
-        to see a stream end and be resumed without waiting around for it.
+        payload is "<cursor>\n<line>\n<line>...", the answer is
+        {"seq":..,"lines":"..","reset":".."}. Same shape as the Go server,
+        because the client cannot tell the two apart and neither should the
+        suites.
         """
         guid = self._authorised(get)
         if guid is None:
             return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
                                    "Authentication Required</h2>")
 
+        payload = get("payload") or ""
+        parts = payload.split("\n")
         try:
-            after = int(get("after") or 0)
+            cursor = int(parts[0].strip() or 0)
         except ValueError:
-            after = 0
+            cursor = 0
 
         conn, fresh = chat_attach(guid)
 
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain")
-        self.send_header("Connection", "close")
-        self.end_headers()
-
-        if fresh and after > 0:
-            self.wfile.write(b"0\tRESET\n")
-            self.wfile.flush()
-            after = 0
-
-        deadline = time.time() + CHAT_LIFETIME
-        try:
-            while time.time() < deadline:
-                with CHAT_LOCK:
-                    pending = [(n, text) for n, text in conn["ring"] if n > after]
-                for n, text in pending:
-                    self.wfile.write(("%d\t%s\n" % (n, text)).encode())
-                    after = n
-                if pending:
-                    self.wfile.flush()
-
-                if not conn["event"].wait(CHAT_KEEPALIVE):
-                    self.wfile.write(b"0\t\n")
-                    self.wfile.flush()
-                conn["event"].clear()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            chat_detach(guid)
-
-    def _chat_send(self, get):
-        guid = self._authorised(get)
-        if guid is None:
-            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
-                                   "Authentication Required</h2>")
-        with CHAT_LOCK:
-            live = guid in CHAT_CONNS
-        if not live:
-            return self._deny(409, "<h1>Fatal Error</h1>"
-                                   "<h2>409 No Chat Session</h2>")
-
-        for line in (get("lines") or "").split("\n"):
+        for line in parts[1:]:
             if line.strip():
                 chat_handle(guid, line.strip())
 
-        # 204, so a body of any kind means an error -- which is exactly how the
-        # client tells the two apart, having no access to the status code.
-        self.send_response(204)
-        self.send_header("Connection", "close")
-        self.end_headers()
+        reset = fresh and cursor > 0
+        if reset:
+            cursor = 0
+
+        with CHAT_LOCK:
+            pending = [(n, text) for n, text in conn["ring"] if n > cursor]
+        seq = pending[-1][0] if pending else cursor
+
+        chat_sweep()
+
+        return self._json({"seq": str(seq),
+                           "lines": "\n".join(text for _, text in pending),
+                           "reset": "1" if reset else "0"})
 
 
 def main():

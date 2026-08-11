@@ -143,7 +143,13 @@ function TNBChatStep2()
 {
    %c = IRCClient::findChannel("#Tribes2");
    TNBChatTrue("auto-joined the default room", isObject(%c));
-   TNBChatEq("and is in it", %c.numMembers(), 1);
+
+   // That *we* are in it, not that we are alone in it. The hub is in-process
+   // and outlives a suite run, so a backend somebody else is connected to --
+   // another container, a curl session, a developer -- would otherwise fail a
+   // count that has nothing to do with what is being tested.
+   TNBChatTrue("and is in it",
+               %c.findMember($IRCClient::people.getObject(0)) >= 0);
    TNBChatEq("shown without its hash", IRCClient::displayChannel("#Tribes2"),
              "Tribes2");
 

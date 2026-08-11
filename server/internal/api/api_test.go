@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -814,112 +813,48 @@ func chatServer(t *testing.T, st *store.Store) *httptest.Server {
 }
 
 // openStream starts a stream and returns a reader over it plus a cancel.
-func openStream(t *testing.T, ts *httptest.Server, guid, after string) (*bufio.Reader, func()) {
+// chat runs one poll and returns the decoded answer.
+func chatPoll(t *testing.T, ts *httptest.Server, guid, payload string) (map[string]string, int) {
 	t.Helper()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
-		ts.URL+"/chat/stream?guid="+guid+"&uuid=session-"+guid+"&after="+after, nil)
-	if err != nil {
-		cancel()
-		t.Fatal(err)
-	}
-	resp, err := ts.Client().Do(req)
-	if err != nil {
-		cancel()
-		t.Fatalf("stream: %v", err)
-	}
-	if resp.StatusCode != http.StatusOK {
-		cancel()
-		t.Fatalf("stream status %d", resp.StatusCode)
-	}
-	t.Cleanup(func() { cancel(); resp.Body.Close() })
-	return bufio.NewReader(resp.Body), func() { cancel(); resp.Body.Close() }
-}
-
-// nextLine reads one framed line, failing rather than blocking forever.
-func nextLine(t *testing.T, r *bufio.Reader) (int64, string) {
-	t.Helper()
-
-	type result struct {
-		line string
-		err  error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		line, err := r.ReadString('\n')
-		ch <- result{line, err}
-	}()
-
-	select {
-	case got := <-ch:
-		if got.err != nil {
-			t.Fatalf("read: %v", got.err)
-		}
-		seq, text, ok := strings.Cut(strings.TrimRight(got.line, "\r\n"), "\t")
-		if !ok {
-			t.Fatalf("line is not <seq>TAB<text>: %q", got.line)
-		}
-		n, err := strconv.ParseInt(seq, 10, 64)
-		if err != nil {
-			t.Fatalf("sequence %q: %v", seq, err)
-		}
-		return n, text
-	case <-time.After(5 * time.Second):
-		t.Fatal("timed out waiting for a line")
-		return 0, ""
-	}
-}
-
-func chatSend(t *testing.T, ts *httptest.Server, guid, lines string) int {
-	t.Helper()
-
-	resp, err := ts.Client().PostForm(ts.URL+"/chat/send", url.Values{
-		"guid":  {guid},
-		"uuid":  {"session-" + guid},
-		"lines": {lines},
+	resp, err := ts.Client().PostForm(ts.URL+"/chat", url.Values{
+		"guid":    {guid},
+		"uuid":    {"session-" + guid},
+		"payload": {payload},
 	})
 	if err != nil {
-		t.Fatalf("send: %v", err)
+		t.Fatalf("poll: %v", err)
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, resp.StatusCode
+	}
+	var out map[string]string
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out, resp.StatusCode
 }
 
 func TestChatIsOffWithoutAHub(t *testing.T) {
 	ts, _ := sessionServer(t) // no Chat
 
-	resp, err := ts.Client().Get(ts.URL + "/chat/stream?guid=1001&uuid=x")
+	resp, err := ts.Client().PostForm(ts.URL+"/chat", url.Values{"guid": {"1001"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("stream status %d, want 404", resp.StatusCode)
-	}
-
-	resp, err = ts.Client().PostForm(ts.URL+"/chat/send", url.Values{"guid": {"1001"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	if resp.StatusCode != http.StatusNotFound {
-		t.Errorf("send status %d, want 404", resp.StatusCode)
+		t.Errorf("status %d, want 404", resp.StatusCode)
 	}
 }
 
-// A send with no stream is 409, not 401: nothing is wrong with the session, the
-// stream simply is not open, and reopening it is the fix rather than
-// renegotiating an identity.
-func TestChatSendWithoutAStream(t *testing.T) {
+func TestChatNeedsASession(t *testing.T) {
 	ts := chatServer(t, testStore(t))
 
-	if code := chatSend(t, ts, "1001", "LIST"); code != http.StatusConflict {
-		t.Errorf("status %d, want 409", code)
-	}
-
-	resp, err := ts.Client().PostForm(ts.URL+"/chat/send", url.Values{
-		"guid": {"1001"}, "uuid": {"wrong"}, "lines": {"LIST"},
+	resp, err := ts.Client().PostForm(ts.URL+"/chat", url.Values{
+		"guid": {"1001"}, "uuid": {"wrong"}, "payload": {"0"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -930,60 +865,58 @@ func TestChatSendWithoutAStream(t *testing.T) {
 	}
 }
 
-func TestChatStreamFraming(t *testing.T) {
+// One round trip carries the player's lines up and the answers back down, and
+// the cursor is what makes a lost poll cost nothing.
+func TestChatPollCarriesBothDirections(t *testing.T) {
 	ts := chatServer(t, testStore(t))
-	r, _ := openStream(t, ts, "1001", "0")
 
-	// The first line is always the identity, and it is what moves the client to
-	// IDIRC_CONNECTED.
-	seq, line := nextLine(t, r)
-	if seq != 1 {
-		t.Errorf("first sequence = %d, want 1", seq)
+	first, _ := chatPoll(t, ts, "1001", "0")
+	if !strings.Contains(first["lines"], "CHALRESP_REPLY warrior-1001") {
+		t.Fatalf("first poll = %v", first)
 	}
-	if !strings.Contains(line, "CHALRESP_REPLY warrior-1001") {
-		t.Fatalf("first line = %q", line)
+	if first["seq"] != "1" {
+		t.Errorf("first sequence = %q, want 1", first["seq"])
 	}
 
-	if code := chatSend(t, ts, "1001", "JOIN #Tribes2\nLIST"); code != http.StatusNoContent {
-		t.Fatalf("send status %d", code)
+	// Both commands in one payload, both answered in one reply.
+	second, _ := chatPoll(t, ts, "1001", first["seq"]+"\nJOIN #Tribes2\nLIST")
+	if !strings.Contains(second["lines"], "JOIN #Tribes2") {
+		t.Errorf("no join echo: %v", second)
+	}
+	if !strings.Contains(second["lines"], " 323 ") {
+		t.Errorf("no end of list: %v", second)
 	}
 
-	// Both commands were carried in one POST, and both answers arrive in order
-	// with increasing sequence numbers.
-	var joined, listed bool
-	last := seq
-	for i := 0; i < 10 && !(joined && listed); i++ {
-		n, text := nextLine(t, r)
-		if n <= last {
-			t.Fatalf("sequence went backwards: %d after %d", n, last)
-		}
-		last = n
-		if strings.Contains(text, "JOIN #Tribes2") {
-			joined = true
-		}
-		if strings.Contains(text, " 323 ") {
-			listed = true
-		}
+	// Polling from the same cursor replays; polling from the new one does not.
+	again, _ := chatPoll(t, ts, "1001", first["seq"])
+	if !strings.Contains(again["lines"], "JOIN #Tribes2") {
+		t.Errorf("a repeated cursor did not replay: %v", again)
 	}
-	if !joined || !listed {
-		t.Fatalf("joined=%v listed=%v", joined, listed)
+	empty, _ := chatPoll(t, ts, "1001", second["seq"])
+	if empty["lines"] != "" {
+		t.Errorf("an up-to-date cursor returned lines: %v", empty)
 	}
 }
 
-// A cursor from a session the hub has forgotten gets a RESET rather than
+// A cursor from a connection the hub has forgotten gets reset rather than
 // silence, so the client knows to re-join its rooms instead of sitting in
 // channels the server has never heard of.
-func TestChatStreamResetsAStaleCursor(t *testing.T) {
+func TestChatResetsAStaleCursor(t *testing.T) {
 	ts := chatServer(t, testStore(t))
-	r, _ := openStream(t, ts, "1002", "99")
 
-	seq, line := nextLine(t, r)
-	if seq != 0 || line != "RESET" {
-		t.Fatalf("first line = %d %q, want 0 RESET", seq, line)
+	answer, _ := chatPoll(t, ts, "1002", "99")
+	if answer["reset"] != "1" {
+		t.Fatalf("stale cursor was not reset: %v", answer)
+	}
+	// And the connection starts from the beginning, so the identity is not lost
+	// along with the cursor.
+	if !strings.Contains(answer["lines"], "CHALRESP_REPLY") {
+		t.Fatalf("reset lost the identity: %v", answer)
 	}
 
-	// And then the stream carries on from the beginning.
-	if seq, line = nextLine(t, r); seq != 1 || !strings.Contains(line, "CHALRESP_REPLY") {
-		t.Fatalf("second line = %d %q", seq, line)
+	// A second poll on a connection it now knows is not a reset.
+	answer, _ = chatPoll(t, ts, "1002", answer["seq"])
+	if answer["reset"] != "0" {
+		t.Errorf("a known cursor was reset: %v", answer)
 	}
 }

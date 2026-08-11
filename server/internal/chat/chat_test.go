@@ -1,7 +1,6 @@
 package chat
 
 import (
-	"context"
 	"io"
 	"log/slog"
 	"strings"
@@ -62,7 +61,7 @@ func testHub(t *testing.T) *Hub {
 
 func join(t *testing.T, h *Hub, name, tag string, tribes ...Tribe) (*Conn, *reader) {
 	t.Helper()
-	c, fresh := h.Attach(Identity{
+	c, fresh := h.Ensure(Identity{
 		GUID:   "guid-" + name,
 		Name:   name,
 		Tag:    tag,
@@ -76,18 +75,27 @@ func join(t *testing.T, h *Hub, name, tag string, tribes ...Tribe) (*Conn, *read
 
 //-----------------------------------------------------------------------------
 
-func TestAttachAnnouncesIdentity(t *testing.T) {
+func TestFirstPollAnnouncesIdentity(t *testing.T) {
 	h := testHub(t)
-	_, r := join(t, h, "Harabec", "BSF")
+	c, r := join(t, h, "Harabec", "BSF")
 
 	lines := r.drain()
 	if len(lines) != 1 {
-		t.Fatalf("expected one line on attach, got %v", lines)
+		t.Fatalf("expected one line on the first poll, got %v", lines)
 	}
 	// The nick is the triple IRCGetTriple splits, and it is the only thing that
 	// gives the local player a name in chat.
 	if !strings.Contains(lines[0], "CHALRESP_REPLY Harabec^BSF^0 guid-Harabec@tnb OK") {
 		t.Fatalf("bad welcome: %q", lines[0])
+	}
+
+	// Once per connection, not once per poll. Thirty of these a minute would be
+	// thirty trips through IRCClient::onChalRespReply.
+	if again, fresh := h.Ensure(c.id); fresh || again != c {
+		t.Fatal("a second poll made a new connection")
+	}
+	if lines := r.drain(); len(lines) != 0 {
+		t.Fatalf("a second poll re-announced the identity: %v", lines)
 	}
 }
 
@@ -323,7 +331,7 @@ func TestOpsAreRequiredForTopicAndKick(t *testing.T) {
 	}
 }
 
-func TestReconnectInsideGraceKeepsTheRoom(t *testing.T) {
+func TestAMissedPollKeepsTheRoom(t *testing.T) {
 	h := testHub(t)
 	a, ra := join(t, h, "Alpha", "")
 	b, rb := join(t, h, "Bravo", "")
@@ -332,18 +340,19 @@ func TestReconnectInsideGraceKeepsTheRoom(t *testing.T) {
 	ra.drain()
 	rb.drain()
 
-	h.Detach(b)
+	// A poll that never arrived, then one that did, inside the idle window.
+	h.Sweep()
 
-	again, fresh := h.Attach(Identity{GUID: "guid-Bravo", Name: "Bravo"})
+	again, fresh := h.Ensure(Identity{GUID: "guid-Bravo", Name: "Bravo"})
 	if fresh {
-		t.Fatal("a reconnect inside the grace period made a new connection")
+		t.Fatal("a poll inside the idle window made a new connection")
 	}
 	if again != b {
-		t.Fatal("reconnect did not find the same connection")
+		t.Fatal("the poll did not find the same connection")
 	}
 	// Nobody else saw anything: no QUIT, no re-JOIN.
 	if lines := ra.drain(); len(lines) != 0 {
-		t.Fatalf("the room was told about a reconnect: %v", lines)
+		t.Fatalf("the room was told about a missed poll: %v", lines)
 	}
 
 	// And a re-join of a room they never left rebuilds their own view only.
@@ -356,9 +365,14 @@ func TestReconnectInsideGraceKeepsTheRoom(t *testing.T) {
 	}
 }
 
-func TestReapAnnouncesOneQuit(t *testing.T) {
+func TestSweepAnnouncesOneQuit(t *testing.T) {
 	h := testHub(t)
-	h.grace = time.Millisecond
+
+	// A clock the test owns, so "stopped polling" is a fact rather than a wait.
+	base := time.Unix(1785000000, 0)
+	now := base
+	h.now = func() time.Time { return now }
+
 	a, ra := join(t, h, "Alpha", "")
 	b, _ := join(t, h, "Bravo", "")
 	a.Handle("JOIN #Tribes2")
@@ -367,10 +381,16 @@ func TestReapAnnouncesOneQuit(t *testing.T) {
 	b.Handle("JOIN #Pickup")
 	ra.drain()
 
-	h.Detach(b)
-	deadline := time.Now().Add(2 * time.Second)
-	for h.Conn("guid-Bravo") != nil && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+	// Alpha keeps polling; Bravo does not.
+	now = base.Add(2 * defaultIdle)
+	h.Touch("guid-Alpha")
+	h.Sweep()
+
+	if h.Conn("guid-Bravo") != nil {
+		t.Fatal("a connection that stopped polling was not swept")
+	}
+	if h.Conn("guid-Alpha") == nil {
+		t.Fatal("a connection that kept polling was swept")
 	}
 
 	lines := ra.drain()
@@ -416,21 +436,6 @@ func TestRingReportsAnOverrun(t *testing.T) {
 	}
 	if _, gap := c.Since(1); !gap {
 		t.Fatal("an overrun ring did not report a gap")
-	}
-}
-
-func TestWaitWakesOnANewLine(t *testing.T) {
-	h := testHub(t)
-	c, _ := join(t, h, "Alpha", "")
-	c.Since(0) // drain the notify
-
-	go func() {
-		time.Sleep(10 * time.Millisecond)
-		c.send(":tnb NOTICE Alpha :wake up")
-	}()
-
-	if !c.Wait(context.Background(), time.Second) {
-		t.Fatal("Wait did not wake on a new line")
 	}
 }
 

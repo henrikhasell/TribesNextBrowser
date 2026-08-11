@@ -84,23 +84,23 @@ if ($TNB::ClanCertURI $= "")
 if ($TNB::ClanCertRetryMs $= "")
    $TNB::ClanCertRetryMs = 5 * 60 * 1000;
 
-// Chat. The stream is held open and carries IRC lines down; the send endpoint
-// carries them up. Both relative to $TNB::Host. See tnbrowser/chat.cs.
-if ($TNB::ChatStreamURI $= "")
-   $TNB::ChatStreamURI = "/chat/stream";
-if ($TNB::ChatSendURI $= "")
-   $TNB::ChatSendURI = "/chat/send";
+// Chat. One endpoint, carrying lines both ways in a single round trip, on the
+// same request queue as everything else. Relative to $TNB::Host. See
+// tnbrowser/chat.cs for why nothing here is held open.
+if ($TNB::ChatURI $= "")
+   $TNB::ChatURI = "/chat";
 
-// How long to wait before reopening a stream that failed, in milliseconds. It
-// doubles from here to a minute, so this is the delay after the *first*
-// failure and not the steady state.
+// How often to poll, in milliseconds.
 //
-// Short, unlike the clan certificate's retry, because the cost of being
-// disconnected is different in kind: a stale certificate costs a tag nobody
-// notices, while a chat connection that is down is a room the player is
-// silently absent from.
-if ($TNB::ChatRetryMs $= "")
-   $TNB::ChatRetryMs = 2000;
+// This is the latency of a chat message, and also the cost: one short request
+// per player per interval. Two seconds reads as immediate in a chat window and
+// is thirty requests a minute, which for a community of this size is nothing.
+//
+// A poll that fails backs off from here, doubling to a minute, so a backend that
+// is down is cheap rather than a flood. Nothing is lost by waiting: the cursor
+// does not move until lines are actually received.
+if ($TNB::ChatPollMs $= "")
+   $TNB::ChatPollMs = 2000;
 
 // The room to join on connecting, or "" to land in the status pane. The shipped
 // client joins $IRCClient::room from IRCClient::onChalRespReply, which is how

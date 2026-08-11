@@ -210,10 +210,11 @@ The chat client is the shipped one — a hundred `IRCClient::*` functions in
 `scripts/ChatGui.cs` — with two of its functions replaced. It spoke plaintext
 IRC over a `TCPObject`, and there is no TLS behind that socket: the TribesNext
 patch's libcurl and mbedTLS are wired to `HTTPObject` alone. So the transport is
-a held-open HTTPS response carrying IRC lines down and a POST carrying them up,
-and everything above it — channels, member lists, tag rendering, every screen —
-is untouched. Nothing is stored: messages exist for as long as it takes to
-deliver them.
+a short poll over HTTPS carrying lines both ways in one round trip, on the same
+single request queue as every other call this mod makes — nothing is ever held
+open, and two transfers are never in flight at once. Everything above it —
+channels, member lists, tag rendering, every screen — is untouched. Nothing is
+stored: messages exist for as long as it takes to deliver them.
 
 Online status comes from `accounts.last_seen`, which game servers already
 update.
@@ -285,7 +286,7 @@ TNBrowser/
     ├── api.cs         the HTTP request queue
     ├── dbproxy.cs     DatabaseQuery, and the WON certificate
     ├── clancert.cs    the signed clan record carried into a game
-    └── chat.cs        the chat stream, in place of the IRC socket
+    └── chat.cs        chat, polled, in place of the IRC socket
 server/
 ├── internal/dbproxy/  the ordinal table and its 61 handlers
 ├── internal/store/    PostgreSQL, and the only place rank rules are enforced

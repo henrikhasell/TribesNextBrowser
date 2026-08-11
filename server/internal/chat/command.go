@@ -9,7 +9,7 @@ import (
 // Handle is one line from a player.
 //
 // Everything runs under the hub lock. There is no I/O on this path -- identity
-// and tribe membership were resolved when the stream opened -- so the lock is
+// and tribe membership were resolved when the connection was made -- so the lock is
 // held for the length of a map lookup and a few string joins, and holding it
 // across the whole command is what makes "check membership, then broadcast"
 // atomic.

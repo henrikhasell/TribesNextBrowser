@@ -1,12 +1,11 @@
-// Package api is the front door: eight routes, and nothing that knows what an
+// Package api is the front door: seven routes, and nothing that knows what an
 // ordinal means.
 //
 //	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
 //	POST /cert                the identity WONGetAuthInfo() hands the scripts
 //	POST /clancert            the same record, signed, for a game server to check
-//	GET  /chat/stream         a held-open connection carrying IRC lines down
-//	POST /chat/send           IRC lines up (internal/chat)
+//	POST /chat                one poll: IRC lines up, IRC lines down (internal/chat)
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
 //	GET  /healthz
 //
@@ -26,8 +25,8 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -89,8 +88,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
 	mux.HandleFunc("/clancert", s.handleClanCert)
-	mux.HandleFunc("/chat/stream", s.handleChatStream)
-	mux.HandleFunc("/chat/send", s.handleChatSend)
+	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -309,132 +307,28 @@ func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 // Chat
 //-----------------------------------------------------------------------------
 
-const (
-	// chatKeepalive is how long the stream may go silent before it writes a
-	// nothing-line. Proven headroom: a held response survived 120 seconds of
-	// complete silence in the game and delivered the next line normally, so
-	// this is well inside what the client tolerates. It exists for whatever
-	// sits between us and the player, which is usually less patient.
-	chatKeepalive = 20 * time.Second
-
-	// chatLifetime ends a stream on purpose, so that reconnecting is a path
-	// that runs every ten minutes rather than one that runs for the first time
-	// during an outage. The hub holds the connection's rooms across it and the
-	// client resumes from its cursor, so nobody sees anything happen.
-	chatLifetime = 10 * time.Minute
-)
-
-// handleChatStream is the downward half: one held-open response carrying IRC
-// lines to one player.
+// handleChat is one poll: whatever the client has to say, and whatever is
+// waiting for it, in a single round trip.
 //
-// Each line is "<seq>\t<irc line>". The sequence number is the client's cursor:
-// it passes the last one back as ?after= when it reconnects, and the hub
-// replays from its ring rather than losing what arrived during the gap. Two
-// lines carry seq 0 and are not IRC at all -- an empty one is the keepalive,
-// and "RESET" means the hub has no memory of this client and it should re-join
-// its rooms.
+//	payload:  <cursor> NL <line> NL <line> ...
+//	answer:   {"seq":"42","lines":"<line>\n<line>","reset":"0"}
 //
-// The whole design rests on one measured fact: this client's HTTPObject
-// delivers onLine while a response is still open. Probed in the game against a
-// server writing one line a second for thirty seconds, and the deltas came back
-// 41ms, 1035ms, 2037ms... If that had not held, this would have had to be a
-// long-poll.
-func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
-	if s.Chat == nil {
-		fatal(w, http.StatusNotFound, "404 Not Found")
-		return
-	}
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
-		return
-	}
-
-	c, ok := s.authenticate(w, r)
-	if !ok {
-		return
-	}
-
-	id, err := s.chatIdentity(c)
-	if err != nil {
-		s.Log.Error("chat identity", "guid", c.GUID, "err", err)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
-		return
-	}
-
-	after, _ := strconv.ParseInt(r.FormValue("after"), 10, 64)
-
-	conn, fresh := s.Chat.Attach(id)
-	defer s.Chat.Detach(conn)
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store")
-	// For any reverse proxy that would otherwise hold the body until it has all
-	// of it, which for this response is never.
-	w.Header().Set("X-Accel-Buffering", "no")
-	closeAfterResponse(w)
-	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
-
-	if fresh && after > 0 {
-		if _, err := io.WriteString(w, "0\tRESET\n"); err != nil {
-			return
-		}
-		flusher.Flush()
-		after = 0
-	}
-
-	ctx := r.Context()
-	expiry := time.NewTimer(chatLifetime)
-	defer expiry.Stop()
-
-	for {
-		lines, gap := conn.Since(after)
-		if gap {
-			s.Log.Warn("chat backlog overran", "guid", id.GUID, "after", after)
-		}
-		for _, line := range lines {
-			if _, err := fmt.Fprintf(w, "%d\t%s\n", line.Seq, line.Text); err != nil {
-				return
-			}
-			after = line.Seq
-		}
-		if len(lines) > 0 {
-			flusher.Flush()
-		}
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-expiry.C:
-			return
-		default:
-		}
-
-		if !conn.Wait(ctx, chatKeepalive) {
-			if ctx.Err() != nil {
-				return
-			}
-			if _, err := io.WriteString(w, "0\t\n"); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
-	}
-}
-
-// handleChatSend is the upward half: whatever the client's IRCClient::send
-// produced since the last flush, one line per line.
+// Nothing is held open, and that is the whole point. The client's HTTPObject
+// wedges permanently -- no callback of any kind, ever -- when two transfers
+// start close together against a real HTTPS endpoint, and a held connection
+// makes that a race on every boot. When the request queue lost it, mail and the
+// browser died with chat. So chat travels on the same single-transfer queue as
+// everything else, and a poll is short.
 //
-// Deliberately not s.authenticate. That path ensures the account row exists and
-// may send a welcome mail, which is right once per stream and wrong once per
-// sentence typed into a chat window. The session check is the same one; what is
-// skipped is the database work behind it.
+// The cursor rides in the payload rather than the query string because that is
+// where the mod's queue already puts a POST body, so this needed no change to
+// the queue at all.
 //
-// A send with no stream open is 409 rather than 401. It is not an authorisation
-// failure and the client should not treat it as one: it means the stream
-// dropped between the keystroke and the POST, and reopening it is the fix.
-func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
+// Deliberately not s.authenticate: that ensures the account row and may send a
+// welcome mail, which is right on a pane's first request and wrong thirty times
+// a minute. The session check is the same one; what is skipped is the database
+// work behind it.
+func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if s.Chat == nil {
 		fatal(w, http.StatusNotFound, "404 Not Found")
 		return
@@ -445,44 +339,119 @@ func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
 	}
 
 	guid := r.FormValue("guid")
-	if _, ok := s.Sessions.Lookup(guid, r.FormValue("uuid")); !ok && !s.TrustGUID {
-		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
-		return
-	}
-
-	conn := s.Chat.Conn(guid)
-	if conn == nil {
-		fatal(w, http.StatusConflict, "409 No Chat Session")
-		return
-	}
-
-	for _, line := range strings.Split(r.FormValue("lines"), "\n") {
-		if strings.TrimSpace(line) == "" {
-			continue
+	id, ok := s.Sessions.Lookup(guid, r.FormValue("uuid"))
+	if !ok {
+		if !s.TrustGUID || guid == "" {
+			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+			return
 		}
-		conn.Handle(line)
+		id = auth.Identity{GUID: guid}
 	}
 
-	closeAfterResponse(w)
-	w.WriteHeader(http.StatusNoContent)
+	// First record is the cursor, the rest are lines the player is sending.
+	var cursor int64
+	var inbound []string
+	if payload := r.FormValue("payload"); payload != "" {
+		parts := strings.Split(payload, "\n")
+		cursor, _ = strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
+		inbound = parts[1:]
+	}
+
+	conn := s.Chat.Touch(id.GUID)
+	fresh := false
+	if conn == nil {
+		// Only a connection this hub has never seen costs database work. Every
+		// other poll is a map lookup and a timestamp.
+		who, err := s.chatIdentity(r.Context(), id)
+		if err != nil {
+			s.Log.Error("chat identity", "guid", id.GUID, "err", err)
+			fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+			return
+		}
+		conn, fresh = s.Chat.Ensure(who)
+	}
+
+	for _, line := range inbound {
+		if strings.TrimSpace(line) != "" {
+			conn.Handle(line)
+		}
+	}
+
+	// A cursor ahead of ours means this connection is new and the client is
+	// carrying rooms the hub has never heard of, so it has to ask for them
+	// again. Its own lines start from the beginning either way.
+	reset := fresh && cursor > 0
+	if reset {
+		cursor = 0
+	}
+
+	lines, gap := conn.Since(cursor)
+	if gap {
+		s.Log.Warn("chat backlog overran", "guid", id.GUID, "after", cursor)
+	}
+
+	seq := cursor
+	texts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		texts = append(texts, line.Text)
+		seq = line.Seq
+	}
+
+	// Presence is "polled recently", so this is where a player who stopped
+	// polling leaves the rooms they were in.
+	s.Chat.Sweep()
+
+	writeJSON(w, struct {
+		Seq   string `json:"seq"`
+		Lines string `json:"lines"`
+		Reset string `json:"reset"`
+	}{
+		strconv.FormatInt(seq, 10),
+		strings.Join(texts, "\n"),
+		boolField(reset),
+	})
+}
+
+func boolField(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // chatIdentity is who the hub will say this player is: the same two store calls
 // dbproxy.Certificate makes, for the same reason -- the warrior name and tag
 // render the nick, and the tribe list decides which rooms they may enter.
-func (s *Server) chatIdentity(c *dbproxy.Ctx) (chat.Identity, error) {
-	quad, err := s.Store.Quad(c.Ctx, c.GUID)
+//
+// The session's name wins when the store has no row yet. Chat can be the first
+// request a brand-new account ever makes -- it starts polling when the shell
+// opens a pane, alongside the identity fetch rather than after it -- and the
+// store answers an unknown GUID with a well-formed row named "(unknown)" so
+// that mail from a deleted account still renders. Wearing that in chat would be
+// absurd, and the certificate's name is the better answer anyway: TribesNext
+// signed it, and it is what the account row is refreshed from.
+//
+// No write here on purpose. Creating the account row is the front door's job
+// (authenticate), and doing it from a poll would consume the first-sighting
+// flag that sends the welcome mail.
+func (s *Server) chatIdentity(ctx context.Context, who auth.Identity) (chat.Identity, error) {
+	quad, err := s.Store.Quad(ctx, who.GUID)
 	if err != nil {
 		return chat.Identity{}, err
 	}
-	tribes, err := s.Store.WarriorTribes(c.Ctx, c.GUID)
+	tribes, err := s.Store.WarriorTribes(ctx, who.GUID)
 	if err != nil {
 		return chat.Identity{}, err
 	}
 
+	name := quad.Name
+	if (name == "" || name == store.UnknownName) && who.Name != "" {
+		name = who.Name
+	}
+
 	id := chat.Identity{
-		GUID:   c.GUID,
-		Name:   quad.Name,
+		GUID:   who.GUID,
+		Name:   name,
 		Tag:    quad.Tag,
 		Append: quad.Append,
 	}
