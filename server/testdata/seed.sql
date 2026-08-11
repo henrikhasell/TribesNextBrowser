@@ -57,6 +57,18 @@ INSERT INTO history (subject_type, subject_id, event, at) VALUES
   ('clan', '7',       'orange01 promoted Shifter',  1785000000 - 86400),
   ('clan', '7',       'Clan created',               1785000000 - 500000);
 
+-- A blocked warrior, matching the mock's fixture.
+--
+-- The mail suite reads the block list and expects to find Ravage there with a
+-- hit count. Without this row the conformance run reports a difference between
+-- the two backends that is really a difference between two fixtures -- which is
+-- what it did until this was noticed, at a steady 31 pass / 2 fail.
+--
+-- hits is the count of messages the block has actually turned away, which is
+-- the column the stock dialog shows; field 4 of the row the client reads.
+INSERT INTO blocks (guid, blocked_guid, created, hits) VALUES
+  ('4510186', '4200999', 1785000000 - 10*86400, 3);
+
 -- Message ids are forced: the suites refer to messages 11 and 12 as the mock
 -- does, and an identity sequence would hand out different numbers on every
 -- reseed.
