@@ -123,6 +123,15 @@ signature vouched for.
 
 ## Installing
 
+A build pointing at `https://tnb.k8s.henrik.si` is published on every push to
+`main` — [TNBrowser.vl2][dl-client] for players, [TNBrowserServer.vl2][dl-server]
+for game-server operators — with the address already baked in.
+
+[dl-client]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
+[dl-server]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowserServer.vl2
+
+For any other backend, build your own:
+
 ```sh
 ./tools/build-vl2.sh --host "http://your-backend:8080"
 cp dist/TNBrowser.vl2 <Tribes2>/GameData/MyMod/

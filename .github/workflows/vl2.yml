@@ -1,0 +1,114 @@
+# Build the two mod archives and publish them as a rolling release.
+#
+# tools/build-vl2.sh bakes the backend address into the packaged settings.cs, so
+# a .vl2 is only useful once it is built for a particular deployment. This
+# workflow builds the ones for tnb.k8s.henrik.si and attaches them to a release
+# tagged "latest", which gives players a stable download that never needs
+# editing after the install:
+#
+#   https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
+#
+# HTTPS is deliberate. Stock Torque's HTTPObject spoke plain HTTP only; the
+# TribesNext client patch reimplements it on libcurl and ships a CA bundle, and
+# every client this mod runs on is patched by definition.
+
+name: vl2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'TNBrowser/**'
+      - 'TNBrowserServer/**'
+      - 'tools/build-vl2.sh'
+      - '.github/workflows/vl2.yml'
+  pull_request:
+    paths:
+      - 'TNBrowser/**'
+      - 'TNBrowserServer/**'
+      - 'tools/build-vl2.sh'
+  workflow_dispatch:
+
+env:
+  HOST: https://tnb.k8s.henrik.si
+
+# The release is a single mutable tag, so two pushes landing together would
+# race to replace it. Let the newer one win outright rather than interleave.
+concurrency:
+  group: vl2-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: ./tools/build-vl2.sh --host "$HOST"
+
+      # build-vl2.sh already fails when it cannot find a default to rewrite, but
+      # that check passes on a file that never made it into the archive. Read
+      # the setting back out of the packed bytes instead, which is the only form
+      # anyone will actually install.
+      - name: Check the endpoint was baked in
+        run: |
+          set -euo pipefail
+          check() {
+            local archive="$1" entry="$2" var="$3"
+            local got
+            got=$(unzip -p "dist/$archive" "$entry" | sed -n "s/.*\\\$$var *= *\"\([^\"]*\)\".*/\1/p" | head -1)
+            if [ "$got" != "$HOST" ]; then
+              echo "$archive: \$$var is \"$got\", expected \"$HOST\"" >&2
+              exit 1
+            fi
+            echo "$archive: \$$var = $got"
+          }
+          check TNBrowser.vl2       tnbrowser/settings.cs TNB::Host
+          check TNBrowserServer.vl2 tnbserver/settings.cs TNBS::Host
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vl2
+          path: dist/*.vl2
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+
+    # Creating a release writes to the repository.
+    permissions:
+      contents: write
+
+    steps:
+      # Publish the artifact the previous job produced rather than rebuilding,
+      # so what is released is byte-for-byte what was checked.
+      - uses: actions/download-artifact@v4
+        with:
+          name: vl2
+          path: dist
+
+      # Delete and recreate rather than edit: "latest" has to point at this
+      # commit, and gh cannot move an existing tag.
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gh release delete latest --repo "$REPO" --cleanup-tag --yes || true
+          gh release create latest dist/*.vl2 \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --title "Latest build" \
+            --notes "Built from \`${SHA:0:7}\`, pointing at $HOST.
+
+          **TNBrowser.vl2** is the client package: the community screens, mail and clan browser. Drop it into \`GameData/<MOD>/\` and launch with \`-mod <MOD>\`. A TribesNext-patched client is required.
+
+          **TNBrowserServer.vl2** is the game-server package, which shows clan tags for connecting players. Server operators want this one; players do not need it.
+
+          Both have the backend address baked in, so there is nothing to configure after the install. To point one somewhere else, put \`\$TNB::Host = \"...\";\` in a loose \`autoexec.cs\` beside the archive."
