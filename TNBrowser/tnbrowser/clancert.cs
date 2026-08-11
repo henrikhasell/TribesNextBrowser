@@ -120,6 +120,21 @@ function TNBClanCertLoaded(%ctx, %status, %result)
    if ($TNB::Debug)
       echo("TNBrowser: clan certificate held, key " @ getField(%cert, 0) @
            ", " @ %life @ "s");
+
+   // A server asked for this while we had nothing, and we are still on it.
+   // Handing it over now is what gets a player tagged who joined before their
+   // first certificate arrived -- the server rebuilds the name in place.
+   //
+   // Compared against the connection that asked, so a fetch that outlived the
+   // connection is dropped rather than pushed at whatever server we are on now.
+   if ($TNB::ClanCertAsked !$= "")
+   {
+      %asked = $TNB::ClanCertAsked;
+      $TNB::ClanCertAsked = "";
+
+      if (isObject(ServerConnection) && %asked == ServerConnection)
+         TNBClanCertSend();
+   }
 }
 
 // Drop what we have.
@@ -177,15 +192,35 @@ function TNBClanCertCancelTimers()
 // nothing to have.
 function clientCmdtnb_wantClanCert(%version)
 {
-   %cert = $TNB::ClanCert;
-   if (%cert $= "")
+   if ($TNB::ClanCert !$= "")
    {
-      // Nothing to send. Kick off a fetch so the next server gets one, but say
-      // nothing to this one -- it carries on and the player joins untagged.
-      TNBClanCertFetch();
+      $TNB::ClanCertAsked = "";
+      TNBClanCertSend();
       return;
    }
 
+   // Nothing to send yet. Remember who asked and fetch one: the answer is
+   // seconds away, and TNBClanCertLoaded hands it over when it lands rather
+   // than leaving the player untagged for the whole session.
+   //
+   // The connection object and not a flag. A flag set here and read after a
+   // fetch that outlived the connection would push a certificate at whatever
+   // server we are on by then -- and if that one does not run this mod,
+   // tnb_clanCertChunk does not exist there and every chunk is a console error
+   // on somebody else's server.
+   $TNB::ClanCertAsked = ServerConnection;
+   TNBClanCertFetch();
+}
+
+// Hand the certificate to the server we are connected to, 200 characters at a
+// time -- the shipped chunk size (clientSideClans.cs:35), set by what a
+// commandToServer argument will carry.
+function TNBClanCertSend()
+{
+   if ($TNB::ClanCert $= "" || !isObject(ServerConnection))
+      return;
+
+   %cert = $TNB::ClanCert;
    %len = strlen(%cert);
    for (%i = 0; %i < %len; %i += 200)
       commandToServer('tnb_clanCertChunk', getSubStr(%cert, %i, 200));
@@ -193,7 +228,7 @@ function clientCmdtnb_wantClanCert(%version)
    commandToServer('tnb_clanCertDone');
 
    if ($TNB::Debug)
-      echo("TNBrowser: sent clan certificate (" @ %len @ " chars) to " @ %version);
+      echo("TNBrowser: sent clan certificate (" @ %len @ " chars)");
 }
 
 echo("TNBrowser: clancert.cs loaded");

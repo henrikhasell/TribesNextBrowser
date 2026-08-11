@@ -56,6 +56,18 @@ if ($TNBS::Host $= "")
 if ($TNBS::WaitMs $= "")
    $TNBS::WaitMs = 1000;
 
+// How many certificates a client may offer after it is already in the game.
+//
+// A player whose client had nothing to send when it joined is asked once, and
+// pushes the certificate when its fetch lands -- so one is the ordinary number
+// and the rest is headroom for a fetch that failed and was retried.
+//
+// A limit at all because nothing else bounds it: the transfer is the client's
+// to start, and a broken or hostile one could open a new buffer for as long as
+// it stayed connected. Failing this limit costs the tag, never the player.
+if ($TNBS::LateTries $= "")
+   $TNBS::LateTries = 3;
+
 // What this server calls itself when it asks a client for a certificate. The
 // client does not read it today; the shipped protocol's one extension point was
 // exactly this, and it costs nothing to have one.

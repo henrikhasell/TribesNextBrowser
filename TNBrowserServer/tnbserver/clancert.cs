@@ -143,6 +143,76 @@ function TNBSRefuse(%why, %guid)
 }
 
 //-----------------------------------------------------------------------------
+// Applying it
+//-----------------------------------------------------------------------------
+
+// Wear the record.
+//
+// Before the connect completes this is the whole job: stock server.cs reads
+// getAuthInfo() a moment later and builds the name itself. After it, the name
+// has already been built and broadcast, so it has to be rebuilt here -- see
+// TNBSRetag.
+function TNBSApplyRecord(%client, %record)
+{
+   %client.t2csri_authInfo = %record;
+   %client.tnbTagged = 1;
+
+   if ($TNBS::Debug)
+      echo("TNBrowserServer: tagged " @ getField(%record, 0) @
+           " as " @ getField(%record, 1));
+}
+
+// The same, for a certificate that arrived after the player was already in.
+//
+// A name is not one value, which is what makes this more than an assignment:
+// it is the server-side %client.name, the client target every machine renders
+// from, and a PlayerRep built once from the MsgClientJoin broadcast
+// (message.cs:59). Setting only the first leaves every scoreboard in the game
+// showing the old one.
+//
+// All three are updated here, which is exactly what stock does when two players
+// collide on a name (server.cs:679-682) -- the one place it renames somebody
+// who is already connected. Following it rather than inventing something is
+// also what makes this safe mid-game: that path fires while players are spawned
+// and in play.
+//
+// The message carries an empty format string, the shipped idiom for a silent
+// one (server.cs:790). A chat line per late tag would be noise for everybody
+// else in the game, and the rename is not news.
+function TNBSRetag(%client, %record)
+{
+   %head = getRecord(%record, 0);
+   %tag = getField(%head, 1);
+   %append = getField(%head, 2);
+
+   // Nothing to show. A warrior in no tribe is not renamed, and must not be:
+   // their name is already the right one.
+   if (%tag $= "")
+      return;
+
+   // The untagged name stock stored at connect (server.cs:751). Without it
+   // there is nothing to rebuild from -- true only for a smurf, who has no
+   // verified GUID and never reaches here.
+   %base = %client.nameBase;
+   if (%base $= "")
+      return;
+
+   // Stock's own expression, from the branch that runs when the tag is known in
+   // time (server.cs:686-690). Copied rather than shared because it lives
+   // inside GameConnection::onConnect with no seam to call.
+   if (%append)
+      %name = "\cp\c6" @ %base @ "\c7" @ %tag @ "\co";
+   else
+      %name = "\cp\c7" @ %tag @ "\c6" @ %base @ "\co";
+
+   %was = %client.name;
+
+   %client.name = addTaggedString(%name);
+   setTargetName(%client.target, %client.name);
+   MessageAll('MsgClientNameChanged', "", %was, %client.name, %client);
+}
+
+//-----------------------------------------------------------------------------
 // Transport
 //-----------------------------------------------------------------------------
 
@@ -154,6 +224,21 @@ function TNBSRefuse(%why, %guid)
 // tag.
 function serverCmdtnb_clanCertChunk(%client, %chunk)
 {
+   // A second transfer, from a client that had nothing to send when it joined
+   // and has since fetched one. tnbCertDone is otherwise a permanent latch, so
+   // without this the retry is dropped chunk by chunk in silence.
+   //
+   // Bounded, because a client can start as many as it likes: three attempts,
+   // and none at all once one has succeeded. The buffer cap below still applies
+   // to each of them.
+   if (%client.tnbCertDone && %client.tnbApplied && !%client.tnbTagged &&
+       %client.tnbLate < $TNBS::LateTries)
+   {
+      %client.tnbLate++;
+      %client.tnbCertDone = "";
+      %client.tnbCertBuf = "";
+   }
+
    if (%client.tnbCertDone)
       return;
 
@@ -182,6 +267,33 @@ function serverCmdtnb_clanCertDone(%client)
       return;
 
    %client.tnbCertDone = 1;
+
+   // Late: the player is already in the game. Their client had no certificate
+   // when it was asked, fetched one, and is handing it over now.
+   //
+   // Verified exactly as an early one is -- same signature, expiry and GUID
+   // checks, in the same order -- so arriving late buys a certificate nothing.
+   // What it costs is a rename, which is why this is the one path that has to
+   // put the name back together itself.
+   if (%client.tnbApplied)
+   {
+      if (!%client.tnbTagged && %client.tnbCertBuf !$= "")
+      {
+         %guid = getField(%client.getAuthInfo(), 3);
+         if (%guid !$= "")
+         {
+            %record = TNBSVerifyClanCert(%client.tnbCertBuf, %guid);
+            if (%record !$= "")
+            {
+               TNBSApplyRecord(%client, %record);
+               TNBSRetag(%client, %record);
+            }
+         }
+      }
+
+      %client.tnbCertBuf = "";
+      return;
+   }
 
    // Only reachable if the transfer was still running when the connect caught
    // up with it. Normally nothing is waiting: the request goes out at the top
@@ -236,11 +348,11 @@ package TNBrowserServer
       // certificate arrived on time.
       if (%client.tnbCertBuf !$= "" && !%client.tnbCertDone && !%client.tnbWaited)
       {
-         // Hold the connection rather than rename afterwards. A name is not one
-         // value: it is the server-side %client.name, the client target, AND a
-         // PlayerRep on every connected machine, built once from the
-         // MsgClientJoin broadcast (message.cs:59). A late rename leaves every
-         // scoreboard in the game showing the old one.
+         // Hold the connection rather than rename afterwards, when the answer
+         // is this close. Renaming later works -- TNBSRetag does it, for the
+         // certificate that arrives after a player is already in -- but it
+         // costs three updates and a broadcast to every machine in the game,
+         // and none of that is needed for a transfer that is one packet away.
          //
          // The pattern is TribesNext's own (serverSide.cs:239): stash the
          // arguments, arm an expiry, return without Parent::, and re-enter
@@ -261,19 +373,18 @@ package TNBrowserServer
       if (%client.tnbCertBuf !$= "")
       {
          %record = TNBSVerifyClanCert(%client.tnbCertBuf, %guid);
-         if (%record !$= "")
-         {
-            // Substitute wholesale: the record carries the tag and the full
-            // membership list the game exposes through getAuthInfo().
-            %client.t2csri_authInfo = %record;
 
-            if ($TNBS::Debug)
-               echo("TNBrowserServer: tagged " @ getField(%record, 0) @
-                    " as " @ getField(%record, 1));
-         }
+         // Substitute wholesale: the record carries the tag and the full
+         // membership list the game exposes through getAuthInfo(). No rename
+         // here -- stock's onConnect below has not built the name yet, and
+         // reads this on its way past.
+         if (%record !$= "")
+            TNBSApplyRecord(%client, %record);
       }
 
       // Not needed again, and it is the largest thing hanging off the client.
+      // A client that has not sent one yet may still do so; that lands in
+      // serverCmdtnb_clanCertDone's late branch and refills this.
       %client.tnbCertBuf = "";
 
       Parent::onConnect(%client, %name, %raceGender, %skin, %voice, %voicePitch);
