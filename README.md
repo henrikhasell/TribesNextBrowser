@@ -130,6 +130,10 @@ for game-server operators — with the address already baked in.
 [dl-client]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
 [dl-server]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowserServer.vl2
 
+Those links follow GitHub's pointer at the newest release. Each build is also
+released under its own `build-<sha>` tag, which is never rewritten, so a link to
+a particular one keeps handing out the bytes it was recorded for.
+
 For any other backend, build your own:
 
 ```sh

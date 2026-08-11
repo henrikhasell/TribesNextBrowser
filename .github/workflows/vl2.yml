@@ -1,12 +1,17 @@
-# Build the two mod archives and publish them as a rolling release.
+# Build the two mod archives and publish them.
 #
 # tools/build-vl2.sh bakes the backend address into the packaged settings.cs, so
 # a .vl2 is only useful once it is built for a particular deployment. This
-# workflow builds the ones for tnb.k8s.henrik.si and attaches them to a release
-# tagged "latest", which gives players a stable download that never needs
-# editing after the install:
+# workflow builds the ones for tnb.k8s.henrik.si and releases them.
+#
+# One release per commit, tagged build-<sha>, and a tag once pushed is never
+# touched again: the point of a download link someone recorded is that it keeps
+# handing out the bytes they recorded it for. The stable link for anyone who
+# just wants the current build is GitHub's own pointer at the newest release,
 #
 #   https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
+#
+# which moves without any tag having to.
 #
 # HTTPS is deliberate. Stock Torque's HTTPObject spoke plain HTTP only; the
 # TribesNext client patch reimplements it on libcurl and ships a CA bundle, and
@@ -32,11 +37,12 @@ on:
 env:
   HOST: https://tnb.k8s.henrik.si
 
-# The release is a single mutable tag, so two pushes landing together would
-# race to replace it. Let the newer one win outright rather than interleave.
+# Nothing on main is shared between runs -- each commit gets its own tag -- so
+# only branch builds are worth cancelling, and there every push but the last is
+# a build nobody will look at.
 concurrency:
   group: vl2-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -91,8 +97,10 @@ jobs:
           name: vl2
           path: dist
 
-      # Delete and recreate rather than edit: "latest" has to point at this
-      # commit, and gh cannot move an existing tag.
+      # --latest is what moves the /releases/latest/ pointer, and it is the only
+      # thing here that moves at all. A re-run of an already published commit is
+      # a no-op rather than a failure: the tag exists, and rewriting it is the
+      # one thing this must not do.
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -100,12 +108,17 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          gh release delete latest --repo "$REPO" --cleanup-tag --yes || true
-          gh release create latest dist/*.vl2 \
+          TAG="build-${SHA:0:7}"
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "$TAG is already published, and published tags are not rewritten."
+            exit 0
+          fi
+          gh release create "$TAG" dist/*.vl2 \
             --repo "$REPO" \
             --target "$SHA" \
-            --title "Latest build" \
-            --notes "Built from \`${SHA:0:7}\`, pointing at $HOST.
+            --latest \
+            --title "$TAG" \
+            --notes "Built from \`$SHA\`, pointing at $HOST.
 
           **TNBrowser.vl2** is the client package: the community screens, mail and clan browser. Drop it into \`GameData/<MOD>/\` and launch with \`-mod <MOD>\`. A TribesNext-patched client is required.
 
