@@ -1357,6 +1357,8 @@ class Handler(BaseHTTPRequestHandler):
         params.update(posted)
         get = lambda k: (params.get(k) or [""])[0]
 
+        if parsed.path == "/session":
+            return self._session(get)
         if parsed.path.endswith("robot_login.php"):
             return self._login(get)
         if parsed.path == "/db":
@@ -1372,6 +1374,42 @@ class Handler(BaseHTTPRequestHandler):
         return self._deny(404, "<h1>Not Found</h1>")
 
     # -- session -----------------------------------------------------------
+
+    def _session(self, get):
+        """The community backend's own session endpoint.
+
+        The Go server answers this by verifying the account certificate against
+        TribesNext's signing key and then challenging the holder to decrypt
+        something. This mock cannot do the second half -- answering a challenge
+        needs the account private key, which lives inside the game -- so it
+        hands out a token immediately, exactly as its robot_login.php does and
+        for the same reason.
+
+        That is a fixture, not a claim about the protocol: what it reproduces is
+        the wire format, so the client's session layer can be exercised. The
+        cryptography is tested where it lives, in server/internal/auth.
+        """
+        guid = get("guid")
+        if not guid:
+            return self._send("ERR: No GUID specified.")
+
+        if get("uuid"):
+            with STATE_LOCK:
+                if SESSIONS.get(get("uuid")) == guid:
+                    return self._send("REFRESHED")
+            return self._send("TIMEOUT")
+
+        # A certificate, a challenge response, or just a nonce: all three mean
+        # "start a session", and this fixture cannot tell them apart because it
+        # never issues a challenge. A client launched -nologin has no
+        # certificate to send at all, which is every test container.
+        if get("cert") or get("response") or get("nonce"):
+            with STATE_LOCK:
+                token = "mock-%08x" % random.getrandbits(32)
+                SESSIONS[token] = guid
+            return self._send("UUID: " + token)
+
+        return self._send("ERR: Nothing to do.")
 
     def _login(self, get):
         guid, nonce = get("guid"), get("nonce")

@@ -203,12 +203,17 @@ func (s *Store) EnsureAccount(ctx context.Context, guid, name string, registered
 	// clocks now. Feeding both from one -- as this did while created was always
 	// "now" -- would set every returning player's last_seen to their
 	// registration date, and online() would report the server empty.
+	// An empty name never overwrites a known one. It means "we did not learn a
+	// name on this request" -- the dev bypass authenticates a bare GUID, and
+	// blanking the account's name because of it would render every roster,
+	// mail row and profile with a gap where the warrior used to be.
 	var created bool
 	err := s.pool.QueryRow(ctx, `
 		INSERT INTO accounts (guid, name, created, last_seen)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (guid) DO UPDATE
-		   SET name = EXCLUDED.name, last_seen = EXCLUDED.last_seen
+		   SET name = COALESCE(NULLIF(EXCLUDED.name, ''), accounts.name),
+		       last_seen = EXCLUDED.last_seen
 		RETURNING (xmax = 0)`,
 		guid, name, registered, now).Scan(&created)
 	return created, err

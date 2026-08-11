@@ -57,36 +57,29 @@ func testStore(t *testing.T) *store.Store {
 	return store.New(pool)
 }
 
-// newServer wires the front door to a stand-in for the TribesNext session
-// check -- the one thing this server does not own. Identity stays TribesNext's;
-// what is faked here is only the round trip to them.
+// newServer wires the front door to a session table with the test accounts
+// already in it.
 //
-// The stand-in echoes the guid back, because the verifier refuses a 200 whose
-// profile is for somebody else: a pairing that upstream did not actually
-// enforce would otherwise let any token authorise any account.
+// Sessions are granted rather than negotiated because negotiating one needs a
+// certificate signed by TribesNext, and only TribesNext can make one of those.
+// The exchange itself is covered where it lives, in internal/auth; what these
+// tests need is an authenticated caller, and GrantToken is the seam for that.
 //
-// It also answers a fixed creation date, which is where accounts.created comes
-// from for a player this server has never seen. upstreamCreation is that date.
+// The names matter: several tests below address mail and invitations by warrior
+// name, so each fixture GUID gets the name a real certificate would have
+// carried.
 func newServer(t *testing.T, st *store.Store) *httptest.Server {
 	t.Helper()
 
-	upstream := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			// The real oracle answers 200 for a live pair and 401 otherwise.
-			if r.FormValue("uuid") == "" || r.FormValue("guid") == "" {
-				w.WriteHeader(http.StatusUnauthorized)
-				return
-			}
-			guid := r.FormValue("guid")
-			_, _ = io.WriteString(w,
-				`{"guid":"`+guid+`","name":"warrior-`+guid+
-					`","creation":"`+strconv.FormatInt(upstreamCreation, 10)+`"}`)
-		}))
-	t.Cleanup(upstream.Close)
+	sessions := auth.NewSessions(0)
+	for guid := 1000; guid < 1010; guid++ {
+		g := strconv.Itoa(guid)
+		sessions.GrantToken("session-"+g, auth.Identity{GUID: g, Name: "warrior-" + g})
+	}
 
 	srv := &Server{
 		Store:    st,
-		Verifier: auth.NewVerifier(upstream.URL, 0),
+		Sessions: sessions,
 		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 	ts := httptest.NewServer(srv.Routes())
@@ -144,11 +137,6 @@ func account(t *testing.T, ts *httptest.Server, guid string) string {
 	return mark
 }
 
-// upstreamCreation is the registration date the stand-in oracle reports:
-// 2011-03-13, chosen only for being a date no clock in this test could produce
-// by accident.
-const upstreamCreation = 1300000000
-
 func statusCode(answer map[string]any) string {
 	s, _ := answer["status"].(string)
 	return strings.SplitN(s, "\t", 2)[0]
@@ -173,39 +161,31 @@ func rows(t *testing.T, answer map[string]any) []string {
 	return out
 }
 
-// A new account's registration date is TribesNext's, not the moment this
-// server first saw them -- otherwise every profile reads as registered today.
+// A registration date is written once and never moved.
 //
-// Asserted through scalar 23, the ordinal the shipped warrior profile actually
-// issues, so this covers the whole path from the upstream field to the pane:
-// status field 6 is the registered date (webbrowser.cs reads it as such) and
-// date() renders it as YYYY-MM-DD.
-func TestRegistrationDateComesFromUpstream(t *testing.T) {
-	ts := newServer(t, testStore(t))
-	account(t, ts, "1002")
-
-	answer := db(t, ts, "1002", "scalar", "23", "warrior-1002")
-	if got, want := statusField(answer, 6), "2011-03-13"; got != want {
-		t.Errorf("registered = %q, want %q", got, want)
-	}
-}
-
-// The date is written once. A player authenticating again must not have their
-// registration date moved -- and in particular must not have last_seen
-// backdated to it, which would report them offline forever.
-func TestRegistrationDateSurvivesLaterRequests(t *testing.T) {
+// It used to come from TribesNext, which a certificate does not carry, so an
+// account now dates from the first time this server saw it. What has not
+// changed is that the date is fixed at that first sighting: a later request
+// must not move it, and must not backdate last_seen to it either, which would
+// report the player offline forever.
+//
+// Asserted through scalar 23, the ordinal the shipped warrior profile issues:
+// status field 6 is the registered date and field 7 the online flag.
+func TestRegistrationDateIsWrittenOnceAndKept(t *testing.T) {
 	ts := newServer(t, testStore(t))
 	account(t, ts, "1003")
+
+	first := statusField(db(t, ts, "1003", "scalar", "23", "warrior-1003"), 6)
+	if first == "" {
+		t.Fatal("no registration date on a new account")
+	}
 
 	db(t, ts, "1003", "scalar", "5", "")
 
 	answer := db(t, ts, "1003", "scalar", "23", "warrior-1003")
-	if got, want := statusField(answer, 6), "2011-03-13"; got != want {
-		t.Errorf("registered = %q, want %q", got, want)
+	if got := statusField(answer, 6); got != first {
+		t.Errorf("registered moved from %q to %q on a later request", first, got)
 	}
-	// Field 7 is the online flag, which online() derives from last_seen. The
-	// player just made a request, so anything but 1 means last_seen was
-	// clobbered by the registration date.
 	if got := statusField(answer, 7); got != "1" {
 		t.Errorf("online = %q, want 1 -- last_seen was overwritten", got)
 	}
@@ -553,5 +533,125 @@ func TestInvitationArrivesAsMailWithAWorkingLink(t *testing.T) {
 	}
 	if !strings.Contains(joined, "<a:rejectinvite\t") {
 		t.Errorf("no reject link in the body: %q", joined)
+	}
+}
+
+//-----------------------------------------------------------------------------
+// The session route
+//
+// The exchange itself is tested in internal/auth, where the keys are. What is
+// tested here is the wire format, because the client's parser keys on the first
+// word of the line (session.cs:272-315) and nothing else -- a reply this server
+// gets slightly wrong reads as a hang rather than an error.
+//-----------------------------------------------------------------------------
+
+// sessionServer needs no database: /session never touches the store.
+func sessionServer(t *testing.T) (*httptest.Server, *auth.Sessions) {
+	t.Helper()
+
+	sessions := auth.NewSessions(0)
+	srv := &Server{
+		Sessions: sessions,
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts, sessions
+}
+
+func sessionPost(t *testing.T, ts *httptest.Server, form url.Values) string {
+	t.Helper()
+
+	resp, err := ts.Client().PostForm(ts.URL+"/session", form)
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	return strings.TrimSpace(string(body))
+}
+
+func TestSessionKeepaliveAnswersRefreshedOrTimeout(t *testing.T) {
+	ts, sessions := sessionServer(t)
+	sessions.GrantToken("live", auth.Identity{GUID: "4510186", Name: "orange01"})
+
+	cases := []struct {
+		name string
+		form url.Values
+		want string
+	}{
+		{"live token", url.Values{"guid": {"4510186"}, "uuid": {"live"}}, "REFRESHED"},
+		{"unknown token", url.Values{"guid": {"4510186"}, "uuid": {"gone"}}, "TIMEOUT"},
+		// A live token presented for somebody else is not a session either, and
+		// answering TIMEOUT sends the client to negotiate a fresh one.
+		{"token for another guid", url.Values{"guid": {"4120041"}, "uuid": {"live"}}, "TIMEOUT"},
+		{"no guid", url.Values{"uuid": {"live"}}, "ERR: No GUID specified."},
+		{"nothing to do", url.Values{"guid": {"4510186"}}, "ERR: Nothing to do."},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := sessionPost(t, ts, c.form); got != c.want {
+				t.Errorf("answer = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// A certificate that TribesNext did not sign gets an ERR line, not a challenge
+// -- and not a 500, which the client would retry against forever.
+func TestSessionRefusesAnUnsignedCertificate(t *testing.T) {
+	ts, _ := sessionServer(t)
+
+	got := sessionPost(t, ts, url.Values{
+		"guid":  {"4510186"},
+		"cert":  {"orange01\t4510186\t10001\tb7c1\tdeadbeef"},
+		"nonce": {"1f"},
+	})
+	if !strings.HasPrefix(got, "ERR: ") {
+		t.Errorf("answer = %q, want an ERR line", got)
+	}
+}
+
+// /db without a session is 401, and with one is not. The bypass exists for the
+// in-game suites and must be off by default.
+func TestDatabaseRequiresASession(t *testing.T) {
+	st := testStore(t)
+
+	sessions := auth.NewSessions(0)
+	sessions.GrantToken("good", auth.Identity{GUID: "1001", Name: "warrior-1001"})
+	srv := &Server{
+		Store:    st,
+		Sessions: sessions,
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+
+	post := func(values url.Values) int {
+		resp, err := ts.Client().PostForm(ts.URL+"/db", values)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+
+	payload, _ := json.Marshal(map[string]string{"form": "scalar", "ordinal": "5"})
+
+	if code := post(url.Values{"guid": {"1001"}, "uuid": {"good"}, "payload": {string(payload)}}); code != http.StatusOK {
+		t.Errorf("a session was refused: %d", code)
+	}
+	if code := post(url.Values{"guid": {"1001"}, "uuid": {"wrong"}, "payload": {string(payload)}}); code != http.StatusUnauthorized {
+		t.Errorf("an unknown token got %d, want 401", code)
+	}
+	if code := post(url.Values{"guid": {"1001"}, "payload": {string(payload)}}); code != http.StatusUnauthorized {
+		t.Errorf("no token at all got %d, want 401", code)
+	}
+
+	srv.TrustGUID = true
+	if code := post(url.Values{"guid": {"1001"}, "payload": {string(payload)}}); code != http.StatusOK {
+		t.Errorf("the dev bypass refused a bare guid: %d", code)
 	}
 }

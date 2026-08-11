@@ -31,10 +31,17 @@ import (
 
 func main() {
 	var (
-		addr     = flag.String("addr", envOr("TNB_ADDR", ":8080"), "listen address")
-		dsn      = flag.String("dsn", envOr("TNB_DSN", ""), "PostgreSQL connection string")
-		upstream = flag.String("upstream", envOr("TNB_UPSTREAM", auth.DefaultUpstream), "TribesNext endpoint used to verify sessions")
-		ttl      = flag.Duration("verify-ttl", 10*time.Minute, "how long a verified session is cached")
+		addr = flag.String("addr", envOr("TNB_ADDR", ":8080"), "listen address")
+		dsn  = flag.String("dsn", envOr("TNB_DSN", ""), "PostgreSQL connection string")
+		ttl  = flag.Duration("session-ttl", 30*time.Minute,
+			"how long a session survives without being used")
+		// The in-game suites run in containers that hold no account key
+		// material, so a client in one cannot answer a challenge. This lets
+		// them through on a bare GUID. It is announced loudly at startup
+		// because a deployment that has it on is one where anybody can be
+		// anybody.
+		trustGUID = flag.Bool("dev-trust-guid", envOr("TNB_DEV_TRUST_GUID", "") != "",
+			"INSECURE: accept any guid without proof, for the test suites")
 		// Also readable from TNB_MIGRATE so a deployment can select this mode
 		// with an environment variable alone. The App Platform pre-deploy job
 		// runs the image's default command, and overriding that command would
@@ -80,13 +87,15 @@ func main() {
 		return
 	}
 
-	verifier := auth.NewVerifier(*upstream, *ttl)
-	verifier.SetLogger(log)
+	if *trustGUID {
+		log.Warn("-dev-trust-guid is set: any guid is accepted without proof")
+	}
 
 	srv := &api.Server{
-		Store:    store.New(pool),
-		Verifier: verifier,
-		Log:      log,
+		Store:     store.New(pool),
+		Sessions:  auth.NewSessions(*ttl),
+		Log:       log,
+		TrustGUID: *trustGUID,
 	}
 
 	httpSrv := &http.Server{
@@ -96,7 +105,7 @@ func main() {
 	}
 
 	go func() {
-		log.Info("listening", "addr", *addr, "upstream", *upstream)
+		log.Info("listening", "addr", *addr, "authkey", auth.Fingerprint())
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("serve", "err", err)
 			stop()

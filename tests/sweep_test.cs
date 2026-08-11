@@ -172,7 +172,6 @@ function TNBSweepSelfTest(%host)
    $TNBSweep::Answers = 0;
 
    $TNB::Host = %host;
-   $TNB::AuthHost = %host;
 
    // A ScriptObject must never be constructed at file scope -- that is global
    // scope, where %locals do not exist and `new` takes the engine down.

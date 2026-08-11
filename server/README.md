@@ -11,39 +11,62 @@ expired. Owning the backend removes all three, and restores the features the
 original WON screens had that TribesNext dropped: buddy lists, block lists and
 the Sent/Deleted mail folders.
 
-## Identity: borrowed, not owned
+## Identity: checked, not borrowed
 
-This server holds no passwords, no keys and no account records of its own.
+This server holds no passwords and no private keys, and it contacts nobody to
+decide who you are.
 
-This is the *only* thing the client still asks TribesNext for. A player proves
-who they are there exactly as before — the RSA challenge/response the client
-already performs, with no password typed — and sends the resulting `(guid, uuid)`
-pair here. Browser, clan and mail traffic goes nowhere near TribesNext.
+A TribesNext account is an RSA keypair with a certificate — `name`, `guid`, `e`,
+`n`, and TribesNext's signature over the four — and that certificate is a
+statement anyone can check, because the signature is made with a key whose
+public half is compiled into every copy of `IFC22.dll`. Checking it is exactly
+what a game server does to a connecting player (`t2csri/serverSide.cs:103-128`),
+and it is what this server does now.
 
-The deployment this assumes: **one backend, many game servers**. Players' clients
-and every participating Tribes 2 server point at the same address, which is why
-`tools/build-vl2.sh --host` bakes it into both packages at once. This server then asks TribesNext
-whether that pair is a live session:
+The deployment this assumes: **one backend, many game servers**. Players'
+clients and every participating Tribes 2 server point at the same address, which
+is why `tools/build-vl2.sh --host` bakes it into both packages at once.
 
 ```
-GET https://tribesnext.thyth.com/tn/json/json_browser.php
-      ?guid=<guid>&uuid=<uuid>&method=userview&payload={"id":"<guid>"}
+POST /session   guid=…&cert=<the five fields>&nonce=<hex>
+     <- CHALLENGE: <(nonce || challenge) encrypted with the account's key>
+
+POST /session   guid=…&response=<the challenge half, decrypted>
+     <- UUID: <token>
+
+POST /session   guid=…&uuid=<token>          every ten minutes
+     <- REFRESHED, or TIMEOUT if it lapsed
 ```
 
-`200` means genuine, `401` means not. `tn_challenge_isAuthorized($guid, $uuid)`
-checks both together upstream, so a token cannot be replayed against a different
-GUID. The same call returns the authoritative display name, so verifying and
-identifying are one round trip.
+The certificate proves TribesNext issued that name and GUID for that key. It
+proves nothing about who is *sending* it — a certificate is public, and the
+client hands it to every game server it joins — so the challenge establishes
+possession of the private half. Both halves are needed and neither is
+sufficient.
 
-Consequences, both deliberate:
+Consequences, all deliberate:
 
-- **TribesNext must be reachable for anyone to log in here.** Verified pairs are
-  cached for ten minutes, matching the client's session refresh, so steady-state
-  traffic is one upstream call per player per session — but an outage there is
-  an outage here.
-- **The session token is a bearer credential.** Anyone who captures it can use
-  it against TribesNext itself, not just this server. Fine on a LAN; see
-  Transport below before exposing it.
+- **Nothing upstream has to be reachable.** TribesNext could vanish tomorrow and
+  logins here would carry on, which is the point of the exercise.
+- **There is no revocation.** A certificate is valid forever, so an account
+  banned or deleted upstream still authenticates here. A local ban list is the
+  answer if that ever matters; asking TribesNext is not.
+- **Registration dates come from first sighting.** A certificate does not carry
+  one, and the profile pane needs a date, so an account is dated from the first
+  time this server saw it.
+- **The session token is a bearer credential**, but now only for this server —
+  it means nothing to TribesNext. Fine on a LAN; see Transport below before
+  exposing it.
+
+### The pinned key
+
+`internal/auth/key.go` carries TribesNext's signing key: exponent 3, a 4096-bit
+modulus, fingerprint `4d80b2ee…c8473788` (sha256 of the modulus hex, printed at
+startup). It was recovered arithmetically rather than extracted, because raw RSA
+over a bare SHA-1 makes that possible: with `sig^3 ≡ sha1(name \t guid \t e \t n)
+(mod N)`, `N` divides `sig^3 - m` for every certificate, and the gcd over a few
+of them is `N` exactly. `internal/auth/auth_test.go` re-checks it against a real
+certificate on every run, so a wrong constant cannot pass unnoticed.
 
 ## Running it
 
@@ -61,8 +84,8 @@ go build -o tnserver ./cmd/tnserver
 |---|---|---|
 | `-addr` | `TNB_ADDR` | listen address, default `:8080` |
 | `-dsn` | `TNB_DSN` | PostgreSQL connection string, required |
-| `-upstream` | `TNB_UPSTREAM` | TribesNext endpoint used to verify sessions |
-| `-verify-ttl` | | how long a verified session is cached, default 10m |
+| `-session-ttl` | | how long a session survives unused, default 30m |
+| `-dev-trust-guid` | `TNB_DEV_TRUST_GUID` | **insecure**: accept any guid without proof, for the test suites |
 | `-migrate` | `TNB_MIGRATE` | apply pending migrations and exit, instead of serving |
 
 `migrations/` is compiled into the binary, so `-migrate` needs no psql and no
@@ -90,17 +113,19 @@ or bake both into the packages so installing is a single file copy:
 ../tools/build-vl2.sh --host "http://your-host:8080"
 ```
 
-`$TNB::AuthHost` stays on TribesNext — that is where the account lives. Every
-control the client offers is offered unconditionally: this backend serves them
-all, and the client reports a refusal if any backend ever cannot.
+One address is all the client needs now: sessions and data come from the same
+place. Every control the client offers is offered unconditionally — this backend
+serves them all, and the client reports a refusal if any backend ever cannot.
 
 ## Logs
 
 One line per request on stderr, `slog` text format:
 
 ```
-level=INFO msg=request verb=GET path=/tn/json/json_browser.php status=200 bytes=135 dur=6ms remote=127.0.0.1:35650 api=userview guid=4510186
-level=WARN msg=request verb=GET path=/tn/json/json_browser.php status=401 bytes=56 dur=0s remote=127.0.0.1:35656
+level=INFO msg=listening addr=:8080 authkey=4d80b2eec618e086e9cf5b3d24bda0e835c7bed592365307fb005565c8473788
+level=INFO msg="session established" guid=4510186 name=orange01
+level=INFO msg=request verb=POST path=/db status=200 bytes=135 dur=6ms remote=127.0.0.1:35650 q="array 1" guid=4510186
+level=WARN msg=request verb=POST path=/db status=401 bytes=56 dur=0s remote=127.0.0.1:35656
 ```
 
 `api` is the `method` parameter, so a browser or mail call says which one it was.

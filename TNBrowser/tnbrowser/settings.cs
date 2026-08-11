@@ -31,33 +31,30 @@
 // Keeping it a loose file rather than putting it in the archive means it
 // survives replacing the .vl2 with a newer build.
 
-// Two hosts, because proving who you are and holding the data are separate
-// concerns.
+// One host, where there used to be two.
 //
-// $TNB::AuthHost is always TribesNext, and is used for exactly one thing: the
-// RSA challenge/response login below. That is where the account lives, and it
-// is what makes the resulting session token meaningful to anyone else. Nothing
-// else in this mod contacts it -- grep for AuthHost and you should find this
-// block and session.cs, nowhere more.
+// $TNB::Host is the TNBrowser backend: the browser, clan and mail data, and now
+// the session as well. It holds no accounts and no passwords -- it verifies the
+// account certificate your client already has against TribesNext's signing key,
+// then makes you prove you hold the private half. That is the same check every
+// game server performs on a connecting player, and it needs TribesNext no more
+// than they do.
 //
-// $TNB::Host is the TNBrowser backend holding the browser, clan and mail data:
-// one central server that players' clients and game servers both talk to. It
-// verifies your session by asking TribesNext about the token, so identity is
-// TribesNext's either way, while the data is yours.
+// There used to be a $TNB::AuthHost pointing at tribesnext.thyth.com, because
+// the session was negotiated with their robot login and then verified with
+// them a second time. Neither round trip exists now, so neither does the
+// setting: nothing in this mod contacts TribesNext at all.
 //
 // The default suits a backend on the same machine, which is the development
 // case. A real deployment bakes its own address in at build time
 // (tools/build-vl2.sh --host), or sets it in a loose autoexec.cs as above.
-if ($TNB::AuthHost $= "")
-   $TNB::AuthHost = "https://tribesnext.thyth.com";
-
 if ($TNB::Host $= "")
    $TNB::Host = "http://localhost:8080";
 
-// Robot session endpoint: RSA challenge/response, no password required.
-// Always relative to $TNB::AuthHost.
-if ($TNB::LoginURI $= "")
-   $TNB::LoginURI = "/tn/robot/robot_login.php";
+// Session endpoint: RSA challenge/response against the account certificate, no
+// password required. Relative to $TNB::Host.
+if ($TNB::SessionURI $= "")
+   $TNB::SessionURI = "/session";
 
 // The database proxy. One endpoint for all 61 stored-procedure ordinals the
 // shipped community scripts issue, and the reason this backend cannot be

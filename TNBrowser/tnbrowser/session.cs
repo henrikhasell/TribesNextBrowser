@@ -4,9 +4,9 @@
 // negotiated with one. Instead the backend runs a challenge/response against
 // the account's RSA key:
 //
-//   1. Client sends its GUID and a random nonce.
-//   2. Server returns a challenge encrypted with the account's public key.
-//      The same challenge comes back for repeat requests within its lifetime.
+//   1. Client sends its account certificate and a random nonce.
+//   2. Server checks the certificate's TribesNext signature, then returns a
+//      challenge encrypted with the account's public key.
 //   3. Client decrypts it, checks that the leading bytes replay the nonce it
 //      sent (proving the server answered *this* request), and returns the
 //      remainder.
@@ -20,6 +20,18 @@
 //
 // The 2017 tournament client predates both; the Ruby interpreter it relied on
 // is gone from this build.
+//
+// The exchange used to run against TribesNext's robot login, with the backend
+// then asking TribesNext whether the resulting token was real -- so logging in
+// here needed tribesnext.thyth.com to be up, twice over. It now runs against
+// the community backend itself, which verifies the certificate against
+// TribesNext's signing key rather than asking TribesNext anything. Step 1 sends
+// the certificate for that reason: the old endpoint looked the account's public
+// key up by GUID because it held the account database, and ours does not.
+//
+// The wire format is deliberately unchanged. Every line this file parses below
+// is one TribesNext already answered with, which is why none of the retry,
+// backoff or waiter logic had to be touched.
 
 //-----------------------------------------------------------------------------
 // State
@@ -172,7 +184,25 @@ function TNBSessionStart()
    if ($TNB::UUID !$= "")
       %query = %query @ "uuid=" @ $TNB::UUID;
    else if ($TNB::Challenge $= "")
+   {
+      // The certificate travels with the nonce. It is public -- the client
+      // hands the same five fields to every game server it joins
+      // (t2csri/clientSide.cs:120-124) -- and it is what lets a backend with no
+      // account database verify who is asking and encrypt a challenge only
+      // they can read.
+      //
+      // Sent when there is one, and the request goes out without it when there
+      // is not, rather than refusing here. A client launched -nologin has no
+      // account subsystem at all (t2csri_getAccountCertificate does not exist),
+      // which is every test container -- and whether that is allowed to log in
+      // is the server's decision to make, not ours. A real backend answers ERR;
+      // one started for the test suites hands over a session.
       %query = %query @ "nonce=" @ TNBSessionMakeNonce();
+
+      %cert = TNBAccountCertificate();
+      if (%cert !$= "")
+         %query = %query @ "&cert=" @ TNBUrlEncode(%cert);
+   }
    else
    {
       %response = TNBSessionAnswerChallenge();
@@ -245,13 +275,17 @@ function TNBSessionSend(%query)
    TNBSessionInterface.buffer = "";
    TNBSessionInterface.handled = 0;
    TNBSessionInterface.setHeader("Accept", "text/plain");
+   TNBSessionInterface.setHeader("Content-Type", "application/x-www-form-urlencoded");
 
-   // The query has to be part of the request-URI: this build's HTTPObject
-   // ignores the third argument, which was verified against the live server --
-   // passing the query there produced "ERR: No GUID specified.".
-   // AuthHost, not Host: the session is negotiated with TribesNext even when
-   // the browser data comes from somewhere else.
-   TNBSessionInterface.get($TNB::AuthHost, $TNB::LoginURI @ "?" @ %query, "");
+   // POST, because the certificate is about 1,200 characters and a query string
+   // is the wrong place for it. The URI carries nothing: this build's
+   // HTTPObject ignores the third argument of get() -- verified against the
+   // live server, where passing the query there produced "ERR: No GUID
+   // specified." -- and post() puts the body where a body belongs.
+   //
+   // $TNB::Host, not a separate auth host. The session is negotiated with the
+   // community backend now, which is the same server that holds the data.
+   TNBSessionInterface.post($TNB::Host, $TNB::SessionURI, "", %query);
 }
 
 //-----------------------------------------------------------------------------

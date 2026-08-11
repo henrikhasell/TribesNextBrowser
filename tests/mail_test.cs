@@ -53,7 +53,6 @@ function TNBMailSelfTest(%host)
    $TNBMailTest::Rows = "";
 
    $TNB::Host = %host;
-   $TNB::AuthHost = %host;
    $TNB::Cert = "";
 
    // Step 5 switches identity to read the invited warrior's mailbox, so start

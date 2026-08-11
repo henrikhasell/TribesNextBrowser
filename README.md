@@ -90,22 +90,28 @@ TribesNext client:
 | `server/` | a Go backend answering the 61 ordinals | whoever hosts the community |
 | `TNBrowserServer/` | a server-side mod that puts tribe tags in player names | game-server operators |
 
-## Authentication is TribesNext's, and did not change
+## Authentication is TribesNext's identity, checked locally
 
-No password is typed into the mod. It runs the RSA challenge/response against
-`/tn/robot/robot_login.php`, and the backend verifies the resulting session
-token by asking TribesNext about it. This server holds no passwords, no keys,
-and nothing extracted from `IFC22.dll`.
+No password is typed into the mod, and nothing contacts TribesNext.
 
-One thing reads as a contradiction and is not: the client no longer speaks
-`json_browser.php`, but `internal/auth` still calls TribesNext's copy of it.
-Different things — ours *was* a client protocol, theirs is a third-party
-verification oracle (`tn_challenge_isAuthorized($guid, $uuid)` takes both, so a
-token cannot be replayed against another account).
+A TribesNext account is an RSA keypair plus a certificate — name, GUID, public
+key, and TribesNext's signature over the four fields — and that signature can be
+checked by anyone holding the public half of the signing key, which every copy
+of `IFC22.dll` carries. So the mod sends its certificate to the backend, the
+backend checks the signature and then challenges the client to decrypt something
+only the account's private key can read. That is the same exchange a game server
+performs on a connecting player, for the same reason: the proof travels with the
+player, so the issuer does not have to be online to confirm it.
 
-What the backend adds is the last hop: `WONGetAuthInfo()` serves that same
-identity to the shipped scripts in WON's certificate layout, assembled from the
-GUID TribesNext just vouched for.
+This used to run through TribesNext twice — the client logged in to their robot
+endpoint and the backend asked them whether the resulting token was real — which
+made someone else's uptime a condition of anybody using this one. It no longer
+does. The trade is that certificates cannot be revoked: an account banned
+upstream still authenticates here.
+
+What the backend adds is the last hop: `WONGetAuthInfo()` serves that identity
+to the shipped scripts in WON's certificate layout, assembled from the GUID the
+signature vouched for.
 
 ## Requirements
 
@@ -189,15 +195,16 @@ PostgreSQL, 0 failures** -- the same suites, the same fixtures, a different
 server, so a failure there is a real behavioural difference between the two.
 Plus the Go suite itself, because what is worth testing there is the SQL.
 
-`run-conformance.sh` needs the backend verifying sessions against the *mock*,
-since the mock is what mints them:
+`run-conformance.sh` needs the backend started with the test bypass, because a
+container holds no account key material and so cannot answer a challenge:
 
 ```sh
-./tnserver -dsn ... -upstream http://127.0.0.1:8099/tn/json/json_browser.php
+./tnserver -dsn ... -dev-trust-guid
 ```
 
 It checks that before it starts, because getting it wrong produces a wall of
-empty panes that reads exactly like a backend fault.
+empty panes that reads exactly like a backend fault. The real exchange is
+covered by `server/internal/auth`'s own tests, against a real certificate.
 
 The suites divide the work deliberately:
 

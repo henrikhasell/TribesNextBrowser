@@ -71,7 +71,6 @@ function TNBBrowserSelfTest(%host)
    $TNBBrowserTest::Failures = "";
 
    $TNB::Host = %host;
-   $TNB::AuthHost = %host;
    $TNB::Cert = "";
 
    TNBCertRefresh("TNBBrowserCertLoaded", "");

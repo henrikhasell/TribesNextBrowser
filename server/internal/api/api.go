@@ -1,6 +1,7 @@
-// Package api is the front door: four routes, and nothing that knows what an
+// Package api is the front door: five routes, and nothing that knows what an
 // ordinal means.
 //
+//	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
 //	POST /cert                the identity WONGetAuthInfo() hands the scripts
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
@@ -12,16 +13,18 @@
 // The mod now runs the shipped screens instead, and the shipped screens speak
 // ordinals, so the whole method table went with them.
 //
-// Authentication did not change and is not ours: a player proves who they are
-// to TribesNext with their RSA key, and internal/auth asks TribesNext whether
-// the resulting token is real. This server holds no passwords and no keys. The
-// one place json_browser.php survives is inside that check, as somebody else's
-// verification oracle -- which is a different thing from a protocol we speak.
+// Authentication is now ours, and it used not to be: this server asked
+// TribesNext whether a session token was real, which made someone else's uptime
+// a condition of anybody logging in here. It now checks the player's account
+// certificate against TribesNext's own signing key and challenges them to prove
+// they hold the private half -- the same thing every game server does, and for
+// the same reason: the proof is in the certificate, so the issuer does not have
+// to be reachable to confirm it. See internal/auth.
 package api
 
 import (
 	"encoding/json"
-	"errors"
+	"io"
 	"log/slog"
 	"net/http"
 	"time"
@@ -33,8 +36,14 @@ import (
 
 type Server struct {
 	Store    *store.Store
-	Verifier *auth.Verifier
+	Sessions *auth.Sessions
 	Log      *slog.Logger
+
+	// TrustGUID accepts a bare guid with no proof of anything, for driving the
+	// in-game test suites: the containers they run in hold no account key
+	// material, so a client in one cannot answer a challenge. Never set outside
+	// a test run -- with this on, anybody can be anybody.
+	TrustGUID bool
 }
 
 // request is the decoded `payload` parameter of /db.
@@ -58,6 +67,7 @@ type request struct {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/session", s.handleSession)
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
@@ -66,6 +76,101 @@ func (s *Server) Routes() http.Handler {
 		_, _ = w.Write([]byte("ok\n"))
 	})
 	return s.logRequests(mux)
+}
+
+//-----------------------------------------------------------------------------
+// The session
+//-----------------------------------------------------------------------------
+
+// handleSession is the whole of authentication, in three shapes distinguished
+// by which parameter arrived:
+//
+//	cert + nonce  ->  "CHALLENGE: <hex>"   prove you hold the key
+//	response      ->  "UUID: <token>"      you did
+//	uuid          ->  "REFRESHED"          keepalive, or "TIMEOUT" if it lapsed
+//
+// Plain text lines rather than JSON, and deliberately: this is the wire format
+// TribesNext's own robot login speaks, and the client's session layer already
+// parses it (session.cs:261-316) along with its backoff and its retry rules.
+// Keeping the format meant the client change was one URL and one extra
+// parameter, and none of the hard-won behaviour around it had to be touched.
+//
+// Every failure answers "ERR: <sentence>", which the client shows and then
+// retries with a quadratic backoff. No failure here distinguishes "no such
+// account" from "wrong key" -- there is nothing to gain by helping someone find
+// out which.
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		sessionLine(w, "ERR: That request could not be read.")
+		return
+	}
+
+	guid := r.FormValue("guid")
+	if guid == "" {
+		sessionLine(w, "ERR: No GUID specified.")
+		return
+	}
+
+	switch {
+	case r.FormValue("cert") != "":
+		blob, id, err := s.Sessions.Challenge(r.FormValue("cert"), r.FormValue("nonce"))
+		if err != nil {
+			s.Log.Warn("session challenge refused", "guid", guid, "err", err)
+			sessionLine(w, "ERR: That account certificate was not accepted.")
+			return
+		}
+		// The certificate names the account; a guid parameter disagreeing with
+		// it is either confusion or an attempt to have the challenge answered
+		// under somebody else's name.
+		if id.GUID != guid {
+			sessionLine(w, "ERR: That certificate is for a different account.")
+			return
+		}
+		sessionLine(w, "CHALLENGE: "+blob)
+
+	case r.FormValue("response") != "":
+		token, id, err := s.Sessions.Answer(guid, r.FormValue("response"))
+		if err != nil {
+			sessionLine(w, "ERR: That challenge response was not accepted.")
+			return
+		}
+		s.Log.Info("session established", "guid", id.GUID, "name", id.Name)
+		sessionLine(w, "UUID: "+token)
+
+	case r.FormValue("uuid") != "":
+		if _, ok := s.Sessions.Lookup(guid, r.FormValue("uuid")); !ok {
+			// Not an error: the client answers this by negotiating a fresh
+			// session (session.cs:301-309), which is exactly right after a
+			// restart dropped the table.
+			sessionLine(w, "TIMEOUT")
+			return
+		}
+		sessionLine(w, "REFRESHED")
+
+	case s.TrustGUID:
+		// The bypass, and the only way a client with no account subsystem can
+		// get a session at all: it has no certificate to send and no key to
+		// answer a challenge with. Off in any deployment that matters.
+		token, err := s.Sessions.Grant(auth.Identity{GUID: guid})
+		if err != nil {
+			s.Log.Error("granting a bypass session", "err", err)
+			sessionLine(w, "ERR: That request could not be completed.")
+			return
+		}
+		s.Log.Warn("session granted without proof (-dev-trust-guid)", "guid", guid)
+		sessionLine(w, "UUID: "+token)
+
+	default:
+		sessionLine(w, "ERR: Nothing to do.")
+	}
+}
+
+// sessionLine writes one plain-text line, with the blank first line the client
+// tolerates from the live server (session.cs:264 skips it).
+func sessionLine(w http.ResponseWriter, line string) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, line+"\n")
 }
 
 //-----------------------------------------------------------------------------
@@ -185,23 +290,22 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 
 	guid := r.FormValue("guid")
 	uuid := r.FormValue("uuid")
-	if guid == "" || uuid == "" {
+	if guid == "" {
 		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
 		return nil, false
 	}
 
-	id, err := s.Verifier.Verify(r.Context(), guid, uuid)
-	if err != nil {
-		if errors.Is(err, auth.ErrUnauthorised) {
+	id, ok := s.Sessions.Lookup(guid, uuid)
+	if !ok {
+		if !s.TrustGUID {
 			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
 			return nil, false
 		}
-		// Upstream is broken, not the player. 503 keeps that distinction, and
-		// the client reports it as a server problem rather than silently
-		// dropping the session.
-		s.Log.Error("upstream verification failed", "err", err)
-		fatal(w, http.StatusServiceUnavailable, "503 Service Unavailable")
-		return nil, false
+		// The test bypass. A bare GUID carries no name, so it is read back out
+		// of our own records below rather than invented -- EnsureAccount keeps
+		// whatever the account already had, and several ordinals put the
+		// caller's name in the sentence they answer with.
+		id = auth.Identity{GUID: guid}
 	}
 
 	created, err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name, id.Created)
@@ -209,6 +313,14 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 		s.Log.Error("ensure account", "err", err, "guid", id.GUID)
 		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
 		return nil, false
+	}
+
+	// Only the bypass gets here without a name: a certificate always carries
+	// one, signed.
+	if id.Name == "" {
+		if q, err := s.Store.Quad(r.Context(), id.GUID); err == nil {
+			id.Name = q.Name
+		}
 	}
 
 	// First sighting: tell them the community screens work again. Logged and
