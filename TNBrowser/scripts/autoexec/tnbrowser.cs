@@ -21,7 +21,6 @@ exec("tnbrowser/session.cs");
 exec("tnbrowser/api.cs");
 exec("tnbrowser/dbproxy.cs");
 exec("tnbrowser/clancert.cs");
-exec("tnbrowser/chat.cs");
 
 package TNBrowser
 {
@@ -84,151 +83,6 @@ package TNBrowser
       // wear a new tag without relaunching.
       TNBClanCertFetch();
       return true;
-   }
-
-   //-- chat ------------------------------------------------------------------
-   //
-   // Five overrides, and between them they are the entire transport. The chat
-   // client itself -- processLine, dispatch, the channel and person model, the
-   // panes -- is shipped code that never learns where its bytes come from.
-
-   // The shipped connect dials a TCPObject at an address from
-   // GetIRCServerList(), which has answered "" since WON shut down. There is no
-   // TLS behind that socket and no way to add one: the patch's libcurl and
-   // mbedTLS are wired to HTTPObject alone.
-   function IRCClient::connect()
-   {
-      TNBChatConnect();
-   }
-
-   // The one call in the whole of ChatGui.cs that touches the socket.
-   function IRCClient::send(%message)
-   {
-      TNBChatSend(%message);
-   }
-
-   function IRCClient::disconnect()
-   {
-      TNBChatDisconnect();
-
-      // Parent:: for everything else it does -- the away timer, the state, and
-      // IRCClient::reset, which clears the channels and the person list.
-      Parent::disconnect();
-   }
-
-   // The shipped handshake ends here, and so does ours; the difference is one
-   // line of it.
-   //
-   // WONLoginIRC(%reply) is what the shipped version checks, and against a live
-   // WON it validated the server's own proof. There is no WON session behind
-   // this client, so the native returns "ERROR" and the shipped check refuses
-   // every connection. What replaces it is stronger rather than weaker: this
-   // stream is carried over TLS and authorised by the session negotiated
-   // against the account certificate, so the backend proved itself before the
-   // first line of chat rather than in the middle of it.
-   //
-   // Everything else is the shipped body, because everything else earns its
-   // place: the identity assignment is what gives the local player a name and a
-   // tribe tag in chat, and the two branches after it are what re-join the
-   // rooms a reconnect stashed.
-   function IRCClient::onChalRespReply(%prefix, %params)
-   {
-      %params = nextToken(%params, nick, " ");
-      %params = nextToken(%params, ident, " ");
-      %params = nextToken(%params, reply, " ");
-
-      %me = $IRCClient::people.getObject(0);
-      %me.displayName = %nick;
-      IRCClient::setIdentity(%me, %ident);
-
-      if ($IRCClient::state $= IDIRC_CONNECTED)
-      {
-         // A stream that came back inside the backend's grace period: the rooms
-         // never noticed, so only the rendered name needs refreshing.
-         IRCClient::correctNick(%me);
-         return;
-      }
-
-      IRCClient::newMessage("", "Connected to " @ $TNB::Host);
-      $IRCClient::state = IDIRC_CONNECTED;
-      IRCClient::notify(IDIRC_CONNECTED);
-
-      if ($IRCClient::awaytimeout)
-         cancel($IRCClient::awaytimeout);
-      $IRCClient::awaytimeout = schedule($AWAY_TIMEOUT, 0, "ChatAway_Timeout");
-
-      if (strlen($IRCClient::room))
-         IRCClient::send("JOIN " @ $IRCClient::room);
-
-      for (%i = 0; %i < $IRCClient::previousChannelCount; %i++)
-         IRCClient::join($IRCClient::previousChannel[%i] SPC $IRCClient::previousKey[%i]);
-      $IRCClient::previousChannelCount = 0;
-   }
-
-   // A replacement rather than a wrapper, for two reasons.
-   //
-   // The first is that the shipped one splits the name^tag^append triple with
-   // IRCGetTriple, and that native is not always there: on a client the patch
-   // started with -nologin it is simply absent, and calling it prints "Unable
-   // to find function IRCGetTriple" and leaves %p.nick empty -- which shows up
-   // as every member of the room rendering with raw carets. Splitting three
-   // fields in script costs nothing and cannot be missing.
-   //
-   // The second is escaping. Every parameter in this protocol is
-   // space-delimited, so "Sir Lancelot" travels as "Sir_-_01Lancelot" -- the
-   // shipped spelling, from IRCClient::doEscapes -- and something has to undo
-   // it. IRCClient::displayChannel already does for channel names; nothing ever
-   // did for nicks, because WON's own nicks could not contain a space.
-   //
-   // %p.displayName is deliberately left as it arrived. It is the wire identity
-   // that IRCClient::findPerson matches on and that a private message has to be
-   // addressed to; only the rendered forms are unescaped.
-   function IRCClient::setIdentity(%p, %ident)
-   {
-      %p.identity = %ident;
-
-      %rest = nextToken(%p.displayName, name, "^");
-      %rest = nextToken(%rest, tag, "^");
-      nextToken(%rest, append, "^");
-
-      %name = IRCClient::undoEscapes(%name);
-      %tag = IRCClient::undoEscapes(%tag);
-      %p.untagged = %name;
-
-      // The layout is the shipped one, markup and all: <tribe:1> is the tag and
-      // <tribe:0> the name, and the chat pane turns both into clickable links.
-      if (%tag $= "")
-      {
-         %p.nick = %name;
-         %p.tagged = "<tribe:0>" @ %name @ "</tribe>";
-      }
-      else if (%append)
-      {
-         %p.nick = %name @ %tag;
-         %p.tagged = "<tribe:0>" @ %name @ "</tribe><tribe:1>" @ %tag @ "</tribe>";
-      }
-      else
-      {
-         %p.nick = %tag @ %name;
-         %p.tagged = "<tribe:1>" @ %tag @ "</tribe><tribe:0>" @ %name @ "</tribe>";
-      }
-   }
-
-   // Swallow the five connection failures that raise a modal dialog.
-   //
-   // The shipped client had one chance to reach WON and told the player when it
-   // failed. This one holds a stream that is retired every ten minutes by
-   // design and reopened continuously, so "You have been disconnected from ..."
-   // would be a dialog in the player's face during an ordinary reconnect. The
-   // failure is still visible where it belongs: the chat pane stops receiving.
-   function IRCClient::notify(%event)
-   {
-      if (%event $= IDIRC_ERR_HOSTNAME || %event $= IDIRC_ERR_TIMEOUT ||
-          %event $= IDIRC_ERR_DROPPED || %event $= IDIRC_ERR_BADCHALLENGE ||
-          %event $= IDIRC_ERR_BADCHALRESP_REPLY)
-         return;
-
-      Parent::notify(%event);
    }
 
    //-- the launch bar --------------------------------------------------------
@@ -327,9 +181,8 @@ package TNBrowser
    }
 
    // TribesNext forces EMAIL, CHAT and BROWSER inactive (console_client_patches.cs)
-   // because the WON services behind all three shut down in 2003. All three
-   // work again: the chat client is the shipped one, over the stream in
-   // tnbrowser/chat.cs.
+   // because the WON services behind all three shut down in 2003. Two of them
+   // work again; CHAT is left inactive, because nothing here serves it.
    //
    // Re-enabling happens after Parent:: rather than by passing %makeInactive
    // through, because TribesNext's own override sits between this and the
@@ -345,7 +198,7 @@ package TNBrowser
       // the identity fetched at shell startup to un-gate them -- so a player
       // who was not logged in met a session error before touching anything.
       // The identity is now fetched when a pane is actually opened, below.
-      if (%text $= "EMAIL" || %text $= "BROWSER" || %text $= "CHAT")
+      if (%text $= "EMAIL" || %text $= "BROWSER")
          %this.setTabActive(%index, true);
    }
 
@@ -391,12 +244,6 @@ function TNBCertEnsure(%gui)
    // have a session and to be somewhere other than in a game. It guards itself
    // against refetching one we already have.
    TNBClanCertEnsure();
-
-   // Same reasoning, one layer along: the chat stream is opened at boot, which
-   // is before there is an account to open it with, so the backoff can leave
-   // the CHAT tab dead for a minute after the player logs in. This is the first
-   // moment they are known to have a session.
-   TNBChatNudge();
 
    if (TNBCertReady() || $TNB::CertPending)
       return;

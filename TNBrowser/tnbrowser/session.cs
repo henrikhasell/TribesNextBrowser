@@ -175,12 +175,13 @@ function TNBSessionStart()
    // $TNB::Nonce, so the challenge that was already on its way fails the replay
    // check and the exchange begins again. Two negotiations chasing each other
    // never converge, and with no session every pane in the mod is dead at once:
-   // mail, the browser and chat all wait on the same token.
+   // mail and the browser wait on the same token.
    //
-   // This was one caller's problem until it was two. The request queue has its
-   // own guard for exactly this ($TNB::AwaitingSession, api.cs:158) and that
-   // was enough while it was the only consumer; chat asks on its own timer, so
-   // the guard has to live here, where the shared connection object is.
+   // The request queue has its own guard for exactly this
+   // ($TNB::AwaitingSession, api.cs:158), and it is not enough: it covers the
+   // queue's own path, while the keepalive below is a second entry point that
+   // fires on a timer. So the guard lives here, where the shared connection
+   // object is.
    //
    // Dropping the duplicate loses nothing: the waiter list is shared, so
    // whoever asked second is called when the negotiation already running
@@ -201,7 +202,10 @@ function TNBSessionStart()
    // of the way. Two HTTPObject transfers started close together against a real
    // HTTPS endpoint wedge one of them permanently -- no callback of any kind,
    // ever -- and when the wedged one is the queue's, every pane in the mod dies
-   // behind it. Measured on a live client; see tnbrowser/chat.cs.
+   // behind it. Measured on a live client against the deployed backend, where
+   // it took out mail and the browser together; it does not reproduce over
+   // plain HTTP against a local server, which is why it went unnoticed for so
+   // long.
    //
    // Only the keepalive can collide. A negotiation cannot: the queue declines to
    // send until the session is ready, so while one is running nothing else is in
@@ -462,8 +466,8 @@ function TNBSessionFail(%reason)
    // t2csri_getAccountCertificate() with no argument can hand back an account
    // the player is not logged in as, and the backend then answers "That account
    // certificate was not accepted" -- forever, because nothing ever re-read it.
-   // Mail, the browser and chat all wait on that session, so all three stay
-   // dead for the rest of the session.
+   // Mail and the browser both wait on that session, so both stay dead for the
+   // rest of the session.
    //
    // Observed exactly that against the live backend on a client with two stored
    // accounts. It stayed invisible locally because a server run with

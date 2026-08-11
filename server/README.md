@@ -116,57 +116,6 @@ Game servers must run **without** `-nologin`. TribesNext's authentication phase
 is what establishes the GUID a certificate is bound to, and it only runs when
 `$PlayingOnline` is set, which omitting that flag does.
 
-## Chat
-
-`internal/chat` is an IRC server for exactly one client: the one in
-`scripts/ChatGui.cs`, which is a hundred TorqueScript functions over a plaintext
-`TCPObject`. The mod replaces two of those functions — `IRCClient::send` and
-`IRCTCP::onLine` — so the lines this server produces reach a completely
-unmodified chat client, polled over HTTPS.
-
-Three properties of that client shape everything here, and each has a test:
-
-- **`IRCClient::dispatch` is a closed switch.** A verb it does not know is
-  printed to the player as `(cmd:) …`, so there is no welcome burst, no `366`
-  after a `353`, and no `PING`. `chat_test.go` asserts every emitted line
-  against the transcribed dispatch table.
-- **Several client actions raise a wait state** that only specific replies
-  clear. A `LIST` with no `323` after it, or a `MODE +b` with no `368`, leaves
-  the chat panes titled `CONNECTING` for the rest of the session. `WHO` and
-  `WHOIS` are answered even for a nick this server has never heard of, because
-  the alternative strands them.
-- **`NICK` corrupts the client's person table**, so identity is fixed for the
-  life of a connection and a tag change applies on the next one.
-
-Rooms are public ones from `-chat-rooms`, ad-hoc ones anyone can open, private
-messages, and `#<Tribe>_Public` / `#<Tribe>_Private` per clan — the names the
-shipped `JoinPublicTribeChannel` builds, which is why they are addressed by the
-tribe's name with spaces escaped as `_-_01` rather than by its id. Membership is
-checked against `clan_members`; rank 2 and above gets channel operator, the same
-rung the shipped screens treat as administrative.
-
-**Nothing is stored.** Messages exist in a 256-line ring per connection, which
-is there so a poll that fails costs nothing -- the cursor does not move, and the
-next one asks from the same place -- and nowhere else. Presence is "polled
-recently": a connection survives 45 seconds without a poll, so a stall is
-invisible to everyone else in the room.
-
-**Nothing is held open**, and that is not a preference. Two `HTTPObject`
-transfers started close together against a real HTTPS endpoint wedge one of
-them permanently in this client -- no callback of any kind, ever -- so a chat
-connection held open makes every boot a race, and when the request queue loses
-it, mail and the browser die with chat. Measured on a live client; the earlier
-design did exactly that. Chat therefore rides the same single-transfer queue as
-every other call the mod makes.
-
-State is in memory, which is what `auth.Sessions` already is and what
-`instance_count: 1` in `.do/app.yaml` already assumes. Chat is the first thing a
-scale-out would break — two instances would each hold half the room — and the
-fix then is `LISTEN`/`NOTIFY` or sticky routing, not a table.
-
-Switch it off with `-chat=false`; both routes then answer 404 and the CHAT tab
-is an empty room, with nothing else affected.
-
 ## Running it
 
 ```sh
@@ -186,8 +135,6 @@ go build -o tnserver ./cmd/tnserver
 | `-session-ttl` | | how long a session survives unused, default 30m |
 | `-dev-trust-guid` | `TNB_DEV_TRUST_GUID` | **insecure**: accept any guid without proof, for the test suites |
 | `-migrate` | `TNB_MIGRATE` | apply pending migrations and exit, instead of serving |
-| `-chat` | `TNB_CHAT` | serve the chat hub, default on; `TNB_CHAT=0` switches it off |
-| `-chat-rooms` | `TNB_CHAT_ROOMS` | comma-separated rooms that always exist, default `Tribes2,Pickup,Newbies` |
 
 `migrations/` is compiled into the binary, so `-migrate` needs no psql and no
 copy of this repository — which is what lets the deployed image be a distroless
@@ -238,6 +185,18 @@ TribesNext itself, not only here, so a log holding one would be as sensitive as
 a password store. The `guid` is logged: it names a player but grants nothing.
 
 ## Transport
+
+**Never two transfers at once.** Two `HTTPObject` transfers started close
+together against a real HTTPS endpoint wedge one of them permanently in the
+patched client -- no callback of any kind, ever, and nothing in the mod can
+detect or recover from it. Measured on a live client against the deployed
+backend; it does not reproduce over plain HTTP against a local server, which is
+how a design that did exactly that survived review. So every call the mod makes
+rides one request queue on one connection object, and the session keepalive --
+the one thing that cannot join that queue, since the queue waits on the session
+-- defers while the queue is busy (`tnbrowser/session.cs`). Anything added to
+this backend later has to live within that: no second endpoint polled on its own
+timer, and nothing held open.
 
 Plain HTTP by default, which works immediately on a LAN. For anything
 internet-facing put it behind a reverse proxy holding a real certificate: the
@@ -308,10 +267,6 @@ Paths and shapes are TribesNext's, so the client needs no new code:
   handed to them. Answers 404 when the server was started without `-clan-key`,
   which is a supported deployment: everything else serves and players simply
   carry no tag. See [Clan tags](#clan-tags-are-signed-not-looked-up).
-- `/chat` — one poll, carrying lines both ways in a single round trip. The
-  payload is the client's cursor followed by whatever it is sending, one per
-  line; the answer is `{"seq":…,"lines":…,"reset":…}`. Session authenticated.
-  See [Chat](#chat).
 - `/tn/server/authinfo` — not a client endpoint, and no longer used by the mod;
   the clan-tag lookup the game-server mod made before certificates replaced it.
   Kept because the deployment probe above uses it to prove a request reached Go

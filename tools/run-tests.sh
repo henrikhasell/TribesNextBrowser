@@ -75,17 +75,3 @@ $CONSOLE "$SETUP" 'exec("tests/mail_test.cs");' \
 
 $CONSOLE 'echo("TNBMAILRESULT pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \
     | grep -E "TNBMAILRESULT|\(got |\(missing "
-
-echo
-echo "== chat =="
-restart_mock
-# Last, and after a restart, because chat is stateful in a way the other panes
-# are not: who is in which room lives in the mock's memory rather than in a
-# fixture, so a suite that ran before this one leaves rooms behind. The suite
-# also leaves a stream open, which is why nothing follows it.
-$CONSOLE "$SETUP" 'exec("tests/chat_test.cs");' \
-    "TNBChatSelfTest(\"$HOST_ADDR\");" \
-    --until '$TNBChatTest::Done' --until-timeout 120 >/dev/null 2>&1
-
-$CONSOLE 'echo("TNBCHATRESULT pass=" @ $TNBChatTest::Pass @ " fail=" @ $TNBChatTest::Fail); if ($TNBChatTest::Fail > 0) echo($TNBChatTest::Failures);' 2>&1 \
-    | grep -E "TNBCHATRESULT|\(got |\(missing "

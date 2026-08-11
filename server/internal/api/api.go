@@ -1,11 +1,10 @@
-// Package api is the front door: seven routes, and nothing that knows what an
+// Package api is the front door: six routes, and nothing that knows what an
 // ordinal means.
 //
 //	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
 //	POST /cert                the identity WONGetAuthInfo() hands the scripts
 //	POST /clancert            the same record, signed, for a game server to check
-//	POST /chat                one poll: IRC lines up, IRC lines down (internal/chat)
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
 //	GET  /healthz
 //
@@ -25,17 +24,13 @@
 package api
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
-	"github.com/henrik/tnbrowser-server/internal/chat"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/dbproxy"
 	"github.com/henrik/tnbrowser-server/internal/store"
@@ -50,11 +45,6 @@ type Server struct {
 	// when no key was configured, which is a supported deployment: /clancert
 	// answers 404 and players simply carry no tag.
 	ClanCerts *clancert.Signer
-
-	// Chat is the community chat server. Nil when chat is switched off, on the
-	// same terms as ClanCerts: both routes answer 404 and the CHAT tab is an
-	// empty room, with nothing else in the shell affected.
-	Chat *chat.Hub
 
 	// TrustGUID accepts a bare guid with no proof of anything, for driving the
 	// in-game test suites: the containers they run in hold no account key
@@ -88,7 +78,6 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
 	mux.HandleFunc("/clancert", s.handleClanCert)
-	mux.HandleFunc("/chat", s.handleChat)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -303,164 +292,6 @@ func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 	}{cert})
 }
 
-//-----------------------------------------------------------------------------
-// Chat
-//-----------------------------------------------------------------------------
-
-// handleChat is one poll: whatever the client has to say, and whatever is
-// waiting for it, in a single round trip.
-//
-//	payload:  <cursor> NL <line> NL <line> ...
-//	answer:   {"seq":"42","lines":"<line>\n<line>","reset":"0"}
-//
-// Nothing is held open, and that is the whole point. The client's HTTPObject
-// wedges permanently -- no callback of any kind, ever -- when two transfers
-// start close together against a real HTTPS endpoint, and a held connection
-// makes that a race on every boot. When the request queue lost it, mail and the
-// browser died with chat. So chat travels on the same single-transfer queue as
-// everything else, and a poll is short.
-//
-// The cursor rides in the payload rather than the query string because that is
-// where the mod's queue already puts a POST body, so this needed no change to
-// the queue at all.
-//
-// Deliberately not s.authenticate: that ensures the account row and may send a
-// welcome mail, which is right on a pane's first request and wrong thirty times
-// a minute. The session check is the same one; what is skipped is the database
-// work behind it.
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	if s.Chat == nil {
-		fatal(w, http.StatusNotFound, "404 Not Found")
-		return
-	}
-	if err := r.ParseForm(); err != nil {
-		fatal(w, http.StatusBadRequest, "400 Bad Request")
-		return
-	}
-
-	guid := r.FormValue("guid")
-	id, ok := s.Sessions.Lookup(guid, r.FormValue("uuid"))
-	if !ok {
-		if !s.TrustGUID || guid == "" {
-			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
-			return
-		}
-		id = auth.Identity{GUID: guid}
-	}
-
-	// First record is the cursor, the rest are lines the player is sending.
-	var cursor int64
-	var inbound []string
-	if payload := r.FormValue("payload"); payload != "" {
-		parts := strings.Split(payload, "\n")
-		cursor, _ = strconv.ParseInt(strings.TrimSpace(parts[0]), 10, 64)
-		inbound = parts[1:]
-	}
-
-	conn := s.Chat.Touch(id.GUID)
-	fresh := false
-	if conn == nil {
-		// Only a connection this hub has never seen costs database work. Every
-		// other poll is a map lookup and a timestamp.
-		who, err := s.chatIdentity(r.Context(), id)
-		if err != nil {
-			s.Log.Error("chat identity", "guid", id.GUID, "err", err)
-			fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
-			return
-		}
-		conn, fresh = s.Chat.Ensure(who)
-	}
-
-	for _, line := range inbound {
-		if strings.TrimSpace(line) != "" {
-			conn.Handle(line)
-		}
-	}
-
-	// A cursor ahead of ours means this connection is new and the client is
-	// carrying rooms the hub has never heard of, so it has to ask for them
-	// again. Its own lines start from the beginning either way.
-	reset := fresh && cursor > 0
-	if reset {
-		cursor = 0
-	}
-
-	lines, gap := conn.Since(cursor)
-	if gap {
-		s.Log.Warn("chat backlog overran", "guid", id.GUID, "after", cursor)
-	}
-
-	seq := cursor
-	texts := make([]string, 0, len(lines))
-	for _, line := range lines {
-		texts = append(texts, line.Text)
-		seq = line.Seq
-	}
-
-	// Presence is "polled recently", so this is where a player who stopped
-	// polling leaves the rooms they were in.
-	s.Chat.Sweep()
-
-	writeJSON(w, struct {
-		Seq   string `json:"seq"`
-		Lines string `json:"lines"`
-		Reset string `json:"reset"`
-	}{
-		strconv.FormatInt(seq, 10),
-		strings.Join(texts, "\n"),
-		boolField(reset),
-	})
-}
-
-func boolField(b bool) string {
-	if b {
-		return "1"
-	}
-	return "0"
-}
-
-// chatIdentity is who the hub will say this player is: the same two store calls
-// dbproxy.Certificate makes, for the same reason -- the warrior name and tag
-// render the nick, and the tribe list decides which rooms they may enter.
-//
-// The session's name wins when the store has no row yet. Chat can be the first
-// request a brand-new account ever makes -- it starts polling when the shell
-// opens a pane, alongside the identity fetch rather than after it -- and the
-// store answers an unknown GUID with a well-formed row named "(unknown)" so
-// that mail from a deleted account still renders. Wearing that in chat would be
-// absurd, and the certificate's name is the better answer anyway: TribesNext
-// signed it, and it is what the account row is refreshed from.
-//
-// No write here on purpose. Creating the account row is the front door's job
-// (authenticate), and doing it from a poll would consume the first-sighting
-// flag that sends the welcome mail.
-func (s *Server) chatIdentity(ctx context.Context, who auth.Identity) (chat.Identity, error) {
-	quad, err := s.Store.Quad(ctx, who.GUID)
-	if err != nil {
-		return chat.Identity{}, err
-	}
-	tribes, err := s.Store.WarriorTribes(ctx, who.GUID)
-	if err != nil {
-		return chat.Identity{}, err
-	}
-
-	name := quad.Name
-	if (name == "" || name == store.UnknownName) && who.Name != "" {
-		name = who.Name
-	}
-
-	id := chat.Identity{
-		GUID:   who.GUID,
-		Name:   name,
-		Tag:    quad.Tag,
-		Append: quad.Append,
-	}
-	for _, t := range tribes {
-		id.Tribes = append(id.Tribes, chat.Tribe{ID: t.ID, Name: t.Name, Rank: t.Rank})
-	}
-	return id, nil
-}
-
 // handleAuthInfo is the same record, unauthenticated and as plain text.
 //
 // Deliberately open. A game server has no player token and needs none: a
@@ -635,19 +466,6 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += n
 	return n, err
-}
-
-// Flush passes the chat stream's flushes through.
-//
-// Wrapping a ResponseWriter hides every interface it implements that the
-// wrapper does not, and http.Flusher is the one that matters here: without
-// this, /chat/stream's type assertion fails and every stream is a 500. The
-// logging wrapper predates the streaming route, which is exactly how this class
-// of bug arrives.
-func (w *statusRecorder) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
-	}
 }
 
 // writeJSON emits the body, preceded by the blank line the live TribesNext

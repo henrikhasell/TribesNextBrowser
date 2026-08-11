@@ -36,12 +36,8 @@ type Quad struct {
 	GUID   string
 }
 
-// UnknownName is the name a row carries when the account behind it is gone.
-//
-// Exported because a caller with a better answer has to be able to tell it
-// apart from a real warrior name: a live session carries the name TribesNext
-// signed, which beats this for anything the player will see.
-const UnknownName = "(unknown)"
+// unknownName is the name a row carries when the account behind it is gone.
+const unknownName = "(unknown)"
 
 // unknownQuad keeps a row well-formed when the account behind it is gone.
 //
@@ -49,7 +45,7 @@ const UnknownName = "(unknown)"
 // every later field by one -- which shows up as a plausible-looking pane with
 // the wrong data in it, the worst possible failure here.
 func unknownQuad(guid string) Quad {
-	return Quad{Name: UnknownName, Append: true, GUID: guid}
+	return Quad{Name: unknownName, Append: true, GUID: guid}
 }
 
 const quadSQL = `

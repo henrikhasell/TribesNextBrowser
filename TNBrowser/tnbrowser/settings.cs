@@ -84,34 +84,6 @@ if ($TNB::ClanCertURI $= "")
 if ($TNB::ClanCertRetryMs $= "")
    $TNB::ClanCertRetryMs = 5 * 60 * 1000;
 
-// Chat. One endpoint, carrying lines both ways in a single round trip, on the
-// same request queue as everything else. Relative to $TNB::Host. See
-// tnbrowser/chat.cs for why nothing here is held open.
-if ($TNB::ChatURI $= "")
-   $TNB::ChatURI = "/chat";
-
-// How often to poll, in milliseconds.
-//
-// This is the latency of a chat message, and also the cost: one short request
-// per player per interval. Two seconds reads as immediate in a chat window and
-// is thirty requests a minute, which for a community of this size is nothing.
-//
-// A poll that fails backs off from here, doubling to a minute, so a backend that
-// is down is cheap rather than a flood. Nothing is lost by waiting: the cursor
-// does not move until lines are actually received.
-if ($TNB::ChatPollMs $= "")
-   $TNB::ChatPollMs = 2000;
-
-// The room to join on connecting, or "" to land in the status pane. The shipped
-// client joins $IRCClient::room from IRCClient::onChalRespReply, which is how
-// this reaches it.
-//
-// A default room and not an empty one, because presence is the whole point: a
-// chat system where everyone has to find each other first is one nobody uses
-// twice. It must exist on the backend -- see -chat-rooms.
-if ($TNB::ChatRoom $= "")
-   $TNB::ChatRoom = "#Tribes2";
-
 // How often to ping the session so it stays alive, in seconds. The reference
 // tournament client used 10 minutes.
 if ($TNB::SessionRefresh $= "")

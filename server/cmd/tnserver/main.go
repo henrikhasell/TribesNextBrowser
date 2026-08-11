@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -28,7 +27,6 @@ import (
 
 	"github.com/henrik/tnbrowser-server/internal/api"
 	"github.com/henrik/tnbrowser-server/internal/auth"
-	"github.com/henrik/tnbrowser-server/internal/chat"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/migrate"
 	"github.com/henrik/tnbrowser-server/internal/store"
@@ -65,14 +63,6 @@ func main() {
 			"how long an issued clan certificate stays valid")
 		genKey = flag.String("genkey", "",
 			"write a new clan signing key to this path, print the mod settings, and exit")
-
-		// Chat. On by default and needs no configuration: unlike the clan key
-		// there is no secret to hold, and a community server with the CHAT tab
-		// dead is the thing this replaced.
-		chatOn = flag.Bool("chat", envOr("TNB_CHAT", "1") != "0",
-			"serve the community chat hub on /chat/stream and /chat/send")
-		chatRooms = flag.String("chat-rooms", envOr("TNB_CHAT_ROOMS", "Tribes2,Pickup,Newbies"),
-			"comma-separated rooms that always exist, listed even when empty")
 	)
 	flag.Parse()
 
@@ -146,20 +136,12 @@ func main() {
 			"keyid", signer.KeyID(), "key", signer.Fingerprint(), "ttl", signer.TTL())
 	}
 
-	var hub *chat.Hub
-	if *chatOn {
-		rooms := splitList(*chatRooms)
-		hub = chat.New(log, rooms)
-		log.Info("chat enabled", "rooms", rooms)
-	}
-
 	srv := &api.Server{
 		Store:     store.New(pool),
 		Sessions:  auth.NewSessions(*ttl),
 		Log:       log,
 		TrustGUID: *trustGUID,
 		ClanCerts: signer,
-		Chat:      hub,
 	}
 
 	httpSrv := &http.Server{
@@ -189,18 +171,6 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
-}
-
-// splitList reads a comma-separated setting, dropping empties so that
-// "a,,b," and "a,b" mean the same thing and "" means none at all.
-func splitList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if part = strings.TrimSpace(part); part != "" {
-			out = append(out, part)
-		}
-	}
-	return out
 }
 
 func envIntOr(key string, fallback int) int {

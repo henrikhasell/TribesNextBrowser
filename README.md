@@ -172,6 +172,10 @@ so a plain `$TNB::Host = "...";` overrides a baked value.
 Builds are reproducible: every archive entry is stamped with the last commit's
 date, so rebuilding unchanged sources produces an identical file.
 
+To try a build the way a player runs it — on screen, logged in, with the
+package installed into `Classic` — `./tools/run-live-client.sh` puts one in a
+throwaway container pointed at the live backend.
+
 ## What works
 
 Everything the two rendering panes can reach:
@@ -201,20 +205,9 @@ driven by shipped scripts but defined in no `.vl2` and no loose file, so the
 script layer shipped in 2002 with its controls removed. Their ordinals are
 implemented and swept; nothing can render them. That is a property of the game.
 
-**Chat**, in the shipped CHAT tab: public rooms, private messages, and
-`#<Tribe>_Public` / `#<Tribe>_Private` per clan, with membership checked against
-the clan roster and channel operator for the same rank the tribe screens treat
-as administrative. Warrior names carry their tribe tag, as they did on WON.
-
-The chat client is the shipped one — a hundred `IRCClient::*` functions in
-`scripts/ChatGui.cs` — with two of its functions replaced. It spoke plaintext
-IRC over a `TCPObject`, and there is no TLS behind that socket: the TribesNext
-patch's libcurl and mbedTLS are wired to `HTTPObject` alone. So the transport is
-a short poll over HTTPS carrying lines both ways in one round trip, on the same
-single request queue as every other call this mod makes — nothing is ever held
-open, and two transfers are never in flight at once. Everything above it —
-channels, member lists, tag rendering, every screen — is untouched. Nothing is
-stored: messages exist for as long as it takes to deliver them.
+The **CHAT** tab is left inactive. The shipped chat client speaks plaintext IRC
+down a `TCPObject`, this backend serves nothing for it, and reviving it is being
+done elsewhere.
 
 Online status comes from `accounts.last_seen`, which game servers already
 update.
@@ -285,15 +278,13 @@ TNBrowser/
     ├── session.cs     the TribesNext RSA session
     ├── api.cs         the HTTP request queue
     ├── dbproxy.cs     DatabaseQuery, and the WON certificate
-    ├── clancert.cs    the signed clan record carried into a game
-    └── chat.cs        chat, polled, in place of the IRC socket
+    └── clancert.cs    the signed clan record carried into a game
 server/
 ├── internal/dbproxy/  the ordinal table and its 61 handlers
 ├── internal/store/    PostgreSQL, and the only place rank rules are enforced
 ├── internal/auth/     the TribesNext session check
-├── internal/chat/     the chat hub: rooms, private messages, tribe channels
 └── migrations/
-tests/                 five suites, run inside the game
+tests/                 four suites, run inside the game
 tools/                 container, deploy, mock backend, test runners, packaging
 ```
 
