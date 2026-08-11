@@ -121,6 +121,15 @@ before the player's name is built. `TNBrowserServer/` used to fetch it over HTTP
 while holding the connection open; it now checks a short-lived certificate the
 player carries, signed by the backend, and makes no network request of its own.
 
+Getting it in hand that early is the hard part, because a client asked for its
+certificate during TribesNext's authentication phase does not answer — measured
+both ways on a live server. So the server asks again the moment the connection
+is established, and applies what comes back by renaming in place: the server's
+tagged string, the client target, and a `MsgClientNameChanged` that updates the
+player list every machine built at join. That is the same three-step rename
+stock performs when two players collide on a name, and it completes while the
+player is still loading in.
+
 TribesNext shipped this feature and it has been dead for years: its certificates
 are verified through a delegated key whose own certificate expired and can only
 be renewed by its author. Skipping that chain costs nothing here — it exists so
