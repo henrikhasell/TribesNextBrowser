@@ -127,12 +127,17 @@ function TNBClanCertLoaded(%ctx, %status, %result)
    //
    // Compared against the connection that asked, so a fetch that outlived the
    // connection is dropped rather than pushed at whatever server we are on now.
+   //
+   // Ids, not the object. `ServerConnection` in an expression is the NAME, so
+   // storing it and comparing it later compares "ServerConnection" against
+   // "ServerConnection" -- true for any two connections, which is the opposite
+   // of what this is for. getId() is the value that actually differs.
    if ($TNB::ClanCertAsked !$= "")
    {
       %asked = $TNB::ClanCertAsked;
       $TNB::ClanCertAsked = "";
 
-      if (isObject(ServerConnection) && %asked == ServerConnection)
+      if (isObject(ServerConnection) && %asked == ServerConnection.getId())
          TNBClanCertSend();
    }
 }
@@ -192,6 +197,16 @@ function TNBClanCertCancelTimers()
 // nothing to have.
 function clientCmdtnb_wantClanCert(%version)
 {
+   // Which branch, and the two values that decide it. Without this a client
+   // that was asked and said nothing is indistinguishable from one that was
+   // never asked, and they need opposite fixes.
+   if ($TNB::Debug)
+      echo("TNBrowser: asked for a clan certificate by " @ %version @
+           " -- hold " @ strlen($TNB::ClanCert) @ " chars, connection " @
+           (isObject(ServerConnection) ? "up" : "ABSENT") @
+           ", session " @ (TNBSessionGuid() $= "" ? "none" : "ready") @
+           ", fetch " @ ($TNB::ClanCertPending ? "pending" : "idle"));
+
    if ($TNB::ClanCert !$= "")
    {
       $TNB::ClanCertAsked = "";
@@ -203,12 +218,12 @@ function clientCmdtnb_wantClanCert(%version)
    // seconds away, and TNBClanCertLoaded hands it over when it lands rather
    // than leaving the player untagged for the whole session.
    //
-   // The connection object and not a flag. A flag set here and read after a
+   // The connection's id and not a flag. A flag set here and read after a
    // fetch that outlived the connection would push a certificate at whatever
    // server we are on by then -- and if that one does not run this mod,
    // tnb_clanCertChunk does not exist there and every chunk is a console error
    // on somebody else's server.
-   $TNB::ClanCertAsked = ServerConnection;
+   $TNB::ClanCertAsked = isObject(ServerConnection) ? ServerConnection.getId() : "";
    TNBClanCertFetch();
 }
 
@@ -218,7 +233,12 @@ function clientCmdtnb_wantClanCert(%version)
 function TNBClanCertSend()
 {
    if ($TNB::ClanCert $= "" || !isObject(ServerConnection))
+   {
+      if ($TNB::Debug)
+         echo("TNBrowser: not sending a clan certificate -- " @
+              ($TNB::ClanCert $= "" ? "none held" : "no connection"));
       return;
+   }
 
    %cert = $TNB::ClanCert;
    %len = strlen(%cert);

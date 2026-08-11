@@ -268,6 +268,11 @@ function serverCmdtnb_clanCertDone(%client)
 
    %client.tnbCertDone = 1;
 
+   if ($TNBS::Debug)
+      echo("TNBrowserServer: certificate in from " @ %client @ ", " @
+           strlen(%client.tnbCertBuf) @ " chars, " @
+           (%client.tnbApplied ? "already connected" : "still connecting"));
+
    // Late: the player is already in the game. Their client had no certificate
    // when it was asked, fetched one, and is handing it over now.
    //
@@ -314,6 +319,14 @@ package TNBrowserServer
       {
          %client.tnbAsked = 1;
          commandToClient(%client, 'tnb_wantClanCert', $TNBS::Version);
+
+         // Traced because its absence is invisible otherwise. Everything else
+         // in this file only says something once a certificate has arrived, so
+         // a client that is never asked and a client that never answers look
+         // identical in the log -- silence -- and they need different fixes.
+         if ($TNBS::Debug)
+            echo("TNBrowserServer: asked " @ %client @ " (" @
+                 %client.getAddress() @ ") for a clan certificate");
       }
 
       Parent::serverCmdt2csri_sendCertChunk(%client, %chunk);
@@ -341,6 +354,15 @@ package TNBrowserServer
          Parent::onConnect(%client, %name, %raceGender, %skin, %voice, %voicePitch);
          return;
       }
+
+      // The state this connection reached before the name is built. Four
+      // values and every failure is one of them: never asked, asked and never
+      // answered, answered and refused, or tagged.
+      if ($TNBS::Debug)
+         echo("TNBrowserServer: connect " @ %client @ " guid=" @ %guid @
+              " asked=" @ (%client.tnbAsked ? 1 : 0) @
+              " chars=" @ strlen(%client.tnbCertBuf) @
+              " done=" @ (%client.tnbCertDone ? 1 : 0));
 
       // A transfer still in flight. Narrow on purpose: it can only be true for
       // a client that has already started sending, so a player whose client
@@ -388,6 +410,38 @@ package TNBrowserServer
       %client.tnbCertBuf = "";
 
       Parent::onConnect(%client, %name, %raceGender, %skin, %voice, %voicePitch);
+
+      // Ask again, now that the connection is established.
+      //
+      // The ask in serverCmdt2csri_sendCertChunk goes out during TribesNext's
+      // authentication phase, and a client asked there does not answer -- not
+      // late, not at all. The identical command sent to the identical client a
+      // moment after this point comes back with a certificate immediately.
+      // Measured both ways on a live server, twice, with the transfer traced at
+      // both ends: chars=0 at connect and silence afterwards for the handshake
+      // ask, 827 characters within the second for this one.
+      //
+      // So this is the ask that actually works, and the earlier one is kept
+      // only because when it does land the tag is on the name from the first
+      // frame, with no rename at all. Some connections never run it: a second
+      // client from the same machine reaches here with tnbAsked unset, having
+      // never been asked once.
+      //
+      // What comes back arrives after the name has been built, so it goes
+      // through serverCmdtnb_clanCertDone's late branch and TNBSRetag. That
+      // costs a rename and a broadcast, which is the price of asking at the
+      // only moment the client answers.
+      //
+      // Nothing is scheduled and nothing waits: if the answer never comes, the
+      // player simply keeps the name they already have.
+      if (!%client.tnbTagged)
+      {
+         %client.tnbAsked = 1;
+         commandToClient(%client, 'tnb_wantClanCert', $TNBS::Version);
+
+         if ($TNBS::Debug)
+            echo("TNBrowserServer: asked " @ %client @ " again, now connected");
+      }
    }
 };
 
