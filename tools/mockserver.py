@@ -861,6 +861,16 @@ def answer_invitation(guid, args):
         return ok_result("That invitation to " + c["name"] +
                          " has been withdrawn.", c["name"])
 
+    # An accepted invitation makes a member, from either direction. This did
+    # nothing but remove the invitation until it was noticed that the Go side
+    # gave one direction a title and the other an empty one -- a divergence
+    # this harness exists to catch and could not see, because it never created
+    # a membership at all.
+    if verb == "accept" and not any(m["guid"] == subject
+                                    for m in c["members"]):
+        c["members"].append({"guid": subject, "rank": "0", "title": "Recruit",
+                             "joined": NOW})
+
     # Whoever raised it hears how it ended. Nothing else would tell them: no
     # client query lists answered invitations, so from the other side an
     # acceptance and a rejection look identical.

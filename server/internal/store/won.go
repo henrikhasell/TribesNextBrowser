@@ -723,9 +723,18 @@ func (s *Store) AdmitRequester(ctx context.Context, guid string, clanID int64, t
 			return err
 		}
 
+		// 'Recruit', the same literal AcceptInvite writes, and for the reason
+		// that one has a comment: title is the only human-readable rank the
+		// roster shows -- rank itself goes to the client as a bare 0..4 and
+		// there is no name table anywhere -- so a member inserted with an
+		// empty title renders as a gap in the column, which reads as a
+		// rendering fault rather than as a member with no title. This path
+		// wrote '' until it was noticed that joining by asking and joining by
+		// invitation are the same ordinal in opposite directions, and only one
+		// of them set a title.
 		if _, err := tx.Exec(ctx, `
 			INSERT INTO clan_members (clan_id, guid, rank, title, joined)
-			VALUES ($1, $2, $3, '', $4)
+			VALUES ($1, $2, $3, 'Recruit', $4)
 			ON CONFLICT (clan_id, guid) DO NOTHING`,
 			clanID, target, RankRecruit, s.now()); err != nil {
 			return err

@@ -506,6 +506,58 @@ func TestMemberTitleAndRankAreNotSwapped(t *testing.T) {
 	}
 }
 
+// Joining by asking gives the same title as joining by invitation.
+//
+// Scalar 28 accept is two operations wearing one ordinal: the warrior answering
+// an invitation, and an admin admitting somebody who asked. They insert the
+// membership row from different places -- AcceptInvite and AdmitRequester --
+// and only the first set a title, so a warrior who joined by asking landed in
+// the roster with field 4 empty. The roster shows no rank name of its own
+// (field 5 is the bare 0..4), so that column is the only place a member's
+// standing appears at all, and empty reads as broken rather than as untitled.
+//
+// The other direction is covered by TestMemberTitleAndRankAreNotSwapped, which
+// joins by invitation and so cannot see this.
+func TestAdmittedRequesterGetsATitle(t *testing.T) {
+	ts := newServer(t, testStore(t))
+
+	// Field 3 is the recruiting flag, without which scalar 34 is refused --
+	// asking to join a tribe that is not recruiting is not a thing the client
+	// offers.
+	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1\t1\t1\t")
+	account(t, ts, "1002")
+
+	// 34 asks, and the admin's 28 accept names somebody other than themselves,
+	// which is what picks the AdmitRequester branch.
+	ask := db(t, ts, "1002", "scalar", "34", "Big Sucka Fishes")
+	if got := statusCode(ask); got != "0" {
+		t.Fatalf("requesting an invitation failed: %v", ask["status"])
+	}
+	admit := db(t, ts, "1001", "scalar", "28",
+		"accept\tBig Sucka Fishes\twarrior-1002")
+	if got := statusCode(admit); got != "0" {
+		t.Fatalf("admitting the requester failed: %v", admit["status"])
+	}
+
+	var row string
+	for _, r := range rows(t, db(t, ts, "1001", "array", "6", "Big Sucka Fishes")) {
+		if strings.HasPrefix(r, "warrior-1002\t") {
+			row = r
+		}
+	}
+	if row == "" {
+		t.Fatal("the admitted warrior is missing from the roster")
+	}
+
+	f := strings.Split(row, "\t")
+	if got, want := f[4], "Recruit"; got != want {
+		t.Errorf("title = %q, want %q", got, want)
+	}
+	if got, want := f[5], "0"; got != want {
+		t.Errorf("admin level = %q, want %q", got, want)
+	}
+}
+
 // An invitation is delivered by mail, because the client has no query that
 // lists a player's own invitations -- so the link in that body is the only way
 // one can ever be answered.
