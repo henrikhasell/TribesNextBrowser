@@ -134,9 +134,20 @@ function TNBClanCertDiscard()
    TNBClanCertFetch();
 }
 
+// A fetch that failed, to be tried again later.
+//
+// The renew timer only. The discard timer must survive this, and an earlier
+// version of it did not: cancelling both here meant the first failed refresh
+// also cancelled the drop that was going to protect the certificate we still
+// hold, and nothing ever re-armed it. The client then went on offering an
+// expired certificate to every server it joined -- untagged either way, since
+// nothing here can refuse a player, but a transfer and a refusal per join for
+// no reason, which is exactly what the discard exists to avoid.
 function TNBClanCertRetryLater()
 {
-   TNBClanCertCancelTimers();
+   if (isEventPending($TNB::ClanCertRenew))
+      cancel($TNB::ClanCertRenew);
+
    $TNB::ClanCertRenew = schedule($TNB::ClanCertRetryMs, 0, "TNBClanCertFetch");
 }
 
