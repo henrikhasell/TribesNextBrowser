@@ -61,6 +61,33 @@ services:
         scope: RUN_TIME
         value: "${tnb-db.DATABASE_URL}&pool_max_conns=5"
 
+      # The key clan certificates are signed with, and the reason a player's
+      # clan tag reaches a game server at all. See server/internal/clancert.
+      #
+      # Stored here in App Platform's encrypted form, which is what
+      # `doctl apps spec get` hands back once a SECRET has been set. It is
+      # decryptable only by this app, so committing it is safe -- and keeping it
+      # here is what stops the next `doctl apps update --spec .do/app.yaml` from
+      # deleting the variable. The plaintext PEM lives on the operator's machine
+      # and nowhere else; losing it costs a rotation, which this design makes
+      # cheap on purpose.
+      #
+      # Rotating: generate a new key with a NEW id, add its public half to
+      # TNBrowserServer/tnbserver/clankeys.cs, ship that, and only then change
+      # TNB_CLAN_KEY_ID here. A game server that has not been updated shows no
+      # tag rather than refusing anybody.
+      - key: TNB_CLAN_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: "EV[1:W9N3pkXu6tT/AiRGO3B+k5auHqrAeTIS:/lhuq5F4aNoO3NzDBGnPXuWmze3BdgMH9rC5Zk0hM2ziidBl7OnFbRIqkYpjueQO3+JjbvAYVmAJkFIEGxpEV1I4c/NViIrU29QhPNRplGjI0lYhVYTScT6x8V2CBrZILWHtDaq03LWBoIxlPiiYG3Nv2BYIMHwMdKGIdmNmqmqZ0kFkPtM59JClk2Wc0LLZyUpNKRto/NNoJbSb3e9iF7uCpakO45K7CjM642DnFTd4tl1gBwzWuEZGEOkM/g/BElfvqzuPnULOXESGoBwje2IePcFbHW5uZm8QT7UMEuJMY4P5eh0Xa/hZxMJsfFpNPZkLacOzBk8l1KvNspcDkKQdkBCDAtsKiF7RhGKLeOnJZ15F1fTflYGv/gFq1npY7XS7KVzhLiQWihpt4rMl4I3TDbTUr63s8iky41eKNTLfBET0tE5tGt8elDjCX6Q27KMkKkWqfZUT2PFL8C1SlL8C4Ox+AXHK+RzI7YtPXtizslj+1AbPG3hjAqTIBgC8LNDFS5BYHrthQFo2lwN7PaDT1I+9GOr41RBpZHZw2bxbttmt61jeVCDC5KTNweRU2Fj1Bcc7/JDDT7201qQIKGqouq7GQGt1VRQMQ6Bih6MNZjl3cYJbalEBJ2+QHfizLgqEPmHSUVkwnX50t7QhcVyz4N8Bqdp5F/uT7uHtO48+mtUZW1TqOaUG1W7xrV/NGWVlmXJI5PwPXmq5Qr2nlNG9EjpU+4T2atg+nRdIkEfe5jH7C1miLUBwanJiw4tAFAYcqU/GRcGL+uyx3mmL9M9RDrZoe7G9YlAnfsluoVV8jiRg+UuvLtFvzl3Yedy7yRATeyVWdzxp9IMucwBECbOKHbbbFb3tpCIZQ4qUPxwOtM6IAE+GBHKuRXuUUI0rMD0eL8IKBfCzOSOq7TVCbRMRIuJPufw1mbfAgqJ70lFQ/p7Q9TKK6s5N2JauEOFThDD/wtj6l+HhNJ3ek4XUk+W+gkFLdy0za18Qy3/+EAdeT3ODjJg3ET+kJiM8GQesWnq5VjHH6AUAdwH8LVp3xvjw5cdm6+zmOzK+cEECWR0XYObIDbRRcPuQdNv4IMBwm2Z0DkJGu0ofQVFl3bPd0Yndkrd1ou6tdLUpMm1yJtl1kmtAnq0onivKffOwnYJcWftQJz2E5EbBLSn4V4n4ETytbmdy1rJ4RYBFsW/8abOdlxpObnD9yhGomsJa/wGQUXWUPmWNZ8FhXY8Rg5pQkCBYP9taUCaE7roJJChNwSedULhoQuoVrGc8Q5PixsEg206fmZEs7nqidiLJvXi/952hI3Fj4QV+nb8VCe8fhQUpg3I5gs0ZgF/8y5+F6tq8eCtnxS4e8V25gC67SxbfAVrDQMpSDAcmugDHNAAk2K60npN36Bf0XRmozBixDcB5GgNADNSW5H20dk6G1IP6GYYMLJW0SgiaLfxoxl9SlEWllojMG4DZ9RTsGu8fRFww1zCc8TFBlfV9WEs8CpTxB26VMW8Ex9PXNlwv+m6x5WTi26oTfIZZEs2uoAT61YKkVfIB2Ym9rt0uCUQJpc8Mq9Cmiyj8s9N8In3TdR3byVhN3do4p2L+mAjrLVSujObgIFYyfsYxasl08TxF35E2WnD6l3Dn00k/QzS7NCfQGcxF73C5Vo79jztMBVQsMW3RTDzfotxX9ttUfY8ycFrz+HpN7kJEmbGRQ5K4i6E2aqq8lryZMmrbkUGR/68R6F6p9Rq0tZ39aI7J0oUuswHwa/GQPm8PVcHQweLT32TBGSO9ppgcwjjQG7hsUEACVh+Bn913uyYcaGRgf0zOqouUFB+0GUaRscfw9UXG8lcrN3r36HRe9lJwltUz42LbyUZjcW+2eN+CdLLAc5KcM6qlI7R04iqO5c5f+kYJBFnE6l6bLmDYmIoz+VMD4gsgWL4j0J+qzLPcEDkIHw2hQSitAAbhg6jccDnDvEMiVe5zy9sXll2QWK572xfhq3f4QvPMCmQlGHo/31BD5httmJ9bONqqJIiG1QvWedyxgWkIf+n1kN5vgZfkIok2/tnjNuMrTbuyFz4z0xj1Yw0d8JDUZAqAY1zjLi7NdlaJnfovQ3fQ2ib9zfhudJfUeygqGUu1jUrpeLf4NF7zJS002NpOUJ8LR/Ye3K+JMUkBOX8cS0sM3E3OBMWfnQcnd2813z8SrM0aR58td+jCach4bQuxoqJsBPaKuN3iGFE0E6dKTyAEPr29Ie8BK9NC0WcNOgOvYG82GKb0zPA7zuPt/r+4]"
+
+      # The number stamped into field 0 of every certificate issued, which is
+      # how a game server picks the public key to check one with. Must match an
+      # id present in the mod's clankeys.cs.
+      - key: TNB_CLAN_KEY_ID
+        scope: RUN_TIME
+        value: "1"
+
 jobs:
   # Schema changes run once, before any new instance takes traffic. A failure
   # here fails the deploy and leaves the currently running version serving.
