@@ -96,7 +96,12 @@ function TNBChatSelfTest(%host)
    // connected, and the mock forgets a connection the moment its stream ends.
    IRCClient::disconnect();
    IRCClient::init();
+
+   // Both halves of the real path. ChatGui.cs calls connect() at boot, which
+   // only arms the flag; TNBCertEnsure calls the nudge when a pane is opened
+   // with an account in hand, and that is what opens the stream.
    IRCClient::connect();
+   TNBChatNudge();
 
    $TNBChatTest::Waited = 0;
    $TNBChatTest::Step = schedule(500, 0, "TNBChatStep1");

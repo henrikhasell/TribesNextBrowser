@@ -101,7 +101,26 @@ function TNBChatConnect()
    // DatabaseQueryi's guard (webstuff.cs:183) still reads us as not ready.
    $IRCClient::state = IDIRC_CONNECTING_WAITING;
 
-   TNBChatOpenSoon();
+   // Deliberately not opened here.
+   //
+   // ChatGui.cs runs this as it loads, which is during boot -- before the
+   // player has logged in to TribesNext. Chat would then be the first thing in
+   // this mod ever to ask who they are that early, and asking is not free:
+   // TNBSessionGuid caches its answer in $LoginCertificate, and
+   // TNBSessionModulus reads the key out of that same record. An answer taken
+   // before login can pin the session to an account whose private key the
+   // client does not hold, and every challenge after that fails its replay
+   // check -- which is a dead session, and with it dead mail and a dead
+   // browser, not merely dead chat.
+   //
+   // Invisible against a backend running -dev-trust-guid, which hands over a
+   // session without ever issuing a challenge. That is the shape of "it works
+   // locally and not against the real server".
+   //
+   // So chat waits to be told. TNBChatNudge fires from TNBCertEnsure, which is
+   // the moment the shell opens a pane with an account in hand -- the same
+   // moment mail and the browser first read the identity, and the ordering
+   // this mod had before chat existed.
 }
 
 function TNBChatDisconnect()
@@ -134,10 +153,10 @@ function TNBChatDisconnect()
 
 // The player has reached the shell with an account in hand.
 //
-// ChatGui.cs runs IRCClient::connect() as it loads, which is during boot and
-// therefore before any account is logged in -- so the first few attempts find no
-// session and back off, and by the time the player is looking at the launch bar
-// the next one can be a minute away. This collapses that wait to nothing.
+// This is what actually starts chat -- see TNBChatConnect for why the
+// boot-time connect only arms the flag. Called from TNBCertEnsure, which runs
+// when a pane is opened and is the first point at which the identity is known
+// to be the logged-in player's.
 function TNBChatNudge()
 {
    if (!$TNB::ChatWant || $TNB::ChatOpen)

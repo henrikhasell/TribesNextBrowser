@@ -428,6 +428,30 @@ function TNBSessionFail(%reason)
    $TNB::Challenge = "";
    $TNB::LastError = %reason;
 
+   // Forget the cached identity, so the next attempt asks the account
+   // subsystem again instead of retrying the same wrong answer forever.
+   //
+   // TNBSessionGuid reads $LoginCertificate and returns early when it already
+   // holds a GUID (:84), so the first answer is kept for the whole run. That is
+   // fine when the first answer is taken after login and fatal when it is taken
+   // before: on a machine with more than one stored account,
+   // t2csri_getAccountCertificate() with no argument can hand back an account
+   // the player is not logged in as, and the backend then answers "That account
+   // certificate was not accepted" -- forever, because nothing ever re-read it.
+   // Mail, the browser and chat all wait on that session, so all three stay
+   // dead for the rest of the session.
+   //
+   // Observed exactly that against the live backend on a client with two stored
+   // accounts. It stayed invisible locally because a server run with
+   // -dev-trust-guid accepts a bare GUID without looking at the certificate at
+   // all, so the wrong identity works there.
+   //
+   // Cleared on every failure rather than only on that message: re-reading
+   // costs one call and returns the same answer in the ordinary case, and a
+   // session layer that cannot correct a bad identity is one bad read away from
+   // taking every pane down with it.
+   $LoginCertificate = "";
+
    TNBSessionFailWaiters(%reason);
    TNBSessionRetry();
 }

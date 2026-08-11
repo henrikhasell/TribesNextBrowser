@@ -1691,11 +1691,39 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send("REFRESHED")
             return self._send("TIMEOUT")
 
-        # A certificate, a challenge response, or just a nonce: all three mean
-        # "start a session", and this fixture cannot tell them apart because it
-        # never issues a challenge. A client launched -nologin has no
-        # certificate to send at all, which is every test container.
-        if get("cert") or get("response") or get("nonce"):
+        # The answer to a challenge. Its content is not checked -- proving the
+        # key is what the real backend does and what internal/auth tests -- but
+        # a challenge must have been outstanding, so the two-step shape is real.
+        if get("response"):
+            with STATE_LOCK:
+                if guid not in CHALLENGES:
+                    return self._send("ERR: No challenge outstanding.")
+                del CHALLENGES[guid]
+                token = "mock-%08x" % random.getrandbits(32)
+                SESSIONS[token] = guid
+            return self._send("UUID: " + token)
+
+        # A certificate or a bare nonce means "start a session".
+        #
+        # With --require-handshake this answers the way the live backend does,
+        # in two steps: a challenge with the nonce in front of it, then a
+        # session once it is answered. That path matters out of all proportion
+        # to its size -- it is the only one with a window between two requests,
+        # and a bug that lived in that window (two callers replacing each
+        # other's nonce, so the challenge already in flight failed its replay
+        # check) reached players precisely because every suite here ran the
+        # one-step form below.
+        #
+        # Off by default, because answering a real challenge needs the account
+        # private key and a client launched -nologin has none. A client that
+        # stubs t2csri_rsa_decrypt can run it; nothing else can.
+        if get("cert") or get("nonce"):
+            if self.server.require_handshake and get("nonce"):
+                with STATE_LOCK:
+                    CHALLENGES[guid] = get("nonce")
+                blob = get("nonce") + ("%0256x" % random.getrandbits(512))
+                return self._send("CHALLENGE: " + blob)
+
             with STATE_LOCK:
                 token = "mock-%08x" % random.getrandbits(32)
                 SESSIONS[token] = guid
@@ -1726,7 +1754,18 @@ class Handler(BaseHTTPRequestHandler):
                     SESSIONS[token] = guid
                     return self._send("UUID: " + token)
                 CHALLENGES[guid] = nonce
-                blob = "%0256x" % random.getrandbits(512)
+                # The nonce leads, as it does in the real exchange: the live
+                # backend encrypts (nonce || challenge) with the account's
+                # public key, and the client checks that the leading bytes
+                # replay the nonce it sent (session.cs:281) before answering.
+                #
+                # Reproducing that here is what makes the two-step handshake
+                # testable without account key material -- a client that stubs
+                # t2csri_rsa_decrypt as the identity function then runs exactly
+                # the sequence a real account runs, replay check included. That
+                # sequence is not otherwise reachable in a container, and a bug
+                # that only appears in it shipped once already.
+                blob = nonce + ("%0256x" % random.getrandbits(512))
                 return self._send("CHALLENGE: " + blob)
 
             if response:
