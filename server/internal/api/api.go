@@ -1,10 +1,12 @@
-// Package api is the front door: six routes, and nothing that knows what an
+// Package api is the front door: eight routes, and nothing that knows what an
 // ordinal means.
 //
 //	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
 //	POST /cert                the identity WONGetAuthInfo() hands the scripts
 //	POST /clancert            the same record, signed, for a game server to check
+//	GET  /chat/stream         a held-open connection carrying IRC lines down
+//	POST /chat/send           IRC lines up (internal/chat)
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
 //	GET  /healthz
 //
@@ -25,12 +27,16 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/chat"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/dbproxy"
 	"github.com/henrik/tnbrowser-server/internal/store"
@@ -45,6 +51,11 @@ type Server struct {
 	// when no key was configured, which is a supported deployment: /clancert
 	// answers 404 and players simply carry no tag.
 	ClanCerts *clancert.Signer
+
+	// Chat is the community chat server. Nil when chat is switched off, on the
+	// same terms as ClanCerts: both routes answer 404 and the CHAT tab is an
+	// empty room, with nothing else in the shell affected.
+	Chat *chat.Hub
 
 	// TrustGUID accepts a bare guid with no proof of anything, for driving the
 	// in-game test suites: the containers they run in hold no account key
@@ -78,6 +89,8 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
 	mux.HandleFunc("/clancert", s.handleClanCert)
+	mux.HandleFunc("/chat/stream", s.handleChatStream)
+	mux.HandleFunc("/chat/send", s.handleChatSend)
 	mux.HandleFunc("/tn/server/authinfo", s.handleAuthInfo)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -292,6 +305,193 @@ func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 	}{cert})
 }
 
+//-----------------------------------------------------------------------------
+// Chat
+//-----------------------------------------------------------------------------
+
+const (
+	// chatKeepalive is how long the stream may go silent before it writes a
+	// nothing-line. Proven headroom: a held response survived 120 seconds of
+	// complete silence in the game and delivered the next line normally, so
+	// this is well inside what the client tolerates. It exists for whatever
+	// sits between us and the player, which is usually less patient.
+	chatKeepalive = 20 * time.Second
+
+	// chatLifetime ends a stream on purpose, so that reconnecting is a path
+	// that runs every ten minutes rather than one that runs for the first time
+	// during an outage. The hub holds the connection's rooms across it and the
+	// client resumes from its cursor, so nobody sees anything happen.
+	chatLifetime = 10 * time.Minute
+)
+
+// handleChatStream is the downward half: one held-open response carrying IRC
+// lines to one player.
+//
+// Each line is "<seq>\t<irc line>". The sequence number is the client's cursor:
+// it passes the last one back as ?after= when it reconnects, and the hub
+// replays from its ring rather than losing what arrived during the gap. Two
+// lines carry seq 0 and are not IRC at all -- an empty one is the keepalive,
+// and "RESET" means the hub has no memory of this client and it should re-join
+// its rooms.
+//
+// The whole design rests on one measured fact: this client's HTTPObject
+// delivers onLine while a response is still open. Probed in the game against a
+// server writing one line a second for thirty seconds, and the deltas came back
+// 41ms, 1035ms, 2037ms... If that had not held, this would have had to be a
+// long-poll.
+func (s *Server) handleChatStream(w http.ResponseWriter, r *http.Request) {
+	if s.Chat == nil {
+		fatal(w, http.StatusNotFound, "404 Not Found")
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+
+	c, ok := s.authenticate(w, r)
+	if !ok {
+		return
+	}
+
+	id, err := s.chatIdentity(c)
+	if err != nil {
+		s.Log.Error("chat identity", "guid", c.GUID, "err", err)
+		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		return
+	}
+
+	after, _ := strconv.ParseInt(r.FormValue("after"), 10, 64)
+
+	conn, fresh := s.Chat.Attach(id)
+	defer s.Chat.Detach(conn)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-store")
+	// For any reverse proxy that would otherwise hold the body until it has all
+	// of it, which for this response is never.
+	w.Header().Set("X-Accel-Buffering", "no")
+	closeAfterResponse(w)
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	if fresh && after > 0 {
+		if _, err := io.WriteString(w, "0\tRESET\n"); err != nil {
+			return
+		}
+		flusher.Flush()
+		after = 0
+	}
+
+	ctx := r.Context()
+	expiry := time.NewTimer(chatLifetime)
+	defer expiry.Stop()
+
+	for {
+		lines, gap := conn.Since(after)
+		if gap {
+			s.Log.Warn("chat backlog overran", "guid", id.GUID, "after", after)
+		}
+		for _, line := range lines {
+			if _, err := fmt.Fprintf(w, "%d\t%s\n", line.Seq, line.Text); err != nil {
+				return
+			}
+			after = line.Seq
+		}
+		if len(lines) > 0 {
+			flusher.Flush()
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-expiry.C:
+			return
+		default:
+		}
+
+		if !conn.Wait(ctx, chatKeepalive) {
+			if ctx.Err() != nil {
+				return
+			}
+			if _, err := io.WriteString(w, "0\t\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+// handleChatSend is the upward half: whatever the client's IRCClient::send
+// produced since the last flush, one line per line.
+//
+// Deliberately not s.authenticate. That path ensures the account row exists and
+// may send a welcome mail, which is right once per stream and wrong once per
+// sentence typed into a chat window. The session check is the same one; what is
+// skipped is the database work behind it.
+//
+// A send with no stream open is 409 rather than 401. It is not an authorisation
+// failure and the client should not treat it as one: it means the stream
+// dropped between the keystroke and the POST, and reopening it is the fix.
+func (s *Server) handleChatSend(w http.ResponseWriter, r *http.Request) {
+	if s.Chat == nil {
+		fatal(w, http.StatusNotFound, "404 Not Found")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		fatal(w, http.StatusBadRequest, "400 Bad Request")
+		return
+	}
+
+	guid := r.FormValue("guid")
+	if _, ok := s.Sessions.Lookup(guid, r.FormValue("uuid")); !ok && !s.TrustGUID {
+		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+		return
+	}
+
+	conn := s.Chat.Conn(guid)
+	if conn == nil {
+		fatal(w, http.StatusConflict, "409 No Chat Session")
+		return
+	}
+
+	for _, line := range strings.Split(r.FormValue("lines"), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		conn.Handle(line)
+	}
+
+	closeAfterResponse(w)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatIdentity is who the hub will say this player is: the same two store calls
+// dbproxy.Certificate makes, for the same reason -- the warrior name and tag
+// render the nick, and the tribe list decides which rooms they may enter.
+func (s *Server) chatIdentity(c *dbproxy.Ctx) (chat.Identity, error) {
+	quad, err := s.Store.Quad(c.Ctx, c.GUID)
+	if err != nil {
+		return chat.Identity{}, err
+	}
+	tribes, err := s.Store.WarriorTribes(c.Ctx, c.GUID)
+	if err != nil {
+		return chat.Identity{}, err
+	}
+
+	id := chat.Identity{
+		GUID:   c.GUID,
+		Name:   quad.Name,
+		Tag:    quad.Tag,
+		Append: quad.Append,
+	}
+	for _, t := range tribes {
+		id.Tribes = append(id.Tribes, chat.Tribe{ID: t.ID, Name: t.Name, Rank: t.Rank})
+	}
+	return id, nil
+}
+
 // handleAuthInfo is the same record, unauthenticated and as plain text.
 //
 // Deliberately open. A game server has no player token and needs none: a
@@ -466,6 +666,19 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(b)
 	w.bytes += n
 	return n, err
+}
+
+// Flush passes the chat stream's flushes through.
+//
+// Wrapping a ResponseWriter hides every interface it implements that the
+// wrapper does not, and http.Flusher is the one that matters here: without
+// this, /chat/stream's type assertion fails and every stream is a 500. The
+// logging wrapper predates the streaming route, which is exactly how this class
+// of bug arrives.
+func (w *statusRecorder) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // writeJSON emits the body, preceded by the blank line the live TribesNext

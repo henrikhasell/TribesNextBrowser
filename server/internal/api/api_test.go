@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
+	"github.com/henrik/tnbrowser-server/internal/chat"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
@@ -779,5 +781,209 @@ func TestClanCertificateIsOffWithoutAKey(t *testing.T) {
 	// And the rest of the front door is unaffected.
 	if _, code := db(t, ts, "1001", "scalar", "5", "")["status"]; !code {
 		t.Error("/db stopped answering")
+	}
+}
+
+//-----------------------------------------------------------------------------
+// Chat
+//
+// The hub's own behaviour is covered in internal/chat. What matters here is the
+// framing -- "<seq>\t<line>", the cursor, and the two seq-0 sentinels -- because
+// the client parses that in nine lines of TorqueScript and cannot tell a
+// mistake from silence.
+//-----------------------------------------------------------------------------
+
+func chatServer(t *testing.T, st *store.Store) *httptest.Server {
+	t.Helper()
+
+	sessions := auth.NewSessions(0)
+	for guid := 1000; guid < 1010; guid++ {
+		g := strconv.Itoa(guid)
+		sessions.GrantToken("session-"+g, auth.Identity{GUID: g, Name: "warrior-" + g})
+	}
+
+	srv := &Server{
+		Store:    st,
+		Sessions: sessions,
+		Log:      slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Chat:     chat.New(slog.New(slog.NewTextHandler(io.Discard, nil)), []string{"Tribes2"}),
+	}
+	ts := httptest.NewServer(srv.Routes())
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// openStream starts a stream and returns a reader over it plus a cancel.
+func openStream(t *testing.T, ts *httptest.Server, guid, after string) (*bufio.Reader, func()) {
+	t.Helper()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		ts.URL+"/chat/stream?guid="+guid+"&uuid=session-"+guid+"&after="+after, nil)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		cancel()
+		t.Fatalf("stream: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		cancel()
+		t.Fatalf("stream status %d", resp.StatusCode)
+	}
+	t.Cleanup(func() { cancel(); resp.Body.Close() })
+	return bufio.NewReader(resp.Body), func() { cancel(); resp.Body.Close() }
+}
+
+// nextLine reads one framed line, failing rather than blocking forever.
+func nextLine(t *testing.T, r *bufio.Reader) (int64, string) {
+	t.Helper()
+
+	type result struct {
+		line string
+		err  error
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, err := r.ReadString('\n')
+		ch <- result{line, err}
+	}()
+
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatalf("read: %v", got.err)
+		}
+		seq, text, ok := strings.Cut(strings.TrimRight(got.line, "\r\n"), "\t")
+		if !ok {
+			t.Fatalf("line is not <seq>TAB<text>: %q", got.line)
+		}
+		n, err := strconv.ParseInt(seq, 10, 64)
+		if err != nil {
+			t.Fatalf("sequence %q: %v", seq, err)
+		}
+		return n, text
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for a line")
+		return 0, ""
+	}
+}
+
+func chatSend(t *testing.T, ts *httptest.Server, guid, lines string) int {
+	t.Helper()
+
+	resp, err := ts.Client().PostForm(ts.URL+"/chat/send", url.Values{
+		"guid":  {guid},
+		"uuid":  {"session-" + guid},
+		"lines": {lines},
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode
+}
+
+func TestChatIsOffWithoutAHub(t *testing.T) {
+	ts, _ := sessionServer(t) // no Chat
+
+	resp, err := ts.Client().Get(ts.URL + "/chat/stream?guid=1001&uuid=x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("stream status %d, want 404", resp.StatusCode)
+	}
+
+	resp, err = ts.Client().PostForm(ts.URL+"/chat/send", url.Values{"guid": {"1001"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("send status %d, want 404", resp.StatusCode)
+	}
+}
+
+// A send with no stream is 409, not 401: nothing is wrong with the session, the
+// stream simply is not open, and reopening it is the fix rather than
+// renegotiating an identity.
+func TestChatSendWithoutAStream(t *testing.T) {
+	ts := chatServer(t, testStore(t))
+
+	if code := chatSend(t, ts, "1001", "LIST"); code != http.StatusConflict {
+		t.Errorf("status %d, want 409", code)
+	}
+
+	resp, err := ts.Client().PostForm(ts.URL+"/chat/send", url.Values{
+		"guid": {"1001"}, "uuid": {"wrong"}, "lines": {"LIST"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestChatStreamFraming(t *testing.T) {
+	ts := chatServer(t, testStore(t))
+	r, _ := openStream(t, ts, "1001", "0")
+
+	// The first line is always the identity, and it is what moves the client to
+	// IDIRC_CONNECTED.
+	seq, line := nextLine(t, r)
+	if seq != 1 {
+		t.Errorf("first sequence = %d, want 1", seq)
+	}
+	if !strings.Contains(line, "CHALRESP_REPLY warrior-1001") {
+		t.Fatalf("first line = %q", line)
+	}
+
+	if code := chatSend(t, ts, "1001", "JOIN #Tribes2\nLIST"); code != http.StatusNoContent {
+		t.Fatalf("send status %d", code)
+	}
+
+	// Both commands were carried in one POST, and both answers arrive in order
+	// with increasing sequence numbers.
+	var joined, listed bool
+	last := seq
+	for i := 0; i < 10 && !(joined && listed); i++ {
+		n, text := nextLine(t, r)
+		if n <= last {
+			t.Fatalf("sequence went backwards: %d after %d", n, last)
+		}
+		last = n
+		if strings.Contains(text, "JOIN #Tribes2") {
+			joined = true
+		}
+		if strings.Contains(text, " 323 ") {
+			listed = true
+		}
+	}
+	if !joined || !listed {
+		t.Fatalf("joined=%v listed=%v", joined, listed)
+	}
+}
+
+// A cursor from a session the hub has forgotten gets a RESET rather than
+// silence, so the client knows to re-join its rooms instead of sitting in
+// channels the server has never heard of.
+func TestChatStreamResetsAStaleCursor(t *testing.T) {
+	ts := chatServer(t, testStore(t))
+	r, _ := openStream(t, ts, "1002", "99")
+
+	seq, line := nextLine(t, r)
+	if seq != 0 || line != "RESET" {
+		t.Fatalf("first line = %d %q, want 0 RESET", seq, line)
+	}
+
+	// And then the stream carries on from the beginning.
+	if seq, line = nextLine(t, r); seq != 1 || !strings.Contains(line, "CHALRESP_REPLY") {
+		t.Fatalf("second line = %d %q", seq, line)
 	}
 }

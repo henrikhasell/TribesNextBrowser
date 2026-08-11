@@ -91,3 +91,15 @@ $CONSOLE "$LOAD" 'exec("tests/mail_test.cs");' \
     --until '$TNBMailTest::Done' --until-timeout 150 >/dev/null 2>&1
 $CONSOLE 'echo("CONFORMANCE-MAIL pass=" @ $TNBMailTest::Pass @ " fail=" @ $TNBMailTest::Fail); if ($TNBMailTest::Fail > 0) echo($TNBMailTest::Failures);' 2>&1 \
     | grep -E "CONFORMANCE-MAIL|\(got |\(missing "
+
+echo
+echo "== chat, against the Go backend =="
+# No reseed: the suite reads no rows the other suites write, and reseeding
+# would not clear what actually matters here, which is the hub's in-memory
+# rooms. Those live in the server process, so a run that finds a room already
+# populated is a run against a backend somebody else is connected to.
+$CONSOLE "$LOAD" 'exec("tests/chat_test.cs");' \
+    "TNBChatSelfTest(\"$DATA\");" \
+    --until '$TNBChatTest::Done' --until-timeout 150 >/dev/null 2>&1
+$CONSOLE 'echo("CONFORMANCE-CHAT pass=" @ $TNBChatTest::Pass @ " fail=" @ $TNBChatTest::Fail); if ($TNBChatTest::Fail > 0) echo($TNBChatTest::Failures);' 2>&1 \
+    | grep -E "CONFORMANCE-CHAT|\(got |\(missing "

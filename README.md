@@ -79,14 +79,14 @@ TribesNext client:
    not. Replacing the two public entry points means nothing here has to talk to
    a chat server.
 3. **The shipped `LaunchBrowser` and `LaunchEmail` already do the right
-   thing.** Only the launch bar needs a package, to build the online tab set
-   and drop CHAT, which this mod does not serve.
+   thing.** Only the launch bar needs a package, to build the online tab set and
+   re-enable the three tabs TribesNext switched off.
 
 ## Three parts
 
 | | what it is | who needs it |
 |---|---|---|
-| `TNBrowser/` | the client mod: six script files, no GUI | every player |
+| `TNBrowser/` | the client mod: seven script files, no GUI | every player |
 | `server/` | a Go backend answering the 61 ordinals | whoever hosts the community |
 | `TNBrowserServer/` | a server-side mod that renders tribe tags into player names | game-server operators |
 
@@ -201,9 +201,22 @@ driven by shipped scripts but defined in no `.vl2` and no loose file, so the
 script layer shipped in 2002 with its controls removed. Their ordinals are
 implemented and swept; nothing can render them. That is a property of the game.
 
-**Chat is not served.** The CHAT tab is dropped from the launch bar rather than
-left dead. Online status comes from `accounts.last_seen`, which game servers
-already update.
+**Chat**, in the shipped CHAT tab: public rooms, private messages, and
+`#<Tribe>_Public` / `#<Tribe>_Private` per clan, with membership checked against
+the clan roster and channel operator for the same rank the tribe screens treat
+as administrative. Warrior names carry their tribe tag, as they did on WON.
+
+The chat client is the shipped one — a hundred `IRCClient::*` functions in
+`scripts/ChatGui.cs` — with two of its functions replaced. It spoke plaintext
+IRC over a `TCPObject`, and there is no TLS behind that socket: the TribesNext
+patch's libcurl and mbedTLS are wired to `HTTPObject` alone. So the transport is
+a held-open HTTPS response carrying IRC lines down and a POST carrying them up,
+and everything above it — channels, member lists, tag rendering, every screen —
+is untouched. Nothing is stored: messages exist for as long as it takes to
+deliver them.
+
+Online status comes from `accounts.last_seen`, which game servers already
+update.
 
 ## What this cost
 
@@ -270,13 +283,16 @@ TNBrowser/
     ├── json.cs        JSON parser (the engine has none)
     ├── session.cs     the TribesNext RSA session
     ├── api.cs         the HTTP request queue
-    └── dbproxy.cs     DatabaseQuery, and the WON certificate
+    ├── dbproxy.cs     DatabaseQuery, and the WON certificate
+    ├── clancert.cs    the signed clan record carried into a game
+    └── chat.cs        the chat stream, in place of the IRC socket
 server/
 ├── internal/dbproxy/  the ordinal table and its 61 handlers
 ├── internal/store/    PostgreSQL, and the only place rank rules are enforced
 ├── internal/auth/     the TribesNext session check
+├── internal/chat/     the chat hub: rooms, private messages, tribe channels
 └── migrations/
-tests/                 four suites, run inside the game
+tests/                 five suites, run inside the game
 tools/                 container, deploy, mock backend, test runners, packaging
 ```
 

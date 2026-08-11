@@ -116,6 +116,48 @@ Game servers must run **without** `-nologin`. TribesNext's authentication phase
 is what establishes the GUID a certificate is bound to, and it only runs when
 `$PlayingOnline` is set, which omitting that flag does.
 
+## Chat
+
+`internal/chat` is an IRC server for exactly one client: the one in
+`scripts/ChatGui.cs`, which is a hundred TorqueScript functions over a plaintext
+`TCPObject`. The mod replaces two of those functions — `IRCClient::send` and
+`IRCTCP::onLine` — so the lines this server produces reach a completely
+unmodified chat client over TLS.
+
+Three properties of that client shape everything here, and each has a test:
+
+- **`IRCClient::dispatch` is a closed switch.** A verb it does not know is
+  printed to the player as `(cmd:) …`, so there is no welcome burst, no `366`
+  after a `353`, and no `PING`. `chat_test.go` asserts every emitted line
+  against the transcribed dispatch table.
+- **Several client actions raise a wait state** that only specific replies
+  clear. A `LIST` with no `323` after it, or a `MODE +b` with no `368`, leaves
+  the chat panes titled `CONNECTING` for the rest of the session. `WHO` and
+  `WHOIS` are answered even for a nick this server has never heard of, because
+  the alternative strands them.
+- **`NICK` corrupts the client's person table**, so identity is fixed for the
+  life of a connection and a tag change applies on the next one.
+
+Rooms are public ones from `-chat-rooms`, ad-hoc ones anyone can open, private
+messages, and `#<Tribe>_Public` / `#<Tribe>_Private` per clan — the names the
+shipped `JoinPublicTribeChannel` builds, which is why they are addressed by the
+tribe's name with spaces escaped as `_-_01` rather than by its id. Membership is
+checked against `clan_members`; rank 2 and above gets channel operator, the same
+rung the shipped screens treat as administrative.
+
+**Nothing is stored.** Messages exist in a 256-line ring per connection, which
+is there so a stream that drops can resume from its cursor rather than lose what
+arrived, and nowhere else. A connection outlives its stream by 30 seconds, so a
+reconnect is invisible to everyone else in the room.
+
+State is in memory, which is what `auth.Sessions` already is and what
+`instance_count: 1` in `.do/app.yaml` already assumes. Chat is the first thing a
+scale-out would break — two instances would each hold half the room — and the
+fix then is `LISTEN`/`NOTIFY` or sticky routing, not a table.
+
+Switch it off with `-chat=false`; both routes then answer 404 and the CHAT tab
+is an empty room, with nothing else affected.
+
 ## Running it
 
 ```sh
@@ -135,6 +177,8 @@ go build -o tnserver ./cmd/tnserver
 | `-session-ttl` | | how long a session survives unused, default 30m |
 | `-dev-trust-guid` | `TNB_DEV_TRUST_GUID` | **insecure**: accept any guid without proof, for the test suites |
 | `-migrate` | `TNB_MIGRATE` | apply pending migrations and exit, instead of serving |
+| `-chat` | `TNB_CHAT` | serve the chat hub, default on; `TNB_CHAT=0` switches it off |
+| `-chat-rooms` | `TNB_CHAT_ROOMS` | comma-separated rooms that always exist, default `Tribes2,Pickup,Newbies` |
 
 `migrations/` is compiled into the binary, so `-migrate` needs no psql and no
 copy of this repository — which is what lets the deployed image be a distroless
@@ -255,6 +299,12 @@ Paths and shapes are TribesNext's, so the client needs no new code:
   handed to them. Answers 404 when the server was started without `-clan-key`,
   which is a supported deployment: everything else serves and players simply
   carry no tag. See [Clan tags](#clan-tags-are-signed-not-looked-up).
+- `/chat/stream` — a held-open response carrying IRC lines to one player, one
+  per line as `<seq>\t<line>`. Session authenticated. See [Chat](#chat).
+- `/chat/send` — the lines going the other way, as a `lines` form field with one
+  per line. Answers 204 with no body at all, so anything in the body is an
+  error; 409 means the player has no stream open, which is not an
+  authentication failure and should not be treated as one.
 - `/tn/server/authinfo` — not a client endpoint, and no longer used by the mod;
   the clan-tag lookup the game-server mod made before certificates replaced it.
   Kept because the deployment probe above uses it to prove a request reached Go

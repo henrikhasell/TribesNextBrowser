@@ -84,6 +84,34 @@ if ($TNB::ClanCertURI $= "")
 if ($TNB::ClanCertRetryMs $= "")
    $TNB::ClanCertRetryMs = 5 * 60 * 1000;
 
+// Chat. The stream is held open and carries IRC lines down; the send endpoint
+// carries them up. Both relative to $TNB::Host. See tnbrowser/chat.cs.
+if ($TNB::ChatStreamURI $= "")
+   $TNB::ChatStreamURI = "/chat/stream";
+if ($TNB::ChatSendURI $= "")
+   $TNB::ChatSendURI = "/chat/send";
+
+// How long to wait before reopening a stream that failed, in milliseconds. It
+// doubles from here to a minute, so this is the delay after the *first*
+// failure and not the steady state.
+//
+// Short, unlike the clan certificate's retry, because the cost of being
+// disconnected is different in kind: a stale certificate costs a tag nobody
+// notices, while a chat connection that is down is a room the player is
+// silently absent from.
+if ($TNB::ChatRetryMs $= "")
+   $TNB::ChatRetryMs = 2000;
+
+// The room to join on connecting, or "" to land in the status pane. The shipped
+// client joins $IRCClient::room from IRCClient::onChalRespReply, which is how
+// this reaches it.
+//
+// A default room and not an empty one, because presence is the whole point: a
+// chat system where everyone has to find each other first is one nobody uses
+// twice. It must exist on the backend -- see -chat-rooms.
+if ($TNB::ChatRoom $= "")
+   $TNB::ChatRoom = "#Tribes2";
+
 // How often to ping the session so it stays alive, in seconds. The reference
 // tournament client used 10 minutes.
 if ($TNB::SessionRefresh $= "")

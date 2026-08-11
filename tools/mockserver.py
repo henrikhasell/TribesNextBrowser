@@ -1373,6 +1373,228 @@ def clan_certificate(guid):
 
 
 # --------------------------------------------------------------------------
+# Chat
+#
+# A fixture, not a second implementation: enough of server/internal/chat for
+# the client's transport to be exercised without a Go build and a database.
+# What it reproduces exactly is the framing and the handful of replies that
+# clear the shipped client's wait states -- 353 after a JOIN, 323 after a LIST,
+# 324 for the MODE the client sends itself -- because those are what the client
+# code under test actually depends on.
+# --------------------------------------------------------------------------
+
+CHAT_LOCK = threading.Lock()
+CHAT_CONNS = {}     # guid -> {"nick", "seq", "ring", "event", "joined"}
+CHAT_ROOMS = {}     # folded name -> {"name", "topic", "members", "ops"}
+CHAT_PUBLIC = ["#Tribes2", "#Pickup", "#Newbies"]
+
+CHAT_KEEPALIVE = 3.0
+CHAT_LIFETIME = 600.0
+# The grace period the Go hub has, and for the same reason: a stream that drops
+# and comes back must not cost the player their rooms, and a send that arrives
+# between the two must not meet a 409.
+CHAT_GRACE = 5.0
+CHAT_SERVER = "tnb"
+
+
+def chat_escape(s):
+    return s.replace(" ", "_-_01")
+
+
+def chat_nick(guid):
+    u = USERS.get(guid)
+    if not u:
+        return "warrior" + guid
+    if not u["tag"]:
+        return chat_escape(u["name"])
+    return "%s^%s^%s" % (chat_escape(u["name"]), chat_escape(u["tag"]),
+                         u["append"])
+
+
+def chat_room(name):
+    key = name.lower()
+    if key not in CHAT_ROOMS:
+        CHAT_ROOMS[key] = {"name": name, "topic": "",
+                           "members": set(), "ops": set()}
+    return CHAT_ROOMS[key]
+
+
+def chat_push(guid, line):
+    """Queue one line for one player. Caller holds CHAT_LOCK."""
+    conn = CHAT_CONNS.get(guid)
+    if conn is None:
+        return
+    conn["seq"] += 1
+    conn["ring"].append((conn["seq"], line))
+    del conn["ring"][:-256]
+    conn["event"].set()
+
+
+def chat_numeric(guid, code, rest):
+    chat_push(guid, ":%s %s %s %s" % (CHAT_SERVER, code, chat_nick(guid), rest))
+
+
+def chat_attach(guid):
+    with CHAT_LOCK:
+        for name in CHAT_PUBLIC:
+            chat_room(name)
+
+        # Reaped lazily rather than on a timer: a fixture has nowhere to run
+        # one, and the only observer that matters is the next attach.
+        conn = CHAT_CONNS.get(guid)
+        if conn is not None and not conn["attached"] \
+                and time.time() - conn["detached"] > CHAT_GRACE:
+            chat_quit(guid)
+
+        fresh = guid not in CHAT_CONNS
+        if fresh:
+            CHAT_CONNS[guid] = {"nick": chat_nick(guid), "seq": 0, "ring": [],
+                                "event": threading.Event(), "attached": False,
+                                "detached": 0.0}
+        conn = CHAT_CONNS[guid]
+        conn["attached"] = True
+        chat_push(guid, ":%s CHALRESP_REPLY %s %s@%s OK"
+                  % (CHAT_SERVER, chat_nick(guid), guid, CHAT_SERVER))
+        return conn, fresh
+
+
+def chat_detach(guid):
+    with CHAT_LOCK:
+        conn = CHAT_CONNS.get(guid)
+        if conn is not None:
+            conn["attached"] = False
+            conn["detached"] = time.time()
+
+
+def chat_quit(guid):
+    """Drop a connection and tell its rooms. Caller holds CHAT_LOCK."""
+    if CHAT_CONNS.pop(guid, None) is None:
+        return
+    line = ":%s!%s@%s QUIT :Connection closed" % (
+        chat_nick(guid), guid, CHAT_SERVER)
+    for room in CHAT_ROOMS.values():
+        if guid in room["members"]:
+            room["members"].discard(guid)
+            room["ops"].discard(guid)
+            for other in room["members"]:
+                chat_push(other, line)
+
+
+def chat_tribe_room(guid, name):
+    """(is a tribe room, is one of theirs)."""
+    base = name.lstrip("#")
+    for suffix in ("_Public", "_Private"):
+        if base.endswith(suffix):
+            want = base[:-len(suffix)].lower()
+            for m in USERS.get(guid, {}).get("memberships", []):
+                if chat_escape(m["name"]).lower() == want:
+                    return True, True, m
+            return True, False, None
+    return False, False, None
+
+
+def chat_handle(guid, line):
+    parts = line.split(" :", 1)
+    words = parts[0].split()
+    trailing = parts[1] if len(parts) > 1 else ""
+    if not words:
+        return
+    verb = words[0].upper()
+    args = words[1:]
+    who = "%s!%s@%s" % (chat_nick(guid), guid, CHAT_SERVER)
+
+    with CHAT_LOCK:
+        if verb == "JOIN" and args:
+            name = args[0]
+            is_tribe, mine, m = chat_tribe_room(guid, name)
+            if is_tribe and not mine:
+                chat_numeric(guid, "473",
+                             "%s :Cannot join channel (tribe members only)" % name)
+                return
+            room = chat_room(name)
+            if is_tribe:
+                room["topic"] = m["name"]
+                if int(m["rank"]) >= 2:
+                    room["ops"].add(guid)
+            first = guid not in room["members"]
+            if first:
+                for other in room["members"]:
+                    chat_push(other, ":%s JOIN %s" % (who, name))
+            room["members"].add(guid)
+
+            chat_push(guid, ":%s JOIN %s" % (who, name))
+            if room["topic"]:
+                chat_numeric(guid, "332", "%s :%s" % (name, room["topic"]))
+            else:
+                chat_numeric(guid, "331", "%s :No topic is set" % name)
+            names = " ".join(("@" if g in room["ops"] else "") + chat_nick(g)
+                             for g in sorted(room["members"]))
+            chat_numeric(guid, "353", "= %s :%s" % (name, names))
+
+        elif verb == "PART" and args:
+            room = CHAT_ROOMS.get(args[0].lower())
+            if room and guid in room["members"]:
+                for other in room["members"]:
+                    chat_push(other, ":%s PART %s" % (who, room["name"]))
+                chat_push(guid, ":%s PART %s" % (who, room["name"]))
+                room["members"].discard(guid)
+
+        elif verb in ("PRIVMSG", "NOTICE") and args:
+            target = args[0]
+            if target.startswith("#"):
+                room = CHAT_ROOMS.get(target.lower())
+                if not room or guid not in room["members"]:
+                    chat_numeric(guid, "401", "%s :No such nick/channel" % target)
+                    return
+                for other in room["members"]:
+                    if other != guid:
+                        chat_push(other, ":%s %s %s :%s"
+                                  % (who, verb, room["name"], trailing))
+            else:
+                for other, conn in CHAT_CONNS.items():
+                    if conn["nick"].lower() == target.lower():
+                        chat_push(other, ":%s %s %s :%s"
+                                  % (who, verb, conn["nick"], trailing))
+                        return
+                chat_numeric(guid, "401", "%s :No such nick/channel" % target)
+
+        elif verb == "MODE" and args:
+            room = CHAT_ROOMS.get(args[0].lower())
+            if not room:
+                return
+            if len(args) < 2:
+                chat_numeric(guid, "324", "%s +t" % room["name"])
+            elif "b" in args[1]:
+                chat_numeric(guid, "368", "%s :End of ban list" % room["name"])
+
+        elif verb == "LIST":
+            for key in sorted(CHAT_ROOMS):
+                room = CHAT_ROOMS[key]
+                chat_numeric(guid, "322", "%s %d :%s"
+                             % (room["name"], len(room["members"]), room["topic"]))
+            chat_numeric(guid, "323", ":End of list")
+
+        elif verb == "WHO" and args:
+            chat_numeric(guid, "352", "* %s %s %s %s H :0 %s"
+                         % (guid, CHAT_SERVER, CHAT_SERVER, args[0], args[0]))
+            chat_numeric(guid, "315", "%s :End of WHO list" % args[0])
+
+        elif verb == "WHOIS" and args:
+            chat_numeric(guid, "311", "%s %s %s :%s"
+                         % (args[0], guid, CHAT_SERVER, args[0]))
+            chat_numeric(guid, "317", "%s 0 0 :seconds idle" % args[0])
+            chat_numeric(guid, "318", "%s :End of WHOIS list" % args[0])
+
+        elif verb == "TOPIC" and args:
+            room = CHAT_ROOMS.get(args[0].lower())
+            if room:
+                room["topic"] = trailing
+                for other in room["members"]:
+                    chat_push(other, ":%s TOPIC %s :%s"
+                              % (who, room["name"], trailing))
+
+
+# --------------------------------------------------------------------------
 # HTTP
 # --------------------------------------------------------------------------
 
@@ -1431,6 +1653,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._cert(get)
         if parsed.path == "/clancert":
             return self._clancert(get)
+        if parsed.path == "/chat/stream":
+            return self._chat_stream(get)
+        if parsed.path == "/chat/send":
+            return self._chat_send(get)
         if parsed.path == "/tn/server/authinfo":
             return self._authinfo(get)
         if parsed.path.endswith("json_browser.php"):
@@ -1606,6 +1832,77 @@ class Handler(BaseHTTPRequestHandler):
         # the scoreboard of every server that player joins.
         cert = certificate(get("guid"))
         return self._send("\n" + cert + "\n" if cert else "\n", "text/plain")
+
+    # -- chat --------------------------------------------------------------
+
+    def _chat_stream(self, get):
+        """The held-open half. One line per event, "<seq>TAB<irc line>".
+
+        Short-lived compared to the Go server's ten minutes: the suites want
+        to see a stream end and be resumed without waiting around for it.
+        """
+        guid = self._authorised(get)
+        if guid is None:
+            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
+                                   "Authentication Required</h2>")
+
+        try:
+            after = int(get("after") or 0)
+        except ValueError:
+            after = 0
+
+        conn, fresh = chat_attach(guid)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        if fresh and after > 0:
+            self.wfile.write(b"0\tRESET\n")
+            self.wfile.flush()
+            after = 0
+
+        deadline = time.time() + CHAT_LIFETIME
+        try:
+            while time.time() < deadline:
+                with CHAT_LOCK:
+                    pending = [(n, text) for n, text in conn["ring"] if n > after]
+                for n, text in pending:
+                    self.wfile.write(("%d\t%s\n" % (n, text)).encode())
+                    after = n
+                if pending:
+                    self.wfile.flush()
+
+                if not conn["event"].wait(CHAT_KEEPALIVE):
+                    self.wfile.write(b"0\t\n")
+                    self.wfile.flush()
+                conn["event"].clear()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            chat_detach(guid)
+
+    def _chat_send(self, get):
+        guid = self._authorised(get)
+        if guid is None:
+            return self._deny(401, "<h1>Fatal Error</h1><h2>401 "
+                                   "Authentication Required</h2>")
+        with CHAT_LOCK:
+            live = guid in CHAT_CONNS
+        if not live:
+            return self._deny(409, "<h1>Fatal Error</h1>"
+                                   "<h2>409 No Chat Session</h2>")
+
+        for line in (get("lines") or "").split("\n"):
+            if line.strip():
+                chat_handle(guid, line.strip())
+
+        # 204, so a body of any kind means an error -- which is exactly how the
+        # client tells the two apart, having no access to the status code.
+        self.send_response(204)
+        self.send_header("Connection", "close")
+        self.end_headers()
 
 
 def main():
