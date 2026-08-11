@@ -168,6 +168,30 @@ function TNBSessionFailWaiters(%reason)
 
 function TNBSessionStart()
 {
+   // One negotiation at a time.
+   //
+   // TNBSessionSend deletes and recreates TNBSessionInterface, so a second
+   // start while the first is in flight destroys it -- and worse, replaces
+   // $TNB::Nonce, so the challenge that was already on its way fails the replay
+   // check and the exchange begins again. Two negotiations chasing each other
+   // never converge, and with no session every pane in the mod is dead at once:
+   // mail, the browser and chat all wait on the same token.
+   //
+   // This was one caller's problem until it was two. The request queue has its
+   // own guard for exactly this ($TNB::AwaitingSession, api.cs:158) and that
+   // was enough while it was the only consumer; chat asks on its own timer, so
+   // the guard has to live here, where the shared connection object is.
+   //
+   // Dropping the duplicate loses nothing: the waiter list is shared, so
+   // whoever asked second is called when the negotiation already running
+   // finishes.
+   //
+   // The age check is the backstop. Every completion path clears the flag, but
+   // if one were ever missed this would pin the session down permanently, and
+   // that failure is indistinguishable from the one it is here to prevent.
+   if ($TNB::SessionBusy && (getSimTime() - $TNB::SessionSentAt) < 30000)
+      return;
+
    if (isEventPending($TNB::Schedule))
       cancel($TNB::Schedule);
    $TNB::Schedule = "";
@@ -285,6 +309,9 @@ function TNBSessionSend(%query)
    //
    // $TNB::Host, not a separate auth host. The session is negotiated with the
    // community backend now, which is the same server that holds the data.
+   $TNB::SessionBusy = 1;
+   $TNB::SessionSentAt = getSimTime();
+
    TNBSessionInterface.post($TNB::Host, $TNB::SessionURI, "", %query);
 }
 
@@ -360,6 +387,16 @@ function TNBSessionInterface::onLine(%this, %line)
 // a hang.
 function TNBSessionInterface::onDisconnect(%this)
 {
+   // Every transfer ends here, understood or not, which makes this the one
+   // place the in-flight flag can be cleared. Before the early return, because
+   // the successful case takes it -- and a flag left set after a *successful*
+   // negotiation would block the next one just as thoroughly as one left set
+   // after a failure.
+   //
+   // The next step of the handshake is scheduled 200ms out (onLine, above), so
+   // it always finds this cleared.
+   $TNB::SessionBusy = "";
+
    if (%this.handled)
       return;
 
@@ -386,6 +423,7 @@ function TNBSessionFail(%reason)
 {
    error("TNBrowser: session error -- " @ %reason);
 
+   $TNB::SessionBusy = "";
    $TNB::UUID = "";
    $TNB::Challenge = "";
    $TNB::LastError = %reason;
@@ -420,6 +458,11 @@ function TNBSessionEnd()
    $TNB::Nonce = "";
    $TNB::Errors = 0;
    $TNB::WaitCount = 0;
+
+   // Whatever was in flight is abandoned along with everything else, so the
+   // next caller must not be told to wait for it. The suites end a session and
+   // immediately start another, which is the one path that would notice.
+   $TNB::SessionBusy = "";
 }
 
 echo("TNBrowser: session.cs loaded");

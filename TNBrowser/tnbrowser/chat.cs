@@ -168,6 +168,14 @@ function TNBChatOpen()
       return;
    }
 
+   // At most one waiter, for the reason api.cs:158 gives: this runs on a retry
+   // timer, and every call while the session is down would otherwise register
+   // another waiter to be called back on failure -- one per retry, for as long
+   // as the backend is unreachable.
+   if ($TNB::ChatAwaiting)
+      return;
+
+   $TNB::ChatAwaiting = 1;
    TNBSessionOnReady("TNBChatSessionReady", "");
 }
 
@@ -175,6 +183,8 @@ function TNBChatOpen()
 // so the transfer starts a tick later rather than here.
 function TNBChatSessionReady(%ctx, %status, %reason)
 {
+   $TNB::ChatAwaiting = "";
+
    if (%status $= "error")
    {
       TNBChatRetryLater();

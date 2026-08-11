@@ -71,6 +71,27 @@ function TNBChatSelfTest(%host)
       $TNB::Host = %host;
    $TNB::ChatRoom = "#Tribes2";
 
+   // Two callers, one negotiation.
+   //
+   // This is here rather than in a session suite because chat is what made it
+   // matter: until chat existed the request queue was the only thing that ever
+   // asked for a session, and its own guard was enough. Chat asks on a timer,
+   // so two starts can overlap -- and a second start mints a new nonce, which
+   // makes the CHALLENGE already in flight fail its replay check
+   // (session.cs:281). The exchange then restarts forever and every pane in the
+   // mod is dead, because mail, the browser and chat all wait on the same
+   // token.
+   //
+   // Invisible against a backend started with -dev-trust-guid, which answers
+   // the first request with a session and never issues a challenge at all. That
+   // is why this asserts on the nonce rather than on the outcome.
+   TNBSessionEnd();
+   TNBSessionStart();
+   $TNBChatTest::Nonce = $TNB::Nonce;
+   TNBSessionStart();
+   TNBChatEq("a second start does not replace the nonce",
+             $TNB::Nonce, $TNBChatTest::Nonce);
+
    // A clean slate: the suite may be re-run against a client that is already
    // connected, and the mock forgets a connection the moment its stream ends.
    IRCClient::disconnect();
