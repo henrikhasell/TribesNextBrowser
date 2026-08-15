@@ -33,9 +33,21 @@ export default defineConfig({
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
-    // The whole site is a handful of components. Splitting it would cost more
-    // round trips than it saves bytes.
-    chunkSizeWarningLimit: 900,
+    // Two pages: the community site, and Swagger UI over the server's own
+    // specification. Separate entries so a visitor to one never downloads the
+    // other -- swagger-ui is by far the larger of the two.
+    rollupOptions: {
+      input: {
+        main: 'index.html',
+        docs: 'docs.html',
+      },
+    },
+    // The community pages are a handful of components and splitting them would
+    // cost more round trips than it saves bytes. The docs page is swagger-ui,
+    // which is 1.4 MB and always will be -- it is a whole application. Both
+    // entries are their own chunk, so nobody downloads the one they did not
+    // ask for, and the warning below is turned off rather than heeded.
+    chunkSizeWarningLimit: 1600,
   },
   server: {
     // `npm run dev` serves the UI and forwards the data to a server started

@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/henrik/tnbrowser-server/apidoc"
 	"github.com/henrik/tnbrowser-server/internal/model"
 	"github.com/henrik/tnbrowser-server/internal/store"
 	"github.com/henrik/tnbrowser-server/web"
@@ -261,6 +262,16 @@ func (s *site) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The API page is a second entry in the same build, so it is a real file
+	// rather than a route the app resolves. Named without its extension the way
+	// every other address here is.
+	if name == "docs" {
+		name = "docs.html"
+		// The file server resolves the request path, not the name worked out
+		// here, so the rewrite has to reach it too.
+		r.URL.Path = "/" + name
+	}
+
 	if !s.isFile(name) {
 		// Under assets/ a miss is a miss. Everything there is referenced by a
 		// fingerprinted name out of index.html, so a request for one that is
@@ -310,4 +321,17 @@ func (s *site) serveIndex(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(s.index)
+}
+
+//-----------------------------------------------------------------------------
+// The specification
+//-----------------------------------------------------------------------------
+
+// YAML only, deliberately. Serving a JSON copy would mean a YAML parser in the
+// build -- a second dependency for a module that has one -- and buys nothing:
+// Swagger UI reads YAML, and a person reading the spec by hand prefers it.
+func handleSpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_, _ = w.Write(apidoc.Spec)
 }

@@ -87,35 +87,54 @@ type request struct {
 	Args    []string `json:"args"`
 }
 
+// route is one registration. The list is data rather than a sequence of calls
+// so that a test can walk it against the specification -- a hand-written spec
+// is only worth having if something notices when it stops matching.
+type route struct {
+	pattern string
+	handler http.HandlerFunc
+}
+
+// routes is everything this server answers.
+func (s *Server) routes() []route {
+	return []route{
+		// The game client. Reads are GET; the two that change something POST.
+		{"POST /session", s.handleSession},
+		{"POST /db", s.handleDB},
+		{"GET /cert", s.handleCert},
+		{"GET /clancert", s.handleClanCert},
+		{"GET /healthz", func(w http.ResponseWriter, r *http.Request) {
+			siteJSON(w, map[string]string{"status": "ok"})
+		}},
+
+		// The website. Read-only and unauthenticated; see site.go.
+		{"GET /api/stats", s.handleStats},
+		{"GET /api/warriors", s.handleWarriors},
+		{"GET /api/warriors/{guid}", s.handleWarrior},
+		{"GET /api/tribes", s.handleTribes},
+		{"GET /api/tribes/{id}", s.handleTribe},
+		{"GET /api/releases/latest", s.handleLatestRelease},
+
+		// The specification, and something to read it with.
+		{"GET /api/openapi.yaml", handleSpec},
+
+		// Anything under /api/ that got this far is a mistyped endpoint. It
+		// must answer as JSON rather than fall through to the app shell, or a
+		// typo arrives at the caller looking like a parse failure.
+		{"/api/", func(w http.ResponseWriter, r *http.Request) {
+			siteError(w, http.StatusNotFound, "not_found", "No such endpoint.")
+		}},
+	}
+}
+
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	for _, r := range s.routes() {
+		mux.HandleFunc(r.pattern, r.handler)
+	}
 
-	// The game client. Reads are GET, the two that change something are POST.
-	mux.HandleFunc("POST /session", s.handleSession)
-	mux.HandleFunc("POST /db", s.handleDB)
-	mux.HandleFunc("GET /cert", s.handleCert)
-	mux.HandleFunc("GET /clancert", s.handleClanCert)
-	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
-		siteJSON(w, map[string]string{"status": "ok"})
-	})
-
-	// The website. Read-only and unauthenticated; see site.go. A registration
-	// above is a more specific pattern than anything here, so adding "/" cannot
-	// shadow one of the client's paths.
-	mux.HandleFunc("GET /api/stats", s.handleStats)
-	mux.HandleFunc("GET /api/warriors", s.handleWarriors)
-	mux.HandleFunc("GET /api/warriors/{guid}", s.handleWarrior)
-	mux.HandleFunc("GET /api/tribes", s.handleTribes)
-	mux.HandleFunc("GET /api/tribes/{id}", s.handleTribe)
-	mux.HandleFunc("GET /api/releases/latest", s.handleLatestRelease)
-
-	// Anything under /api/ that got this far is a mistyped endpoint. It must
-	// answer as JSON rather than fall through to the app shell below, or a typo
-	// arrives at the caller looking like a parse failure.
-	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
-		siteError(w, http.StatusNotFound, "not_found", "No such endpoint.")
-	})
-
+	// The built app, and every path the browser resolves for itself. Registered
+	// last and least specific, so it cannot shadow anything above.
 	mux.Handle("/", newSite())
 
 	return s.logRequests(mux)

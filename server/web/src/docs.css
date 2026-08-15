@@ -1,0 +1,79 @@
+/*
+ * Enough of the site's skin to make the API page belong to it.
+ *
+ * Deliberately not a reskin of Swagger UI. Its layout carries meaning a reader
+ * already knows how to use -- the method colours, the expand affordances, the
+ * schema tree -- and repainting all of that in teal would cost legibility to
+ * gain consistency. So: the page frame is ours, the specification is theirs.
+ */
+
+body {
+  margin: 0;
+  background: radial-gradient(120% 90% at 50% 0%, #0a2321 0%, #04100f 55%, #010807 100%)
+    fixed;
+}
+
+/* The title bar, matching the one every other page wears. */
+body::before {
+  content: 'TNBROWSER API';
+  display: block;
+  padding: 16px;
+  text-align: center;
+  font-family: 'Eurostile', 'Agency FB', 'Trebuchet MS', system-ui, sans-serif;
+  font-size: 20px;
+  letter-spacing: 0.14em;
+  color: #d8fbf5;
+  text-shadow: 0 0 14px rgba(63, 208, 200, 0.55);
+  border-bottom: 2px solid #3fd0c8;
+}
+
+.swagger-ui {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 12px 40px;
+  background: transparent;
+}
+
+/* Swagger UI assumes a white page. Give it one to sit on rather than fighting
+   every rule it has about text colour. */
+.swagger-ui .wrapper {
+  background: #fbfdfd;
+  border-radius: 8px;
+  padding: 12px;
+  margin-top: 16px;
+  box-shadow: 0 0 24px rgba(63, 208, 200, 0.18);
+}
+
+/* The header holds a spec-URL box and a logo we are not using. */
+.swagger-ui .topbar,
+.swagger-ui .information-container .info__tos,
+.swagger-ui .scheme-container {
+  display: none;
+}
+
+.swagger-ui .info {
+  margin: 18px 0;
+}
+
+/* A way back, since the frame's own tab bar is not on this page. */
+.home-link {
+  position: fixed;
+  top: 12px;
+  left: 16px;
+  z-index: 10;
+  font-family: 'Eurostile', 'Agency FB', 'Trebuchet MS', system-ui, sans-serif;
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #d8fbf5;
+  text-decoration: none;
+  border: 2px solid #3fd0c8;
+  border-radius: 4px;
+  padding: 6px 14px;
+  background: linear-gradient(180deg, #0f4442, #072826);
+}
+
+.home-link:hover {
+  background: linear-gradient(180deg, #3fbfa1, #23806c);
+  color: #04201a;
+}

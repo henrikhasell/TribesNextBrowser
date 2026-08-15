@@ -142,4 +142,6 @@ jobs:
 
           **TNBrowserServer.vl2** is the game-server package, which shows clan tags for connecting players. Same install, into the dedicated server's own \`GameData/base/\`. Server operators want this one; players do not need it.
 
+          **A package and the backend it points at must be the same major version.** The v2 protocol is not the v1 one, and a v1 mod talking to a v2 server is told to update rather than left with empty panes.
+
           Both have the backend address baked in, so there is nothing to configure after the install. To point one somewhere else, put \`\$TNB::Host = \"...\";\` in a loose \`autoexec.cs\` beside the archive."

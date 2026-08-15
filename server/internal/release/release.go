@@ -2,8 +2,7 @@
 // newest .vl2 build, and where is it?
 //
 // The archives are published by .github/workflows/vl2.yml, one release per
-// commit tagged build-<sha>, with --latest moving GitHub's own pointer at the
-// newest. That pointer gives permanent download URLs that need no API call:
+// tag, with --latest moving GitHub's own pointer at the newest. That pointer gives permanent download URLs that need no API call:
 //
 //	https://github.com/<repo>/releases/latest/download/TNBrowser.vl2
 //
@@ -41,12 +40,12 @@ const DefaultRepo = "henrikhasell/TribesNextBrowser"
 // tag, so the build knows no version number. Bump it in the same commit that
 // gets tagged and the two cannot disagree:
 //
-//	edit this line -> commit -> git tag -a v1.2.0 -> git push origin v1.2.0
+//	edit this line -> commit -> git tag -a v2.0.0 -> git push origin v2.0.0
 //
 // Being out of date costs a stale version number on one panel while GitHub is
 // unreachable, and nothing else -- the live lookup overrides it whenever it
 // works.
-const DefaultTag = "v1.2.0"
+const DefaultTag = "v2.0.0"
 
 // Archives are the two files a release carries, in the order the page shows
 // them: the client package first, because most visitors are players.

@@ -28,14 +28,14 @@ clients and every participating Tribes 2 server point at the same address, which
 is why `tools/build-vl2.sh --host` bakes it into both packages at once.
 
 ```
-POST /session   guid=…&cert=<the five fields>&nonce=<hex>
-     <- CHALLENGE: <(nonce || challenge) encrypted with the account's key>
+POST /session   {"guid": …, "cert": "<the five fields>", "nonce": "<hex>"}
+     <- {"state": "challenge", "challenge": "<(nonce ‖ secret) encrypted to the account key>"}
 
-POST /session   guid=…&response=<the challenge half, decrypted>
-     <- UUID: <token>
+POST /session   {"guid": …, "response": "<the secret, decrypted>"}
+     <- {"state": "granted", "uuid": "<token>"}
 
-POST /session   guid=…&uuid=<token>          every ten minutes
-     <- REFRESHED, or TIMEOUT if it lapsed
+POST /session   {"guid": …, "uuid": "<token>"}        every ten minutes
+     <- {"state": "refreshed"}, or {"state": "expired"} if it lapsed
 ```
 
 The certificate proves TribesNext issued that name and GUID for that key. It
@@ -282,11 +282,11 @@ relax it -- an unverifiable certificate would lock every player out at once:
 
 ```
 new HTTPObject(Probe);
-Probe.get("https://tnb.k8s.henrik.si", "/tn/server/authinfo?guid=987654321", "");
--> (unknown)		1	987654321
+Probe.get("https://tnb.k8s.henrik.si", "/api/stats", "");
+-> {"warriors":3,"tribes":3,"online":0}
 ```
 
-`authinfo` rather than `/healthz` on purpose: the edge will serve a cached
+`/api/stats` rather than `/healthz` on purpose: the edge will serve a cached
 `/healthz` without ever troubling the origin, so a 200 from it proves the
 handshake and nothing else. The line above came back through Go and Postgres.
 
@@ -306,26 +306,49 @@ The image itself is ordinary, so none of this is required: `docker build
 
 ## API
 
+Specified in [apidoc/openapi.yaml](apidoc/openapi.yaml), served at
+`/api/openapi.yaml`, and browsable at `/docs`. A Go test walks the spec against
+the routes actually registered and fails if either has an endpoint the other
+does not, because a hand-written specification is only worth having if something
+notices when it lies. [PROTOCOL.md](../PROTOCOL.md) draws the sequences.
+
 What the game client calls:
 
-- `/session` — negotiate a session. Plain text, five possible answers:
-  `CHALLENGE: <hex>`, `UUID: <token>`, `REFRESHED`, `TIMEOUT`, `ERR: <sentence>`.
-- `/db` — every one of the 61 stored-procedure ordinals the shipped community
-  scripts issue. An ordinal and its arguments go up; `{status, result, rows}`
-  comes back, with the status tab-separated: field 0 is the code
-  `onDatabaseQueryResult` tests and field 1 a sentence a pane may show.
-- `/cert` — the identity record `WONGetAuthInfo()` hands the shipped scripts.
-- `/clancert` — the signed clan record a player carries into a game. Session
+Everything below speaks JSON in both directions. Identity travels in a header —
+`Authorization: TNB <guid>:<uuid>` — so every authenticated route carries it the
+same way and the credential stays out of the request line.
+
+- `POST /session` — negotiate, refresh, or discover the loss of a session.
+  Answers `{state}`: `challenge`, `granted`, `refreshed` or `expired`.
+- `POST /db` — every one of the 61 stored-procedure ordinals the shipped
+  community scripts issue. An ordinal and its argument array go up;
+  `{code, message, result, rows}` comes back, with rows as arrays of typed
+  fields. The mod joins each row with tabs one line before the shipped parsers
+  index into it.
+- `GET /cert` — the caller's identity, structured. The mod renders it into the
+  record layout `WONGetAuthInfo()` has to answer its 45 call sites with.
+- `GET /clancert` — the signed token a player carries into a game. Session
   authenticated, because it says who the holder is and may therefore only be
-  handed to them. Answers 404 when the server was started without `-clan-key`,
-  which is a supported deployment: everything else serves and players simply
-  carry no tag. See [Clan tags](#clan-tags-are-signed-not-looked-up).
-- `/tn/server/authinfo` — not a client endpoint, and no longer used by the mod;
-  the clan-tag lookup the game-server mod made before certificates replaced it.
-  Kept because the deployment probe above uses it to prove a request reached Go
-  and Postgres rather than an edge cache. Unauthenticated: everything it returns
-  — a name and a clan tag — is on the scoreboard of every server that player
-  joins.
+  handed to them. The token inside is deliberately not JSON; see
+  [Clan tags](#clan-tags-are-signed-not-looked-up). Answers 404 when the server
+  was started without `-clan-key`, which is a supported deployment: everything
+  else serves and players carry no tag.
+- `GET /healthz` — `{"status":"ok"}`.
+
+Failures answer one shape, everywhere on this server:
+
+```json
+{ "error": "session_expired", "message": "Session expired. Please try again." }
+```
+
+`error` is a stable slug to branch on and `message` is fit to put in front of a
+player. `session_expired` is the one the mod acts on: it drops its token and the
+next request negotiates afresh.
+
+A refusal the player caused — no such tribe, insufficient rank — is **not** one
+of these. It is a 200 with a non-zero `code`, because it is a correct answer to
+a well-formed question, and the shipped `onDatabaseQueryResult` already knows
+how to show it.
 
 The website's own endpoints are separate, read-only and unauthenticated. They
 are not part of the client protocol and their shapes are free to change:
@@ -334,6 +357,7 @@ are not part of the client protocol and their shapes are free to change:
 - `GET /api/warriors?q=&page=` and `GET /api/warriors/{guid}`
 - `GET /api/tribes?q=&page=` and `GET /api/tribes/{id}`
 - `GET /api/releases/latest` — where the newest `.vl2` archives are
+- `GET /api/openapi.yaml` — the specification, and `/docs` renders it
 - `GET /` — the app itself, and any path the browser routes itself
 
 They keep the connection alive, which is the opposite of what the client's

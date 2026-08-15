@@ -86,6 +86,12 @@ TribesNext client:
    thing.** Only the launch bar needs a package, to build the online tab set and
    re-enable the three tabs TribesNext switched off.
 
+The protocol between the three is written down: [PROTOCOL.md](PROTOCOL.md) has
+the handshake, a query end to end and how a tribe tag reaches a game server, as
+sequence diagrams. The endpoints themselves are specified in
+[server/apidoc/openapi.yaml](server/apidoc/openapi.yaml), which any deployment
+serves at `/api/openapi.yaml` with Swagger UI over it at `/docs`.
+
 ## Three parts
 
 | | what it is | who needs it |

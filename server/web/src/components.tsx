@@ -39,6 +39,12 @@ function TabBar() {
       <Tab to="/" label="Downloads" />
       <Tab to="/warriors" label="Warriors" />
       <Tab to="/tribes" label="Tribes" />
+      {/* A real navigation, not a route: /docs is a separate page served by the
+          same binary, so React Router must not try to resolve it. */}
+      <a className="tab" href="/docs">
+        <span className="tab__lamp" />
+        API
+      </a>
     </nav>
   )
 }

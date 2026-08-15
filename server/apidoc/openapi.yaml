@@ -1,0 +1,571 @@
+openapi: 3.1.0
+
+info:
+  title: TNBrowser community server
+  version: 2.0.0
+  description: |
+    Two APIs on one server.
+
+    **game** is what the Tribes 2 mod calls. Its shapes exist to feed the
+    screens the game shipped with in 2001: a query names a stored-procedure
+    ordinal and gets back rows whose field *positions* are the contract, because
+    a shipped script indexes them. Everything crosses as JSON with real types,
+    and the mod joins each row into the tab-separated string its parsers expect
+    one line before handing it over.
+
+    **site** is what the website reads. It is read-only and unauthenticated: a
+    warrior name, a tribe tag and a roster are on the scoreboard of every server
+    those players join, so a login here would guard nothing.
+
+    Every failure on either side answers the same object — a stable `error` slug
+    to branch on and a `message` fit to show a player.
+
+    See PROTOCOL.md in the repository for sequence diagrams of the handshake,
+    a query end to end, and how a tribe tag reaches a game server.
+
+servers:
+  - url: https://tnb.k8s.henrik.si
+    description: The deployment the published .vl2 packages point at
+  - url: http://localhost:8080
+    description: A local backend
+
+tags:
+  - name: game
+    description: What the Tribes 2 mod calls.
+  - name: site
+    description: What the website reads. Read-only, no credentials.
+
+security:
+  - sessionToken: []
+
+paths:
+  /session:
+    post:
+      tags: [game]
+      summary: Negotiate, refresh or discover the loss of a session
+      security: []
+      description: |
+        Three requests distinguished by what the body carries, and five possible
+        answers. The client holds no password: it proves itself with the account
+        certificate TribesNext signed and a challenge only the private half can
+        read.
+
+        1. `{guid, cert, nonce}` → a challenge
+        2. `{guid, response}` → a token
+        3. `{guid, uuid}` → refreshed, or expired
+
+        Plain-text lines until v2, which is why the states are named rather than
+        numbered: the client acts on each one differently.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [guid]
+              properties:
+                guid:
+                  type: string
+                  description: The TribesNext account GUID.
+                  example: "4510186"
+                cert:
+                  type: string
+                  description: |
+                    The account certificate, five tab-separated fields, signed
+                    by TribesNext. Public — the client hands the same one to
+                    every game server it joins.
+                nonce:
+                  type: string
+                  description: Client half of the challenge, hex.
+                response:
+                  type: string
+                  description: The decrypted challenge half.
+                uuid:
+                  type: string
+                  description: An existing token, to refresh.
+            examples:
+              challenge:
+                summary: Ask for a challenge
+                value: { guid: "4510186", cert: "orange01\t4510186\t10001\tb7c1…\tsig…", nonce: "1f3c" }
+              keepalive:
+                summary: Refresh a token
+                value: { guid: "4510186", uuid: "4bcd7b9bf3da8eb81b12e80278038f82" }
+      responses:
+        "200":
+          description: A session state.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionState" }
+              examples:
+                challenge:
+                  value: { state: challenge, challenge: "a91f…" }
+                granted:
+                  value: { state: granted, uuid: "4bcd7b9bf3da8eb81b12e80278038f82" }
+                refreshed:
+                  value: { state: refreshed }
+                expired:
+                  value: { state: expired }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+
+  /db:
+    post:
+      tags: [game]
+      summary: Run one stored-procedure ordinal
+      description: |
+        The single endpoint behind every community pane. All 61 `(form, ordinal)`
+        pairs the five shipped scripts issue are implemented; each is cited in
+        `internal/dbproxy/ordinals.go` to the call site that issues it.
+
+        A refusal the player caused — no such tribe, insufficient rank — is a
+        200 with a non-zero `code`, because it is a valid answer to a valid
+        question. Only a transport failure is a 4xx/5xx.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [form, ordinal]
+              properties:
+                form:
+                  type: string
+                  enum: [scalar, array]
+                  description: |
+                    `scalar` answers a status and at most a payload; `array`
+                    answers rows. Four ordinals exist in both forms and mean
+                    different things in each.
+                ordinal:
+                  type: string
+                  description: The stored-procedure selector, as the shipped script sends it.
+                  example: "4"
+                args:
+                  type: array
+                  items: { type: string }
+                  description: |
+                    The argument tuple. An array rather than a joined string
+                    because three ordinals vary their count and a joined string
+                    cannot distinguish two trailing empty arguments from none.
+                  example: ["Test", "0", "50"]
+      responses:
+        "200":
+          description: The ordinal's answer, successful or refused.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Answer" }
+              examples:
+                rows:
+                  summary: A tribe search
+                  value:
+                    code: 0
+                    message: OK
+                    result: "2"
+                    rows:
+                      - [7, "Test Clan", "[TC]"]
+                      - [9, "Casual Alliance", "-CA-"]
+                refused:
+                  summary: A refusal the pane shows
+                  value: { code: 1, message: "You are not a member of that tribe.", result: "0", rows: [] }
+        "400":
+          description: |
+            Unreadable, or sent by a v1 mod — which posts a urlencoded form and
+            gets `client_too_old` so the player is told to update.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { error: client_too_old, message: "This community server needs TNBrowser v2. …" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /cert:
+    get:
+      tags: [game]
+      summary: The caller's identity
+      description: |
+        What `WONGetAuthInfo()` answers the shipped scripts with — 45 call sites
+        read it, from "is this me?" to where the mail cache is written. The mod
+        renders this into the record layout those scripts parse.
+      responses:
+        "200":
+          description: The identity.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Identity" }
+        "401": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /clancert:
+    get:
+      tags: [game]
+      summary: A signed token proving which tribe the caller wears
+      description: |
+        The player carries this into a game and hands it to any server that
+        asks. A server running TNBrowserServer checks the signature and renders
+        the tag, making no HTTP request of its own while somebody is connecting.
+
+        **The token is deliberately not JSON.** Its RSA signature covers the
+        literal tab-joined bytes of its first five fields, and the mod that
+        verifies it does so inside `GameConnection::onConnect` with `getField`
+        and `sha1sum` and no parser at all. This response is JSON around an
+        opaque credential, the way an OAuth response is JSON around an
+        `access_token`.
+
+        404 when the server was started without `-clan-key`, which is a
+        supported deployment: everything else works and players carry no tag.
+      responses:
+        "200":
+          description: The token and when it stops being accepted.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [certificate, expires]
+                properties:
+                  certificate:
+                    type: string
+                    description: Six tab-separated fields. Opaque; see above.
+                  expires:
+                    type: integer
+                    format: int64
+                    description: Unix seconds. Expiry is the only revocation there is.
+        "401": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
+        "500": { $ref: "#/components/responses/Error" }
+
+  /healthz:
+    get:
+      tags: [game]
+      summary: Liveness
+      security: []
+      responses:
+        "200":
+          description: Alive.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+
+  /api/stats:
+    get:
+      tags: [site]
+      summary: Three numbers for the landing page
+      security: []
+      responses:
+        "200":
+          description: Counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warriors: { type: integer }
+                  tribes: { type: integer }
+                  online: { type: integer }
+
+  /api/warriors:
+    get:
+      tags: [site]
+      summary: The warrior directory
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Query" }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Size" }
+      responses:
+        "200":
+          description: One page of warriors.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/DirectoryWarrior" }
+
+  /api/warriors/{guid}:
+    get:
+      tags: [site]
+      summary: One warrior, with their tribes and history
+      security: []
+      parameters:
+        - name: guid
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  warrior: { type: object }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistoryEntry" }
+        "404": { $ref: "#/components/responses/Error" }
+
+  /api/tribes:
+    get:
+      tags: [site]
+      summary: The tribe directory
+      security: []
+      parameters:
+        - { $ref: "#/components/parameters/Query" }
+        - { $ref: "#/components/parameters/Page" }
+        - { $ref: "#/components/parameters/Size" }
+      responses:
+        "200":
+          description: One page of tribes. Disbanded tribes are never listed.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: "#/components/schemas/Page"
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: "#/components/schemas/DirectoryTribe" }
+
+  /api/tribes/{id}:
+    get:
+      tags: [site]
+      summary: One tribe, with its roster and history
+      security: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        "200":
+          description: The profile.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tribe: { type: object }
+                  history:
+                    type: array
+                    items: { $ref: "#/components/schemas/HistoryEntry" }
+        "404":
+          description: |
+            No such tribe, or it disbanded. Disbanding sets a flag rather than
+            deleting the row, so that old history and mail can still name it —
+            but it is not reachable by guessing an id.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /api/releases/latest:
+    get:
+      tags: [site]
+      summary: Where to get the newest .vl2 archives
+      security: []
+      description: |
+        Read from the GitHub API and cached for ten minutes, because the
+        unauthenticated limit is per server rather than per visitor. When that
+        call fails the server names the release it was configured with and links
+        straight at it, rather than claiming a version it cannot confirm.
+      responses:
+        "200":
+          description: The release.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  repo: { type: string }
+                  tag: { type: string }
+                  published: { type: string, format: date-time }
+                  url: { type: string, format: uri }
+                  fallback:
+                    type: boolean
+                    description: True when GitHub could not be reached.
+                  assets:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name: { type: string }
+                        url: { type: string, format: uri }
+                        size: { type: integer, description: Bytes, 0 when unknown. }
+
+components:
+  securitySchemes:
+    sessionToken:
+      type: http
+      scheme: TNB
+      description: |
+        `Authorization: TNB <guid>:<uuid>`, where the token comes from
+        `/session`. A header rather than a body field so every authenticated
+        route carries identity the same way, and so the credential stays out of
+        the request line that ends up in access logs.
+
+  parameters:
+    Query:
+      name: q
+      in: query
+      schema: { type: string }
+      description: Matches anywhere in the name; a tribe also matches on its tag.
+    Page:
+      name: page
+      in: query
+      schema: { type: integer, minimum: 1, default: 1 }
+    Size:
+      name: size
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 25 }
+
+  responses:
+    Error:
+      description: A failure, in the one shape this server uses for all of them.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          description: |
+            A stable slug to branch on. `session_expired` is the one the mod
+            acts on: it drops its token and the next request negotiates afresh.
+          enum:
+            [bad_request, session_expired, bad_certificate, bad_response,
+             client_too_old, not_configured, not_found, internal]
+        message:
+          type: string
+          description: A sentence fit to put in front of a player.
+
+    SessionState:
+      type: object
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [challenge, granted, refreshed, expired]
+        challenge:
+          type: string
+          description: Present only with `challenge`. Hex, RSA-encrypted to the account key.
+        uuid:
+          type: string
+          description: Present only with `granted`.
+
+    Answer:
+      type: object
+      required: [code, message, result, rows]
+      properties:
+        code:
+          type: integer
+          description: |
+            0 succeeded, non-zero was refused. This is the first thing the
+            shipped `onDatabaseQueryResult` tests.
+        message:
+          type: string
+          description: |
+            A sentence. Several panes put it straight into a MessageBoxOK, so a
+            refusal has to read like prose rather than like an error code.
+        fields:
+          type: array
+          items: { type: string }
+          description: |
+            The payload the two profile ordinals return instead of rows. Absent
+            for everything else.
+        result:
+          type: string
+          description: |
+            A row count for the array form. Several scalars overload it with a
+            payload — the MOTD, a tribe description, a tribe name — so it stays
+            a string rather than being given a type it does not have.
+        rows:
+          type: array
+          description: |
+            Rows of fields. Positions are the contract: a field exists because a
+            shipped parser indexes it, so a value with nothing in it is an empty
+            string and never an omission.
+          items:
+            type: array
+            items:
+              oneOf:
+                - { type: string }
+                - { type: number }
+                - { type: boolean }
+
+    Identity:
+      type: object
+      required: [name, tag, append, guid, tribes]
+      properties:
+        name: { type: string }
+        tag: { type: string }
+        append:
+          type: boolean
+          description: |
+            False puts the tag before the name, true after. Nothing is inserted
+            between them, so a tribe wanting a space registers it as part of the
+            tag.
+        guid: { type: string }
+        tribes:
+          type: array
+          items:
+            type: object
+            properties:
+              name: { type: string }
+              tag: { type: string }
+              append: { type: boolean }
+              id: { type: integer, format: int64 }
+              rank: { type: integer, minimum: 0, maximum: 4 }
+              title: { type: string }
+
+    Page:
+      type: object
+      properties:
+        total: { type: integer }
+        page: { type: integer }
+        pages: { type: integer }
+
+    DirectoryWarrior:
+      type: object
+      properties:
+        guid: { type: string }
+        name: { type: string }
+        tag: { type: string }
+        append: { type: boolean }
+        online: { type: boolean }
+        tribes: { type: integer }
+        created: { type: integer, format: int64 }
+        lastSeen: { type: integer, format: int64 }
+
+    DirectoryTribe:
+      type: object
+      properties:
+        id: { type: string }
+        name: { type: string }
+        tag: { type: string }
+        append: { type: boolean }
+        recruiting: { type: boolean }
+        members: { type: integer }
+        online: { type: integer }
+        created: { type: integer, format: int64 }
+
+    HistoryEntry:
+      type: object
+      properties:
+        time: { type: string, description: Unix seconds, as a string. }
+        event:
+          type: string
+          description: |
+            Display text. `{clan:Name}` and `{warrior:Name}` markers mark
+            something the reader can follow; a reader that does not expand them
+            still shows the name.
