@@ -279,19 +279,18 @@ The mod also became backend-exclusive, as above.
 
 ```sh
 ./tools/run-tn-container.sh --mod ./TNBrowser --account 2325   # patched game
-./tools/run-tests.sh 2325                                      # against the mock
-./tools/run-conformance.sh 2325                                # against the Go server
+./tools/run-tests.sh 2325                                      # the four suites
 cd server && TNB_TEST_DSN=postgres://... go test ./...
 ```
 
-**142 assertions inside the real game against the mock, 0 failures**: 66
-parser, 8 sweep, 34 browser, 34 mail. **76 more against the Go backend on
-PostgreSQL, 0 failures** -- the same suites, the same fixtures, a different
-server, so a failure there is a real behavioural difference between the two.
-Plus the Go suite itself, because what is worth testing there is the SQL.
+The four suites run **inside the real game**, against the real backend on
+PostgreSQL: parser, ordinal sweep, browser, mail. Plus the Go suite, because
+what is worth testing there is the SQL.
 
-`run-conformance.sh` needs the backend started with the test bypass, because a
-container holds no account key material and so cannot answer a challenge:
+There used to be a second runner and a stand-in backend to diff it against.
+There is one backend now, so there is one runner, and it needs the server
+started with the test bypass, because a container holds no
+account key material and so cannot answer a challenge:
 
 ```sh
 ./tnserver -dsn ... -dev-trust-guid
@@ -314,11 +313,6 @@ The suites divide the work deliberately:
   files, so an assertion that has to change to accommodate a screen means the
   screen is wrong.
 
-`tools/mockserver.py` is a second, independent implementation of the same row
-schemas, run by the same suites — so a disagreement between it and
-`server/internal/dbproxy` means one of them is wrong about what the client
-reads.
-
 ## Layout
 
 ```
@@ -339,7 +333,7 @@ server/
 ├── migrations/
 └── web/               the website: React, built into the binary by go:embed
 tests/                 four suites, run inside the game
-tools/                 container, deploy, mock backend, test runners, packaging
+tools/                 container, deploy, test runner, packaging
 ```
 
 ## Notes on this engine

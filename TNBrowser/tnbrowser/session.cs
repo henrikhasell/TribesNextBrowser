@@ -29,9 +29,11 @@
 // the certificate for that reason: the old endpoint looked the account's public
 // key up by GUID because it held the account database, and ours does not.
 //
-// The wire format is deliberately unchanged. Every line this file parses below
-// is one TribesNext already answered with, which is why none of the retry,
-// backoff or waiter logic had to be touched.
+// The wire format is five one-line answers -- CHALLENGE:, UUID:, REFRESHED,
+// TIMEOUT and ERR: -- and stays that way deliberately. This is the login path:
+// it runs before anything else works, so being readable with getSubStr and no
+// parser at all is worth more here than consistency with the JSON everything
+// downstream speaks. The retry, backoff and waiter logic below is built on it.
 
 //-----------------------------------------------------------------------------
 // State
@@ -473,19 +475,19 @@ function TNBSessionInterface::onDisconnect(%this)
    if (%this.handled)
       return;
 
-   TNBSessionFail("Could not reach the TribesNext community server.");
+   TNBSessionFail("Could not reach the community server.");
 }
 
 // Kept for completeness in case a future patch starts emitting them; they are
 // not the path that fires today.
 function TNBSessionInterface::onConnectFailed(%this)
 {
-   TNBSessionFail("Could not reach the TribesNext community server.");
+   TNBSessionFail("Could not reach the community server.");
 }
 
 function TNBSessionInterface::onDNSFailed(%this)
 {
-   TNBSessionFail("Could not resolve the TribesNext community server.");
+   TNBSessionFail("Could not resolve the community server.");
 }
 
 //-----------------------------------------------------------------------------

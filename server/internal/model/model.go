@@ -1,18 +1,17 @@
-// Package model holds the wire types.
+// Package model holds the shapes that cross a boundary: from internal/store to
+// internal/dbproxy, which renders them into ordinal rows, and to
+// internal/api/site.go, which marshals them for the website.
 //
-// The JSON field names here are not a design choice -- they are the protocol
-// the Tribes 2 client already speaks, recovered from TribesNext's published
-// json_browser.phps and confirmed against the live server. They must not be
-// renamed.
+// Nothing here is a wire protocol. The game speaks tab-joined fields inside
+// dbproxy.Answer and never sees a struct from this package; the only JSON these
+// turn into is read by our own React app. The field names and types are
+// therefore ordinary choices, free to change with their callers.
 //
-// Two quirks of that protocol are deliberate:
-//
-//   - Numbers that the client treats as text (ids, ranks, timestamps) are
-//     strings, because the original PHP returned database columns unconverted
-//     and the client's parser reads them with getField/TNBJsonStr.
-//   - "online" is the exception: the live server returns it as a bare number,
-//     which the client's TNBJsonBool handles. Reproduced so the two backends
-//     are indistinguishable to the client.
+// They did not use to be. This package was once the literal shape of a
+// method-and-JSON API served to a hand-built set of screens, which is why the
+// older types below still carry stringly-typed ids, ranks and timestamps. That
+// is inertia, not a requirement -- the newer website types at the bottom use
+// real ones, and the rest can follow whenever a caller wants them to.
 package model
 
 // Membership is a clan as it appears inside a user profile.
@@ -25,7 +24,8 @@ type Membership struct {
 	Append string `json:"append"`
 }
 
-// User is the userview payload.
+// User is a warrior profile: the account, the tag they wear, and every tribe
+// they belong to.
 type User struct {
 	GUID        string       `json:"guid"`
 	Name        string       `json:"name"`
@@ -36,14 +36,6 @@ type User struct {
 	Info        string       `json:"info"`
 	Online      int          `json:"online"`
 	Memberships []Membership `json:"memberships"`
-}
-
-// UserSearchHit is one entry of a usersearch array.
-type UserSearchHit struct {
-	GUID   string `json:"guid"`
-	Name   string `json:"name"`
-	Tag    string `json:"tag"`
-	Append string `json:"append"`
 }
 
 // Member is a player as they appear in a clan roster.
@@ -57,7 +49,7 @@ type Member struct {
 	Online int    `json:"online"`
 }
 
-// Clan is the clanview payload.
+// Clan is a tribe profile and its full roster.
 type Clan struct {
 	ID         string   `json:"id"`
 	Name       string   `json:"name"`
@@ -72,59 +64,16 @@ type Clan struct {
 	Members    []Member `json:"members"`
 }
 
-// ClanSearchHit is one entry of a clansearch array.
-type ClanSearchHit struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
-}
-
-// InviteParty is the sender or clan half of an invitation.
-type InviteParty struct {
-	GUID   string `json:"guid,omitempty"`
-	ID     string `json:"id,omitempty"`
-	Name   string `json:"name"`
-	Tag    string `json:"tag"`
-	Append string `json:"append"`
-}
-
-// Invite is one entry of the userinvites array.
-type Invite struct {
-	Sender InviteParty `json:"sender"`
-	Clan   InviteParty `json:"clan"`
-}
-
 // HistoryEntry is one line of an audit trail.
 type HistoryEntry struct {
 	Time  string `json:"time"`
 	Event string `json:"event"`
 }
 
-// Message is one mail item.
+// Person is a buddy or a blocked player.
 //
-// The field names are the ones TNBrowser's TNBMailField tries first. That
-// client accepts several spellings because the live server's shape could never
-// be observed (its inbox is empty and sending is disabled), so this backend
-// pins the canonical set.
-type Message struct {
-	ID       string `json:"id"`
-	From     string `json:"from"`
-	FromGUID string `json:"fromguid"`
-	To       string `json:"to"`
-	ToGUID   string `json:"toguid"`
-	Subject  string `json:"subject"`
-	Body     string `json:"body"`
-	Date     string `json:"date"`
-	Unread   string `json:"unread"`
-	Folder   string `json:"folder"`
-}
-
-// Person is a buddy, a blocked player, or someone a clan has invited.
-//
-// Since and Hits carry the second column the stock screens showed beside the
-// name -- SINCE on the buddy list, INVITED on a clan's invitations, and
-// "# Blocked Emails" on the block dialog. They are additions to the protocol
-// rather than renames: TribesNext serves the login and nothing else now, so
-// nothing else reads these payloads.
+// Since and Hits carry the second column the stock screens show beside the
+// name -- SINCE on the buddy list, and "# Blocked Emails" on the block dialog.
 type Person struct {
 	GUID   string `json:"guid"`
 	Name   string `json:"name"`
@@ -138,10 +87,9 @@ type Person struct {
 //-----------------------------------------------------------------------------
 // Website types
 //
-// Everything above is the client's protocol and its field names are fixed.
-// Everything below is the public website's own, read by React and by nothing
-// else, so it is free to change and free to use real types: a boolean is a
-// boolean here rather than the "1"/"0" string PHP used to return.
+// Written for the React app rather than adapted from anything, which is why
+// these use real booleans and integers where the older types above still carry
+// strings. See the package comment.
 //-----------------------------------------------------------------------------
 
 // DirectoryWarrior is one row of the website's warrior directory.
@@ -175,16 +123,8 @@ type Counts struct {
 	Online   int `json:"online"`
 }
 
-// Status is the reply shape for every mutating method.
-type Status struct {
-	Status string `json:"status"`
-	Msg    string `json:"msg,omitempty"`
-}
-
-// OK is the success reply.
-func OK() Status { return Status{Status: "success"} }
-
-// Bool renders a boolean the way the protocol carries them: "1" or "0".
+// Bool renders a boolean as the "1" or "0" the older types above carry, and
+// that dbproxy writes into an ordinal row.
 func Bool(b bool) string {
 	if b {
 		return "1"

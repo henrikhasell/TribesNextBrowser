@@ -46,9 +46,13 @@ COPY --from=web /web/dist ./web/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/tnserver ./cmd/tnserver
 
 # static-debian12 carries CA certificates and nothing else -- no shell, no
-# package manager, no libc. The certificates are not optional: every session is
-# verified by an outbound HTTPS call to TribesNext, so an image without them
-# authenticates nobody.
+# package manager, no libc.
+#
+# The certificates are still needed, though no longer for authentication:
+# sessions are verified offline against a pinned key and this server makes no
+# outbound call to log anybody in. What needs them is internal/release, which
+# asks the GitHub API which .vl2 the download page should offer. Without them
+# that lookup fails and the page falls back to its configured version.
 #
 # There is no HEALTHCHECK because there is no shell to run one. App Platform
 # probes /healthz over HTTP itself; a plain `docker run` should be watched the

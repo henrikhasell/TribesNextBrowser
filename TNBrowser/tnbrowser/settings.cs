@@ -7,26 +7,24 @@
 // libcurl and ships curl-ca-bundle.crt for certificate verification; the
 // stock Torque HTTPObject could only speak plain HTTP.
 //
-// Verified against the live backend from inside the game:
-//   HTTPObject.get("https://tribesnext.thyth.com",
-//                  "/tn/robot/robot_login.php?guid=...&nonce=...", "")
-// returns a CHALLENGE. Note the query string is part of the request-URI --
-// see TNBHttpRequest in api.cs for why the third argument is not used.
+// Note that the query string is part of the request-URI rather than a separate
+// argument -- see TNBHttpRequest in api.cs for why the third argument to
+// HTTPObject.get() is not the one you would expect it to be.
 //
 // Setting these without unpacking the .vl2
 // -----------------------------------------------------------------------------
-// Put a plain autoexec.cs in the mod directory, beside the archive:
+// Put a plain autoexec.cs beside the archive:
 //
-//     GameData/MyMod/TNBrowser.vl2
-//     GameData/MyMod/autoexec.cs      <- your settings
+//     GameData/base/TNBrowser.vl2
+//     GameData/base/autoexec.cs       <- your settings
 //
 // The game execs scripts/autoexec/*.cs from every mod first, then "autoexec.cs"
 // last (base/console_end.cs: loadCustomScripts(); exec("autoexec.cs")), so a
 // plain assignment there wins over the defaults below.
 //
-// It has to be inside the mod directory, not GameData/ -- exec() resolves
-// through the mod path, so a file at the GameData root is never found. Verified
-// both ways.
+// It has to be inside a mod directory, not GameData/ -- exec() resolves through
+// the mod path, so a file at the GameData root is never found. Verified both
+// ways.
 //
 // Keeping it a loose file rather than putting it in the archive means it
 // survives replacing the .vl2 with a newer build.
@@ -57,9 +55,9 @@ if ($TNB::SessionURI $= "")
    $TNB::SessionURI = "/session";
 
 // The database proxy. One endpoint for all 61 stored-procedure ordinals the
-// shipped community scripts issue, and the reason this backend cannot be
-// TribesNext's: json_browser.php speaks methods and JSON objects, not ordinals
-// and rows. Authorises with the same guid/uuid pair the robot login mints.
+// shipped community scripts issue -- an ordinal and its arguments go up, a
+// status and rows come back. Authorises with the guid/uuid pair from
+// $TNB::SessionURI above.
 if ($TNB::DbURI $= "")
    $TNB::DbURI = "/db";
 

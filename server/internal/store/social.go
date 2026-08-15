@@ -11,10 +11,9 @@ import (
 
 // Buddy and block lists.
 //
-// Both existed in the WON-era browser and email screens -- "Add To Buddylist",
-// "Add To Blocklist", TRACKING LIST, BLOCK LIST -- and neither survived into
-// TribesNext's API, which is why TNBrowser hides those controls today. They are
-// restored here.
+// Both are WON-era features the shipped screens still have controls for -- "Add
+// To Buddylist", "Add To Blocklist", TRACKING LIST, BLOCK LIST -- and both work
+// again because this server answers the ordinals behind them.
 
 // people runs a list query that yields the standard person shape.
 //
@@ -127,26 +126,4 @@ func (s *Store) BlockRemove(ctx context.Context, guid, target string) error {
 func (s *Store) BuddyClear(ctx context.Context, guid string) error {
 	_, err := s.pool.Exec(ctx, `DELETE FROM buddies WHERE guid = $1`, guid)
 	return err
-}
-
-// ClanTagFor is the lookup the game-server mod uses: everything needed to build
-// a player's auth-info record, in one query.
-//
-// It is deliberately not a browser method -- the game server has no player
-// token, and needs none: it only ever asks for public facts.
-func (s *Store) ClanTagFor(ctx context.Context, guid string) (name, tag string, append_ bool, memberships []model.Membership, err error) {
-	err = s.pool.QueryRow(ctx, `
-		SELECT a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE)
-		  FROM accounts a
-		  LEFT JOIN clans c ON c.id = a.active_clan
-		 WHERE a.guid = $1`, guid).Scan(&name, &tag, &append_)
-	if err != nil {
-		return "", "", false, nil, err
-	}
-
-	u, err := s.UserView(ctx, guid)
-	if err != nil {
-		return "", "", false, nil, err
-	}
-	return name, tag, append_, u.Memberships, nil
 }

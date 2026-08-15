@@ -145,15 +145,6 @@ func (s *Store) Forums(ctx context.Context) ([]Forum, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) ForumFlag(ctx context.Context, forumID int64) (int, error) {
-	var flag int
-	err := s.pool.QueryRow(ctx, `SELECT flag FROM forums WHERE id = $1`, forumID).Scan(&flag)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil
-	}
-	return flag, err
-}
-
 type Topic struct {
 	ID          int64
 	ForumID     int64

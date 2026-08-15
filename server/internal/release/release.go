@@ -46,7 +46,7 @@ const DefaultRepo = "henrikhasell/TribesNextBrowser"
 // Being out of date costs a stale version number on one panel while GitHub is
 // unreachable, and nothing else -- the live lookup overrides it whenever it
 // works.
-const DefaultTag = "v1.1.0"
+const DefaultTag = "v1.2.0"
 
 // Archives are the two files a release carries, in the order the page shows
 // them: the client package first, because most visitors are players.

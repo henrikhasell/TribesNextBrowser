@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -32,7 +31,7 @@ func activeTag(ctx context.Context, q rowQuerier, guid string) (tag string, appe
 	return tag, append_, err
 }
 
-// UserView is the userview method.
+// UserView is a warrior's profile and the tribes they belong to.
 func (s *Store) UserView(ctx context.Context, guid string) (*model.User, error) {
 	var (
 		u        model.User
@@ -87,40 +86,6 @@ func (s *Store) UserView(ctx context.Context, guid string) (*model.User, error) 
 		u.Memberships = append(u.Memberships, m)
 	}
 	return &u, rows.Err()
-}
-
-// UserSearch matches players whose name starts with the query, as the original
-// did ("This will match on player names that start with the query name").
-func (s *Store) UserSearch(ctx context.Context, q string) ([]model.UserSearchHit, error) {
-	hits := []model.UserSearchHit{}
-	if strings.TrimSpace(q) == "" {
-		return hits, nil
-	}
-
-	rows, err := s.pool.Query(ctx, `
-		SELECT a.guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE)
-		  FROM accounts a
-		  LEFT JOIN clans c ON c.id = a.active_clan
-		 WHERE a.name ILIKE $1 || '%'
-		 ORDER BY a.name
-		 LIMIT 100`, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			h   model.UserSearchHit
-			app bool
-		)
-		if err := rows.Scan(&h.GUID, &h.Name, &h.Tag, &app); err != nil {
-			return nil, err
-		}
-		h.Append = model.Bool(app)
-		hits = append(hits, h)
-	}
-	return hits, rows.Err()
 }
 
 func (s *Store) UserHistory(ctx context.Context, guid string) ([]model.HistoryEntry, error) {
@@ -213,49 +178,6 @@ func (s *Store) SetActiveClan(ctx context.Context, guid string, clanID int64) er
 		return s.note(ctx, tx, "user", guid,
 			"Now wears the tag of "+Ref(RefClan, clanNameTx(ctx, tx, clanID)))
 	})
-}
-
-// UserInvites lists the clan invitations awaiting this player.
-func (s *Store) UserInvites(ctx context.Context, guid string) ([]model.Invite, error) {
-	out := []model.Invite{}
-	rows, err := s.pool.Query(ctx, `
-		SELECT i.from_guid, COALESCE(fa.name, '(unknown)'),
-		       COALESCE(fc.tag, ''), COALESCE(fc.append, FALSE),
-		       c.id, c.name, c.tag, c.append
-		  FROM clan_invites i
-		  JOIN clans c ON c.id = i.clan_id
-		  LEFT JOIN accounts fa ON fa.guid = i.from_guid
-		  LEFT JOIN clans fc ON fc.id = fa.active_clan
-		 WHERE i.guid = $1
-		 ORDER BY i.created DESC`, guid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			inv          model.Invite
-			clanID       int64
-			senderApp    bool
-			clanAppend   bool
-			senderGUID   string
-			senderName   string
-			senderTagStr string
-		)
-		if err := rows.Scan(&senderGUID, &senderName, &senderTagStr, &senderApp,
-			&clanID, &inv.Clan.Name, &inv.Clan.Tag, &clanAppend); err != nil {
-			return nil, err
-		}
-		inv.Sender = model.InviteParty{
-			GUID: senderGUID, Name: senderName,
-			Tag: senderTagStr, Append: model.Bool(senderApp),
-		}
-		inv.Clan.ID = strconv.FormatInt(clanID, 10)
-		inv.Clan.Append = model.Bool(clanAppend)
-		out = append(out, inv)
-	}
-	return out, rows.Err()
 }
 
 // activeClanTx reads the clan whose tag a player is wearing, and

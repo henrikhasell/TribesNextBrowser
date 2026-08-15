@@ -146,59 +146,64 @@ function TNBTestErrors()
    TNBTestEq("trailing garbage", TNBJsonParse("{} junk"), 0);
    TNBTestEq("empty input", TNBJsonParse(""), 0);
 
-   // An HTML error page is the realistic failure the backend produces.
+   // Not JSON at all. A proxy, a captive portal or an edge error page is the
+   // realistic way this happens -- the backend itself always answers JSON.
    TNBTestEq("html error page", TNBJsonParse("<h1>Fatal Error</h1>"), 0);
 }
 
-// The shapes the GUI actually consumes, taken from json_browser.phps.
+// The shapes that actually cross the wire, and the one decode built on top of
+// them.
 function TNBTestRealPayloads()
 {
    echo("--- real API shapes ---");
 
-   %userview = "{\"guid\":\"4510186\",\"name\":\"orange01\",\"tag\":\"[TN]\"," @
-               "\"append\":\"0\",\"creation\":\"1300000000\"," @
-               "\"website\":\"www.example.com\",\"info\":\"Hello \\\"world\\\"\"," @
-               "\"online\":\"1\",\"memberships\":[" @
-               "{\"id\":\"7\",\"name\":\"Test Clan\",\"rank\":\"4\",\"title\":\"Leader\"," @
-               "\"tag\":\"[TC]\",\"append\":\"0\"}," @
-               "{\"id\":\"9\",\"name\":\"Other\",\"rank\":\"1\",\"title\":\"Member\"," @
-               "\"tag\":\"-O-\",\"append\":\"1\"}]}";
+   // Every /db answer. The status is tab-separated: field 0 is the code the
+   // shipped onDatabaseQueryResult tests, field 1 a sentence a pane may show.
+   // Rows are opaque strings, themselves tab-separated, and the parser must
+   // hand them back with the tabs intact.
+   %answer = "{\"status\":\"0\tOK\",\"result\":\"2\",\"rows\":[" @
+             "\"7\tTest Clan\t[TC]\",\"9\tCasual Alliance\t-CA-\"]}";
 
-   %r = TNBJsonParse(%userview);
-   TNBTestEq("userview name", TNBJsonStr(%r, "name"), "orange01");
-   TNBTestEq("userview info with quotes", TNBJsonStr(%r, "info"), "Hello \"world\"");
-   TNBTestEq("userview online bool", TNBJsonBool(%r, "online"), 1);
-   %m = TNBJsonGet(%r, "memberships");
-   TNBTestEq("membership count", TNBJsonCount(%m), 2);
-   TNBTestEq("second membership title", TNBJsonStr(TNBJsonIndex(%m, 1), "title"), "Member");
+   %r = TNBJsonParse(%answer);
+   TNBTestEq("answer status code", getField(TNBJsonStr(%r, "status"), 0), "0");
+   TNBTestEq("answer status text", getField(TNBJsonStr(%r, "status"), 1), "OK");
+   TNBTestEq("answer result", TNBJsonStr(%r, "result"), "2");
+   %rows = TNBJsonGet(%r, "rows");
+   TNBTestEq("answer row count", TNBJsonCount(%rows), 2);
+   TNBTestEq("a row keeps its tabs",
+             getField(TNBJsonValue(TNBJsonIndex(%rows, 0)), 1), "Test Clan");
    TNBJsonFree(%r);
 
-   %search = "[{\"guid\":\"1\",\"name\":\"aaa\",\"tag\":\"\",\"append\":\"0\"}," @
-             "{\"guid\":\"2\",\"name\":\"aab\",\"tag\":\"x\",\"append\":\"1\"}]";
-   %r = TNBJsonParse(%search);
-   TNBTestEq("search result count", TNBJsonCount(%r), 2);
-   TNBTestEq("search empty tag", TNBJsonStr(TNBJsonIndex(%r, 0), "tag"), "");
+   // An answer with no rows, which is how most scalars reply. The array must
+   // still parse and count zero rather than come back as nothing at all.
+   %empty = "{\"status\":\"0\tOK\",\"result\":\"0\",\"rows\":[]}";
+   %r = TNBJsonParse(%empty);
+   TNBTestEq("empty rows count", TNBJsonCount(TNBJsonGet(%r, "rows")), 0);
    TNBJsonFree(%r);
 
-   // The shape the *live* backend actually returns, which differs from the
-   // documentation in ways worth pinning down: absent strings come back as
-   // JSON null rather than "", and "online" is a bare number rather than a
-   // quoted string. Captured from a real userview against tribesnext.thyth.com.
-   %live = "{\"guid\":\"4510186\",\"name\":\"orange01\",\"tag\":null,\"append\":null," @
-           "\"creation\":\"1786127938\",\"website\":\"www.tribesnext.com\"," @
-           "\"info\":\"\",\"memberships\":[],\"online\":1}";
-   %r = TNBJsonParse(%live);
-   TNBTestEq("live name", TNBJsonStr(%r, "name"), "orange01");
-   TNBTestEq("live null tag reads empty", TNBJsonStr(%r, "tag"), "");
-   TNBTestEq("live null tag type", TNBJsonType(TNBJsonGet(%r, "tag")), "null");
-   TNBTestEq("live null append is falsey", TNBJsonBool(%r, "append"), 0);
-   TNBTestEq("live numeric online is true", TNBJsonBool(%r, "online"), 1);
-   TNBTestEq("live empty memberships", TNBJsonCount(TNBJsonGet(%r, "memberships")), 0);
-   // Decorating a name with its tribe tag is no longer this mod's job: rows
-   // carry an identity quad and the shipped getTextName (webstuff.cs:19)
-   // decodes it, putting the tag after the name when append is set and before
-   // it otherwise. Asserted here because the quad is what every row schema is
-   // built around.
+   // A transport failure arrives in that same shape, with the HTTP code in
+   // field 0. api.cs reads exactly this to decide a session has lapsed.
+   %fault = "{\"status\":\"401\tSession expired. Please try again.\"," @
+            "\"result\":\"0\",\"rows\":[]}";
+   %r = TNBJsonParse(%fault);
+   TNBTestEq("fault code", getField(TNBJsonStr(%r, "status"), 0), "401");
+   TNBTestEq("fault sentence", getField(TNBJsonStr(%r, "status"), 1),
+             "Session expired. Please try again.");
+   TNBJsonFree(%r);
+
+   // /cert, the identity record WONGetAuthInfo() hands the shipped scripts.
+   // Newlines inside the string are real content: the record is line-based.
+   %cert = "{\"cert\":\"orange01\t[TC]\t0\t4510186\n1\nTest Clan\t[TC]\t0\t7\t4\tLeader\"}";
+   %r = TNBJsonParse(%cert);
+   TNBTestEq("cert first line names the warrior",
+             getField(getRecord(TNBJsonStr(%r, "cert"), 0), 0), "orange01");
+   TNBTestEq("cert membership count", getRecord(TNBJsonStr(%r, "cert"), 1), "1");
+   TNBJsonFree(%r);
+
+   // Decorating a name with its tribe tag is not this mod's job: rows carry an
+   // identity quad and the shipped getTextName (webstuff.cs:19) decodes it,
+   // putting the tag after the name when append is set and before it otherwise.
+   // Asserted here because the quad is what every row schema is built around.
    TNBTestEq("an untagged quad decodes to the bare name",
              getField(getTextName("orange01" TAB "" TAB 0 TAB 4510186), 0),
              "orange01");
@@ -211,18 +216,13 @@ function TNBTestRealPayloads()
    TNBTestEq("the quad's uid survives the decode",
              getField(getTextName("orange01" TAB "[TC]" TAB 1 TAB 4510186), 1),
              4510186);
-   TNBJsonFree(%r);
 
-   // The live server prefixes its body with a blank line; the API layer trims
-   // before parsing, but the parser must cope with leading whitespace anyway.
-   %r = TNBJsonParse("\n{\"status\":\"success\"}");
-   TNBTestEq("leading newline tolerated", TNBJsonStr(%r, "status"), "success");
-   TNBJsonFree(%r);
-
-   %err = "{\"status\":\"error\",\"msg\":\"not authorized\"}";
-   %r = TNBJsonParse(%err);
-   TNBTestEq("error status", TNBJsonStr(%r, "status"), "error");
-   TNBTestEq("error message", TNBJsonStr(%r, "msg"), "not authorized");
+   // api.cs trims before parsing, but the parser must cope with surrounding
+   // whitespace on its own -- a body arrives in however many pieces the socket
+   // delivered it in.
+   %r = TNBJsonParse("\n  {\"status\":\"0\tOK\",\"result\":\"0\",\"rows\":[]}  ");
+   TNBTestEq("surrounding whitespace tolerated",
+             getField(TNBJsonStr(%r, "status"), 0), "0");
    TNBJsonFree(%r);
 }
 

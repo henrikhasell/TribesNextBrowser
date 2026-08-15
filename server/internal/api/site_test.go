@@ -85,16 +85,17 @@ func numeric(t *testing.T, id string) int64 {
 	return n
 }
 
-// clanID looks a tribe up by name. Only usable while it is still active, which
-// is why community reads both ids before it disbands either.
+// clanID looks a tribe up by name, through the same search the game's own
+// screens use. Only usable while it is still active, which is why community
+// reads both ids before it disbands either.
 func clanID(t *testing.T, st *store.Store, name string) string {
 	t.Helper()
 
-	hits, err := st.ClanSearch(t.Context(), name)
+	hits, err := st.SearchTribes(t.Context(), name, 0, 10)
 	if err != nil || len(hits) != 1 {
 		t.Fatalf("looking up %s: %d hits, %v", name, len(hits), err)
 	}
-	return hits[0].ID
+	return strconv.FormatInt(hits[0].ID, 10)
 }
 
 func TestWarriorDirectoryPaginatesAndSearches(t *testing.T) {
@@ -266,10 +267,13 @@ func TestAMissingAssetIsAMiss(t *testing.T) {
 	}
 }
 
-// The client's own routes must keep their quirks. Both are load-bearing: the
-// blank first line is what the live TribesNext server sends, and the closed
-// connection is the only completion signal Torque's HTTPObject has.
-func TestTheClientProtocolIsUnchangedByTheWebsite(t *testing.T) {
+// One quirk on the client's routes is load-bearing and one is gone.
+//
+// The closed connection stays: Torque's HTTPObject reports a completed transfer
+// only as onDisconnect, so keep-alive stalls the mod's request queue. The blank
+// line before the body does not -- it imitated a backend this no longer has
+// anything to do with.
+func TestTheClientRoutesCloseAndDoNotPadTheBody(t *testing.T) {
 	st := testStore(t)
 	ts := newServer(t, st)
 	account(t, ts, "1000")
@@ -283,10 +287,63 @@ func TestTheClientProtocolIsUnchangedByTheWebsite(t *testing.T) {
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
-	if !strings.HasPrefix(string(body), "\n") {
-		t.Errorf("/cert lost its leading blank line: %q", string(body))
+	if !strings.HasPrefix(string(body), "{") {
+		t.Errorf("/cert body does not start with the object: %q", string(body))
 	}
 	if !resp.Close {
 		t.Error("/cert kept the connection alive; the client's request queue would stall")
+	}
+}
+
+// A transport failure reaches the game in the shape every ordinal answers in,
+// so the client can read it with the parser it already has.
+//
+// The 401 matters most: api.cs keys off field 0 to know the session lapsed and
+// drop the token. Before this it grepped an HTML error page for the string
+// "401", which is what the page existed for.
+func TestAFaultAnswersInTheOrdinalShape(t *testing.T) {
+	st := testStore(t)
+	ts := newServer(t, st)
+
+	resp, err := ts.Client().PostForm(ts.URL+"/db", map[string][]string{
+		"guid": {"1000"}, "uuid": {"not-a-session"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401", resp.StatusCode)
+	}
+	if !resp.Close {
+		t.Error("a fault kept the connection alive")
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("content type %q, want JSON -- an HTML page is what this replaced", ct)
+	}
+
+	var answer struct {
+		Status string   `json:"status"`
+		Result string   `json:"result"`
+		Rows   []string `json:"rows"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+		t.Fatalf("a fault must be parseable by the client's own parser: %v", err)
+	}
+
+	code, text, ok := strings.Cut(answer.Status, "\t")
+	if !ok {
+		t.Fatalf("status %q is not tab-separated", answer.Status)
+	}
+	if code != "401" {
+		t.Errorf("status field 0 is %q, want 401", code)
+	}
+	// Field 1 goes into a MessageBoxOK, so it has to read like a sentence.
+	if !strings.HasSuffix(text, ".") {
+		t.Errorf("status field 1 %q does not read like a sentence", text)
+	}
+	if answer.Rows == nil {
+		t.Error("rows is null; the client iterates it without checking")
 	}
 }

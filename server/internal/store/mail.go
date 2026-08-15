@@ -3,127 +3,22 @@ package store
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-
-	"github.com/henrik/tnbrowser-server/internal/model"
 )
 
-// Folders. The original EmailGui had these three tabs; TribesNext's API had no
-// folder concept at all, which is why the mod hides two of them today.
+// Folders. The stock EmailGui has these three tabs, and all three work: a sent
+// message is kept in the sender's Sent folder, and deleting moves a message to
+// Deleted before a second delete purges it.
 const (
 	FolderInbox   = "inbox"
 	FolderSent    = "sent"
 	FolderDeleted = "deleted"
 )
 
-func validFolder(f string) string {
-	switch f {
-	case FolderSent, FolderDeleted:
-		return f
-	default:
-		return FolderInbox
-	}
-}
-
-// MailCount is the count method: how many messages are in the inbox.
-//
-// Not "how many are unread", which would be the more useful indicator: the
-// reference implementation counts everything in the box, and the live server's
-// only observable answer (0, on an empty inbox) does not distinguish the two.
-// Matching the reference keeps the two backends interchangeable; unread state
-// is carried per message, so a client can count either.
-func (s *Store) MailCount(ctx context.Context, guid string) (int, error) {
-	var n int
-	err := s.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM mail WHERE owner_guid = $1 AND folder = $2`,
-		guid, FolderInbox).Scan(&n)
-	return n, err
-}
-
-// MailList is `read` with no id: the messages in a folder, newest first.
-//
-// Bodies are included. The original fetched them separately, but a mailbox here
-// is small and it lets the client render a selected message with no second
-// round trip -- which is what TNBrowser's cached-list path already expects.
-func (s *Store) MailList(ctx context.Context, guid, folder string) ([]model.Message, error) {
-	folder = validFolder(folder)
-
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, from_guid, from_name, to_guid, to_name, subject, body, sent, unread, folder
-		  FROM mail WHERE owner_guid = $1 AND folder = $2
-		 ORDER BY sent DESC LIMIT 200`, guid, folder)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []model.Message{}
-	for rows.Next() {
-		m, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	return out, rows.Err()
-}
-
-// MailRead fetches one message and marks it read.
-//
-// Scoped to the owner: a player asking for someone else's message id gets
-// nothing, rather than someone else's mail.
-func (s *Store) MailRead(ctx context.Context, guid string, id int64) ([]model.Message, error) {
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, from_guid, from_name, to_guid, to_name, subject, body, sent, unread, folder
-		  FROM mail WHERE owner_guid = $1 AND id = $2`, guid, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := []model.Message{}
-	for rows.Next() {
-		m, err := scanMessage(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, m)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	if len(out) > 0 {
-		if _, err := s.pool.Exec(ctx,
-			`UPDATE mail SET unread = FALSE WHERE owner_guid = $1 AND id = $2`, guid, id); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
-func scanMessage(rows pgx.Rows) (model.Message, error) {
-	var (
-		m      model.Message
-		id     int64
-		sent   int64
-		unread bool
-	)
-	if err := rows.Scan(&id, &m.FromGUID, &m.From, &m.ToGUID, &m.To,
-		&m.Subject, &m.Body, &sent, &unread, &m.Folder); err != nil {
-		return m, err
-	}
-	m.ID = strconv.FormatInt(id, 10)
-	m.Date = strconv.FormatInt(sent, 10)
-	m.Unread = model.Bool(unread)
-	return m, nil
-}
-
 // MailDelete moves a message to the Deleted folder, and purges it if it was
-// already there -- the two-stage delete the original's Deleted tab implied.
+// already there -- the two-stage delete the stock Deleted tab implies.
 func (s *Store) MailDelete(ctx context.Context, guid string, id int64) error {
 	return s.tx(ctx, func(tx pgx.Tx) error {
 		var folder string
@@ -150,9 +45,6 @@ func (s *Store) MailDelete(ctx context.Context, guid string, id int64) error {
 
 // MailSend delivers a message: one row per recipient's inbox, one in the
 // sender's Sent folder.
-//
-// This is the method TribesNext refuses outright, so it is the clearest
-// behavioural difference between this backend and theirs.
 //
 // to and cc are the comma-separated lists the compose window assembled. They
 // are stored verbatim alongside every copy as well as being resolved, because

@@ -306,13 +306,15 @@ The image itself is ordinary, so none of this is required: `docker build
 
 ## API
 
-Paths and shapes are TribesNext's, so the client needs no new code:
+What the game client calls:
 
-- `/tn/json/json_browser.php` — the 26 documented methods, plus `buddylist`,
-  `buddyadd`, `buddyremove`, `buddyclear`, `blocklist`, `blockadd`,
-  `blockremove`
-- `/tn/json/json_mail.php` — `count`, `read`, `delete`, `send`, with an optional
-  `folder` on read and delete
+- `/session` — negotiate a session. Plain text, five possible answers:
+  `CHALLENGE: <hex>`, `UUID: <token>`, `REFRESHED`, `TIMEOUT`, `ERR: <sentence>`.
+- `/db` — every one of the 61 stored-procedure ordinals the shipped community
+  scripts issue. An ordinal and its arguments go up; `{status, result, rows}`
+  comes back, with the status tab-separated: field 0 is the code
+  `onDatabaseQueryResult` tests and field 1 a sentence a pane may show.
+- `/cert` — the identity record `WONGetAuthInfo()` hands the shipped scripts.
 - `/clancert` — the signed clan record a player carries into a game. Session
   authenticated, because it says who the holder is and may therefore only be
   handed to them. Answers 404 when the server was started without `-clan-key`,
@@ -334,21 +336,32 @@ are not part of the client protocol and their shapes are free to change:
 - `GET /api/releases/latest` — where the newest `.vl2` archives are
 - `GET /` — the app itself, and any path the browser routes itself
 
-They answer plain JSON with no leading blank line and keep the connection alive,
-which is the opposite of what the client's routes do and deliberately so: see
-the comment at the top of `internal/api/site.go`.
+They keep the connection alive, which is the opposite of what the client's
+routes do and deliberately so: see the comment at the top of
+`internal/api/site.go`.
 
-Two behavioural differences from TribesNext, both intentional:
+### Failures on the client's routes
 
-- **`send` works.** Theirs refuses every payload shape.
-- **`username` is refused**, and says why: the account name belongs to
-  TribesNext and is refreshed here on every verified request, so changing it
-  locally would be undone within the minute.
+A transport failure — no session, a fault of ours — answers in the same
+`{status, result, rows}` shape an ordinal does, with the HTTP code in field 0 of
+the status and a sentence in field 1. That is the one shape the client can
+always parse, so a 500 arrives as something a pane can show rather than as
+"Unreadable response from the community server".
+
+`401` is the one the client acts on: `api.cs` reads field 0, drops the session
+token and lets the next request negotiate a fresh one. This used to be an HTML
+error page that the client grepped for the string `401`, which is what the page
+was for.
+
+One refusal is worth knowing about: **`username` is refused**, and says why. The
+account name belongs to the player's TribesNext account and is refreshed here
+from their certificate on every verified request, so changing it locally would
+be undone within the minute.
 
 ## Permissions
 
 Rank rules are enforced in `internal/store`, never in the client. The client
-hides controls by rank for convenience, but a player can call any method
+hides controls by rank for convenience, but a player can call any ordinal
 directly, so every rule is checked again server-side:
 
 | action | minimum rank |

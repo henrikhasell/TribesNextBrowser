@@ -18,19 +18,18 @@
 //	GET  /api/releases/latest where to get the newest .vl2 (internal/release)
 //	GET  /                    the built React app (server/web)
 //
-// The interesting thing about this file is what is no longer in it. It used to
-// serve json_browser.php and json_mail.php -- TribesNext's method-and-JSON
-// protocol -- because the mod was a set of hand-built screens that spoke it.
-// The mod now runs the shipped screens instead, and the shipped screens speak
-// ordinals, so the whole method table went with them.
+// One quirk in here is deliberate and load-bearing: every answer to the game
+// closes the connection. Torque's HTTPObject reports a completed transfer only
+// as onDisconnect and has no other completion signal, so a keep-alive response
+// leaves the mod's request queue waiting forever on a transfer that finished.
+// See closeAfterResponse.
 //
-// Authentication is now ours, and it used not to be: this server asked
-// TribesNext whether a session token was real, which made someone else's uptime
-// a condition of anybody logging in here. It now checks the player's account
-// certificate against TribesNext's own signing key and challenges them to prove
-// they hold the private half -- the same thing every game server does, and for
-// the same reason: the proof is in the certificate, so the issuer does not have
-// to be reachable to confirm it. See internal/auth.
+// Identity comes from TribesNext and is checked here rather than asked about:
+// the player's account certificate is verified against TribesNext's pinned
+// signing key, and they are challenged to prove they hold the private half.
+// That is what every game server does, and for the same reason -- the proof is
+// in the certificate, so the issuer does not have to be reachable. Nothing in
+// this server makes an outbound call to authenticate anybody. See internal/auth.
 package api
 
 import (
@@ -38,6 +37,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -137,11 +137,12 @@ func (s *Server) Routes() http.Handler {
 //	response      ->  "UUID: <token>"      you did
 //	uuid          ->  "REFRESHED"          keepalive, or "TIMEOUT" if it lapsed
 //
-// Plain text lines rather than JSON, and deliberately: this is the wire format
-// TribesNext's own robot login speaks, and the client's session layer already
-// parses it (session.cs:261-316) along with its backoff and its retry rules.
-// Keeping the format meant the client change was one URL and one extra
-// parameter, and none of the hard-won behaviour around it had to be touched.
+// Plain text lines rather than JSON, and deliberately. This is the login path:
+// it runs before anything else works, it has exactly five possible answers, and
+// keeping it to one line each means the session layer can read it with
+// getSubStr and no parser at all. The client's backoff and retry rules
+// (session.cs:261-316) are built on that, and there is nothing JSON would buy
+// them.
 //
 // Every failure answers "ERR: <sentence>", which the client shows and then
 // retries with a quadratic backoff. No failure here distinguishes "no such
@@ -213,8 +214,7 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// sessionLine writes one plain-text line, with the blank first line the client
-// tolerates from the live server (session.cs:264 skips it).
+// sessionLine writes one plain-text line: the whole of a session response.
 func sessionLine(w http.ResponseWriter, line string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
@@ -259,7 +259,8 @@ func (s *Server) handleDB(w http.ResponseWriter, r *http.Request) {
 		// reaching here means we are broken and should say so as a 500 rather
 		// than dress it up as a rejected request.
 		s.Log.Error("ordinal failed", "form", req.Form, "ordinal", req.Ordinal, "err", err)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		gameFault(w, http.StatusInternalServerError,
+			"The community server failed on that request.")
 		return
 	}
 
@@ -282,7 +283,8 @@ func (s *Server) handleCert(w http.ResponseWriter, r *http.Request) {
 	cert, err := dbproxy.Certificate(c)
 	if err != nil {
 		s.Log.Error("certificate failed", "guid", c.GUID, "err", err)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		gameFault(w, http.StatusInternalServerError,
+			"The community server could not build your identity record.")
 		return
 	}
 	writeJSON(w, struct {
@@ -304,7 +306,8 @@ func (s *Server) handleCert(w http.ResponseWriter, r *http.Request) {
 // does no database work to answer a request it cannot serve.
 func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 	if s.ClanCerts == nil {
-		fatal(w, http.StatusNotFound, "404 Not Found")
+		gameFault(w, http.StatusNotFound,
+			"This community server does not issue tribe certificates.")
 		return
 	}
 
@@ -316,14 +319,16 @@ func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 	record, err := dbproxy.Certificate(c)
 	if err != nil {
 		s.Log.Error("clan certificate record", "guid", c.GUID, "err", err)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		gameFault(w, http.StatusInternalServerError,
+			"The community server could not build your tribe record.")
 		return
 	}
 
 	cert, err := s.ClanCerts.Sign(c.GUID, record, time.Now())
 	if err != nil {
 		s.Log.Error("signing a clan certificate", "guid", c.GUID, "err", err)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		gameFault(w, http.StatusInternalServerError,
+			"The community server could not sign your tribe record.")
 		return
 	}
 
@@ -346,7 +351,7 @@ func (s *Server) handleClanCert(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 	guid := r.FormValue("guid")
 	if guid == "" {
-		fatal(w, http.StatusNotImplemented, "501 Not Implemented")
+		gameFault(w, http.StatusNotImplemented, "That lookup needs a guid.")
 		return
 	}
 
@@ -355,14 +360,17 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		// An unknown player is not an error: they simply have no tag here, and
-		// the mod should leave their name alone.
+		// a reader should leave their name alone.
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = w.Write([]byte("\n"))
 		return
 	}
 
+	// The record and nothing before it. It used to be preceded by a blank line,
+	// which was framing rather than layout -- a leading newline puts an empty
+	// string where field 0 should be, and field 0 is the warrior's name.
 	w.Header().Set("Content-Type", "text/plain")
-	_, _ = w.Write([]byte("\n" + cert + "\n"))
+	_, _ = w.Write([]byte(cert + "\n"))
 }
 
 //-----------------------------------------------------------------------------
@@ -374,21 +382,21 @@ func (s *Server) handleAuthInfo(w http.ResponseWriter, r *http.Request) {
 // false, so a caller is a two-line guard.
 func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.Ctx, bool) {
 	if err := r.ParseForm(); err != nil {
-		fatal(w, http.StatusBadRequest, "400 Bad Request")
+		gameFault(w, http.StatusBadRequest, "That request could not be read.")
 		return nil, false
 	}
 
 	guid := r.FormValue("guid")
 	uuid := r.FormValue("uuid")
 	if guid == "" {
-		fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+		gameFault(w, http.StatusUnauthorized, "Session expired. Please try again.")
 		return nil, false
 	}
 
 	id, ok := s.Sessions.Lookup(guid, uuid)
 	if !ok {
 		if !s.TrustGUID {
-			fatal(w, http.StatusUnauthorized, "401 Authentication Required")
+			gameFault(w, http.StatusUnauthorized, "Session expired. Please try again.")
 			return nil, false
 		}
 		// The test bypass. A bare GUID carries no name, so it is read back out
@@ -401,7 +409,8 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 	created, err := s.Store.EnsureAccount(r.Context(), id.GUID, id.Name, id.Created)
 	if err != nil {
 		s.Log.Error("ensure account", "err", err, "guid", id.GUID)
-		fatal(w, http.StatusInternalServerError, "500 Internal Server Error")
+		gameFault(w, http.StatusInternalServerError,
+			"The community server could not reach its database.")
 		return nil, false
 	}
 
@@ -434,11 +443,11 @@ func (s *Server) authenticate(w http.ResponseWriter, r *http.Request) (*dbproxy.
 // logRequests writes one line per request: what was asked, by whom, what came
 // back, and how long it took.
 //
-// The uuid is deliberately never logged. It is a bearer credential that works
-// against TribesNext itself and not just here, so a log file holding one would
-// be as sensitive as a password store -- and logs get pasted into bug reports.
-// The guid is logged: it identifies the player but grants nothing, and without
-// it a log cannot answer "did that player's request arrive?".
+// The uuid is deliberately never logged. It is a bearer credential: anyone
+// holding one is that player here until it lapses, so a log file full of them
+// would be as sensitive as a password store -- and logs get pasted into bug
+// reports. The guid is logged: it identifies the player but grants nothing, and
+// without it a log cannot answer "did that player's request arrive?".
 func (s *Server) logRequests(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
@@ -517,14 +526,17 @@ func (w *statusRecorder) Write(b []byte) (int, error) {
 	return n, err
 }
 
-// writeJSON emits the body, preceded by the blank line the live TribesNext
-// server sends. The client trims it either way; reproducing it keeps a curl
-// session against either backend byte-comparable.
+// writeJSON emits an answer to the game client.
+//
+// It used to write a blank line before the body, because the backend this
+// replaced did and a curl session against either was then byte-comparable.
+// Nothing needs that now: the client trims the body before parsing it
+// (api.cs:304) and the session layer skips blank lines outright
+// (session.cs:399).
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	closeAfterResponse(w)
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("\n"))
 
 	// HTML escaping off: Go would turn < and > into </>, and rows
 	// legitimately carry markup the game renders -- every invitation mail has
@@ -535,9 +547,6 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = enc.Encode(v)
 }
 
-// fatal reproduces the HTML error body the PHP backend produced, so the
-// client's existing error handling (which sniffs for "401"/"Authentication")
-// behaves identically against either server.
 // closeAfterResponse ends the connection once the body is written.
 //
 // Not an optimisation -- a correctness requirement, and the client's, not
@@ -547,17 +556,37 @@ func writeJSON(w http.ResponseWriter, v any) {
 // with the answer already in its buffer: $TNB::Busy stays 1, and every
 // subsequent request waits behind a transfer that finished minutes ago.
 //
-// Found by sweeping the ordinals against this server -- the client answered 10
-// and then hung, while the same sweep against tools/mockserver.py (which sends
-// Connection: close) passed. Go's keep-alive is the only difference between
-// the two.
+// Found by sweeping the ordinals: the client answered ten of them and then
+// hung with the eleventh answer already sitting in its buffer, waiting for a
+// socket close that a keep-alive response never sends.
 func closeAfterResponse(w http.ResponseWriter) {
 	w.Header().Set("Connection", "close")
 }
 
-func fatal(w http.ResponseWriter, code int, text string) {
-	w.Header().Set("Content-Type", "text/html")
+// gameFault reports a transport failure to the game client -- no session, a
+// route it should not have called, or a fault of ours.
+//
+// It answers in the same {status,result,rows} shape every ordinal uses, which
+// is the one thing the client can always parse. The HTTP code goes in field 0
+// of status, where onDatabaseQueryResult already looks, and a sentence in field
+// 1, where several panes already read one to put in a MessageBoxOK. So a 500
+// now says something a player can repeat to somebody, instead of arriving as
+// "Unreadable response from the community server."
+//
+// This used to be an HTML page -- "<h1>Fatal Error</h1><h2>401 Authentication
+// Required</h2>" -- copied from the backend this replaced so that the client's
+// habit of grepping the raw body for "401" would keep working. The client reads
+// the field now (api.cs), and nothing here imitates anybody.
+func gameFault(w http.ResponseWriter, code int, msg string) {
+	w.Header().Set("Content-Type", "application/json")
 	closeAfterResponse(w)
 	w.WriteHeader(code)
-	_, _ = w.Write([]byte("<h1>Fatal Error</h1><h2>" + text + "</h2>"))
+
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(dbproxy.Answer{
+		Status: strconv.Itoa(code) + "\t" + msg,
+		Result: "0",
+		Rows:   []string{},
+	})
 }

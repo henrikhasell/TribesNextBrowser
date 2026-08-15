@@ -11,7 +11,7 @@ import (
 	"github.com/henrik/tnbrowser-server/internal/model"
 )
 
-// ClanView is the clanview method: the clan plus its full roster.
+// ClanView is a tribe and its full roster.
 func (s *Store) ClanView(ctx context.Context, id int64) (*model.Clan, error) {
 	var (
 		c         model.Clan
@@ -69,37 +69,6 @@ func (s *Store) ClanView(ctx context.Context, id int64) (*model.Clan, error) {
 		c.Members = append(c.Members, m)
 	}
 	return &c, rows.Err()
-}
-
-// ClanSearch matches anywhere in the name, unlike player search which anchors
-// at the start -- that is the asymmetry the original had.
-func (s *Store) ClanSearch(ctx context.Context, q string) ([]model.ClanSearchHit, error) {
-	hits := []model.ClanSearchHit{}
-	if strings.TrimSpace(q) == "" {
-		return hits, nil
-	}
-
-	rows, err := s.pool.Query(ctx, `
-		SELECT id, name FROM clans
-		 WHERE name ILIKE '%' || $1 || '%' AND active
-		 ORDER BY name LIMIT 100`, q)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var (
-			h  model.ClanSearchHit
-			id int64
-		)
-		if err := rows.Scan(&id, &h.Name); err != nil {
-			return nil, err
-		}
-		h.ID = strconv.FormatInt(id, 10)
-		hits = append(hits, h)
-	}
-	return hits, rows.Err()
 }
 
 func (s *Store) ClanHistory(ctx context.Context, id int64) ([]model.HistoryEntry, error) {
@@ -197,28 +166,9 @@ func (s *Store) SetClanInfo(ctx context.Context, guid string, id int64, v string
 		func(clan string) string { return "Changed the description of " + clan })
 }
 
-func (s *Store) SetClanWebsite(ctx context.Context, guid string, id int64, v string) error {
-	return s.setClanField(ctx, guid, id, "website", v, rankToEditInfo,
-		func(clan string) string {
-			if v == "" {
-				return "Cleared the web address of " + clan
-			}
-			return "Changed the web address of " + clan + " to " + Ref(RefWeb, v)
-		})
-}
-
 func (s *Store) SetClanPicture(ctx context.Context, guid string, id int64, v string) error {
 	return s.setClanField(ctx, guid, id, "picture", v, rankToEditInfo,
 		func(clan string) string { return "Changed the graphic of " + clan })
-}
-
-func (s *Store) SetClanName(ctx context.Context, guid string, id int64, v string) error {
-	v = strings.TrimSpace(v)
-	if v == "" {
-		return refuse("a clan needs a name")
-	}
-	return s.setClanField(ctx, guid, id, "name", v, rankToRename,
-		func(clan string) string { return "Renamed " + clan + " to " + Ref(RefClan, v) })
 }
 
 func (s *Store) SetClanRecruiting(ctx context.Context, guid string, id int64, on bool) error {
@@ -290,65 +240,6 @@ func (s *Store) Invite(ctx context.Context, guid string, id int64, target string
 		return s.note(ctx, tx, "clan", strconv.FormatInt(id, 10),
 			"Invited "+Ref(RefWarrior, warriorNameTx(ctx, tx, target)))
 	})
-}
-
-// ClanInvites lists a clan's outstanding invitations.
-func (s *Store) ClanInvites(ctx context.Context, guid string, id int64) ([]model.Person, error) {
-	if _, err := s.requireRankOutsideTx(ctx, id, guid, rankToInvite); err != nil {
-		return nil, err
-	}
-
-	// last_seen and created are carried so the view can do what stock's did:
-	// grey out whoever is offline, and fill the INVITED column beside the name.
-	out := []model.Person{}
-	rows, err := s.pool.Query(ctx, `
-		SELECT i.guid, a.name, COALESCE(c.tag, ''), COALESCE(c.append, FALSE),
-		       a.last_seen, i.created
-		  FROM clan_invites i
-		  JOIN accounts a ON a.guid = i.guid
-		  LEFT JOIN clans c ON c.id = a.active_clan
-		 WHERE i.clan_id = $1
-		 ORDER BY i.created DESC`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	now := s.now()
-	for rows.Next() {
-		var (
-			p        model.Person
-			app      bool
-			lastSeen int64
-			created  int64
-		)
-		if err := rows.Scan(&p.GUID, &p.Name, &p.Tag, &app, &lastSeen, &created); err != nil {
-			return nil, err
-		}
-		p.Append = model.Bool(app)
-		p.Online = online(lastSeen, now)
-		p.Since = strconv.FormatInt(created, 10)
-		p.Hits = "0"
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// requireRankOutsideTx is the read-path equivalent of requireRank.
-func (s *Store) requireRankOutsideTx(ctx context.Context, id int64, guid string, min int) (int, error) {
-	var rank int
-	err := s.pool.QueryRow(ctx,
-		`SELECT rank FROM clan_members WHERE clan_id = $1 AND guid = $2`, id, guid).Scan(&rank)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, refuse("you are not a member of that clan")
-	}
-	if err != nil {
-		return 0, err
-	}
-	if rank < min {
-		return 0, refuse("insufficient rank")
-	}
-	return rank, nil
 }
 
 // AcceptInvite joins the clan, at the bottom rank. It answers with the GUID of
@@ -563,8 +454,8 @@ func (s *Store) Kick(ctx context.Context, guid string, id int64, target string) 
 }
 
 // Disband records or withdraws one leader's authorisation. The clan is only
-// deactivated once every leader has voted, which is what made this an
-// "authorise" rather than a "delete" in the original.
+// deactivated once every leader has voted, which is why the shipped dialog
+// calls it authorising rather than deleting.
 //
 // It answers with the members to tell, and only on the vote that actually
 // disbands the clan -- the earlier authorisations change nothing anyone can

@@ -2,10 +2,8 @@
 // rules are enforced.
 //
 // The client shows or hides administration controls by rank, but that is a
-// convenience: nothing there can be trusted, since a player can call any method
-// directly. Every rule below is therefore checked again here, and the rank
-// thresholds match what TribesNext's backend enforced (recorded in
-// tools/mockserver.py, which was written against the published PHP).
+// convenience: nothing there can be trusted, since a player can call any
+// ordinal directly. Every rule below is therefore checked again here.
 package store
 
 import (
@@ -38,9 +36,10 @@ const (
 	rankToDisband  = RankLeader
 )
 
-// UserError is a refusal the player should see, as opposed to a fault. The API
-// layer turns it into {"status":"error","msg":...}; anything else becomes a
-// 500 and is logged, because it means we are broken rather than they are.
+// UserError is a refusal the player should see, as opposed to a fault.
+// dbproxy.Dispatch turns it into a non-zero status the pane shows; anything
+// else becomes a 500 and is logged, because it means we are broken rather than
+// they are.
 type UserError struct{ Msg string }
 
 func (e *UserError) Error() string { return e.Msg }
@@ -49,9 +48,10 @@ func refuse(format string, args ...any) error {
 	return &UserError{Msg: fmt.Sprintf(format, args...)}
 }
 
-// ErrNotFound is returned for a subject that does not exist. Read methods turn
-// it into an empty result, matching the original API: viewing a missing clan
-// answers `[]` rather than an error.
+// ErrNotFound is returned for a subject that does not exist. Read paths turn it
+// into an empty result rather than a failure: the shipped panes follow links
+// out of old history and mail, so a subject that has gone should render as an
+// empty pane and not as an error dialog.
 var ErrNotFound = errors.New("not found")
 
 type Store struct {
@@ -166,7 +166,7 @@ func warriorNameTx(ctx context.Context, tx pgx.Tx, guid string) string {
 	return name
 }
 
-// note appends to the audit trail behind userhistory/clanhistory.
+// note appends to the audit trail a warrior or tribe page shows.
 func (s *Store) note(ctx context.Context, q pgx.Tx, subjectType, subjectID, event string) error {
 	_, err := q.Exec(ctx,
 		`INSERT INTO history (subject_type, subject_id, event, at) VALUES ($1, $2, $3, $4)`,
@@ -181,8 +181,8 @@ func (s *Store) note(ctx context.Context, q pgx.Tx, subjectType, subjectID, even
 // in once -- there is no separate registration step.
 //
 // registered is the account's TribesNext registration date, which internal/auth
-// reads out of the same userview round trip that verifies the session. It is
-// used only by the INSERT -- the DO UPDATE deliberately does not list created,
+// reads out of the signed account certificate it has just verified. It is used
+// only by the INSERT -- the DO UPDATE deliberately does not list created,
 // so a player's registration date is written once and never moved afterwards.
 // Pass 0 when upstream had none to give and this falls back to first sighting,
 // which is what every row created before this existed holds.
