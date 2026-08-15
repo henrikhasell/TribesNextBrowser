@@ -51,6 +51,22 @@ jobs:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/web/package-lock.json
+
+      # Before anything Go, because the binary embeds this output. Without it
+      # the suite would run against the .gitkeep placeholder and prove nothing
+      # about the site the image actually serves. `npm run build` type-checks
+      # first, so a broken .tsx fails here rather than in the Docker build.
+      - name: Build the website
+        working-directory: server/web
+        run: |
+          npm ci
+          npm run build
+
       - name: Vet
         working-directory: server
         run: go vet ./...

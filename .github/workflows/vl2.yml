@@ -4,14 +4,30 @@
 # a .vl2 is only useful once it is built for a particular deployment. This
 # workflow builds the ones for tnb.k8s.henrik.si and releases them.
 #
-# One release per commit, tagged build-<sha>, and a tag once pushed is never
-# touched again: the point of a download link someone recorded is that it keeps
-# handing out the bytes they recorded it for. The stable link for anyone who
-# just wants the current build is GitHub's own pointer at the newest release,
+# A release is a tag, and nothing else.
+#
+# This used to publish one release per commit to main, tagged build-<sha>. That
+# made every merge a release, which is a strange thing to ask a player to choose
+# between: the download page listed a version nobody had decided to ship, and
+# "the newest build" and "the version we mean" were not the same thing. Now a
+# release happens when somebody names one --
+#
+#     git tag -a v1.1.0 -m "..." && git push origin v1.1.0
+#
+# -- and the tag is the version. Nothing here creates a tag; the tag is what
+# starts it.
+#
+# A published tag is still never rewritten. The point of a download link someone
+# recorded is that it keeps handing out the bytes they recorded it for, and
+# GitHub's own pointer at the newest release,
 #
 #   https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
 #
-# which moves without any tag having to.
+# moves without any tag having to.
+#
+# Pushes to main no longer build. Pull requests still do, without publishing:
+# that check is what stops a broken build-vl2.sh from being discovered at the
+# moment somebody is trying to cut a release.
 #
 # HTTPS is deliberate. Stock Torque's HTTPObject spoke plain HTTP only; the
 # TribesNext client patch reimplements it on libcurl and ships a CA bundle, and
@@ -21,25 +37,25 @@ name: vl2
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'TNBrowser/**'
-      - 'TNBrowserServer/**'
-      - 'tools/build-vl2.sh'
-      - '.github/workflows/vl2.yml'
+    # Tags only, and no paths filter with them: a tag push carries no useful
+    # commit range to filter against, so a filter here would skip the release
+    # rather than narrow it.
+    tags:
+      - 'v*'
   pull_request:
     paths:
       - 'TNBrowser/**'
       - 'TNBrowserServer/**'
       - 'tools/build-vl2.sh'
+      - '.github/workflows/vl2.yml'
   workflow_dispatch:
 
 env:
   HOST: https://tnb.k8s.henrik.si
 
-# Nothing on main is shared between runs -- each commit gets its own tag -- so
-# only branch builds are worth cancelling, and there every push but the last is
-# a build nobody will look at.
+# A tag run is never worth cancelling -- there is only ever one, and it is the
+# release. On a pull request every push but the last is a build nobody will
+# look at.
 concurrency:
   group: vl2-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -82,7 +98,7 @@ jobs:
 
   publish:
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
 
     # Creating a release writes to the repository.
@@ -97,25 +113,27 @@ jobs:
           name: vl2
           path: dist
 
-      # --latest is what moves the /releases/latest/ pointer, and it is the only
-      # thing here that moves at all. A re-run of an already published commit is
-      # a no-op rather than a failure: the tag exists, and rewriting it is the
-      # one thing this must not do.
+      # --latest is what moves the /releases/latest/ pointer, and it is what the
+      # website's download page follows. A re-run of an already published tag is
+      # a no-op rather than a failure: rewriting a published release is the one
+      # thing this must not do.
+      #
+      # No --target. The tag already exists -- pushing it is what started this
+      # run -- so naming a commit here could only disagree with it.
       - name: Publish
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          TAG="build-${SHA:0:7}"
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
-            echo "$TAG is already published, and published tags are not rewritten."
+            echo "$TAG is already published, and published releases are not rewritten."
             exit 0
           fi
           gh release create "$TAG" dist/*.vl2 \
             --repo "$REPO" \
-            --target "$SHA" \
             --latest \
             --title "$TAG" \
             --notes "Built from \`$SHA\`, pointing at $HOST.

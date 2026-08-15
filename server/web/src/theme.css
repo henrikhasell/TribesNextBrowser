@@ -1,0 +1,694 @@
+/*
+ * The Tribes 2 skin.
+ *
+ * Everything here is taken from the game's own screens -- images/browser.png
+ * and images/tmail.png in the repository root are the two being imitated. The
+ * grammar of that UI is small and worth stating, because keeping to it is what
+ * makes an added page look like it belongs:
+ *
+ *   - One bright cyan rule around every panel, glowing outward, on near-black.
+ *   - Headings are uppercase and widely letter-spaced. Body text is not.
+ *   - Labels are pale cyan; the values beside them are amber. That contrast is
+ *     doing the work of the game's "Registered: 2026-08-10" lines.
+ *   - Lists are green text on dark, with the selected row inverted into a solid
+ *     teal band.
+ *   - A tab bar sits along the bottom, not the top.
+ *
+ * Colours are declared once, here, and used by name everywhere else.
+ */
+
+@font-face {
+  font-family: 'Michroma';
+  src: url('./assets/michroma-latin.woff2') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  /* The frame */
+  --void: #04100f;
+  --void-deep: #010807;
+  --edge: #3fd0c8;
+  --edge-dim: #1c706b;
+  --panel-top: #0e3b39;
+  --panel-bottom: #072423;
+  --panel-inner: #061e1d;
+
+  /* Text */
+  --ink: #b6e8e0;
+  --ink-bright: #d8fbf5;
+  --ink-dim: #6ba9a2;
+  --list: #57d9a3;
+  --amber: #e8a33d;
+  --link: #7fe3c0;
+  --alarm: #ef7b6a;
+
+  /* Bands and bars */
+  --head-top: #1d6f68;
+  --head-bottom: #10504b;
+  --select-top: #3fbfa1;
+  --select-bottom: #23806c;
+  --on-select: #04201a;
+
+  --display: 'Michroma', 'Eurostile', 'Agency FB', 'Trebuchet MS', system-ui, sans-serif;
+  --body: 'Trebuchet MS', 'Segoe UI', system-ui, sans-serif;
+
+  --glow: 0 0 12px rgba(63, 208, 200, 0.35);
+  --glow-soft: 0 0 6px rgba(63, 208, 200, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+}
+
+body {
+  background:
+    radial-gradient(120% 90% at 50% 0%, #0a2321 0%, var(--void) 55%, var(--void-deep) 100%)
+    fixed;
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 15px;
+  line-height: 1.5;
+  /* The game renders at a fixed size and its type is crisp rather than smooth.
+     This is the nearest a browser gets without hinting the fonts by hand. */
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--link);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--ink-bright);
+}
+
+/* --------------------------------------------------------------------------
+   The frame: one screen of the game, from title bar to tab bar
+   -------------------------------------------------------------------------- */
+
+.frame {
+  max-width: 1100px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding: 18px 16px 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.frame__body {
+  flex: 1;
+  border: 2px solid var(--edge);
+  border-radius: 8px;
+  background: linear-gradient(180deg, var(--panel-top), var(--panel-bottom));
+  box-shadow: var(--glow), inset 0 0 40px rgba(0, 0, 0, 0.5);
+  padding: 0 0 18px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.titlebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 12px;
+  border-bottom: 1px solid var(--edge-dim);
+}
+
+.titlebar__title {
+  flex: 1;
+  text-align: center;
+  margin: 0;
+  font-family: var(--display);
+  font-size: clamp(15px, 2.6vw, 23px);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-bright);
+  text-shadow: 0 0 14px rgba(63, 208, 200, 0.55);
+}
+
+/* The close box the game puts at the top right. Decorative: it goes home. */
+.titlebar__close {
+  width: 30px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 2px solid var(--edge);
+  border-radius: 4px;
+  background: linear-gradient(180deg, #10504b, #072826);
+  color: var(--ink-bright);
+  text-decoration: none;
+  font-size: 15px;
+  line-height: 1;
+  flex: none;
+}
+
+.titlebar__close:hover {
+  background: linear-gradient(180deg, var(--select-top), var(--select-bottom));
+  color: var(--on-select);
+}
+
+.frame__content {
+  flex: 1;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+/* The tab bar along the bottom, as the game has it. */
+.tabbar {
+  display: flex;
+  gap: 6px;
+  padding: 10px 0 14px;
+  flex-wrap: wrap;
+}
+
+.tabbar__brand {
+  font-family: var(--display);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  font-size: 13px;
+  color: var(--ink-bright);
+  border: 2px solid var(--edge);
+  border-radius: 5px;
+  background: linear-gradient(180deg, #0d4a45, #04201e);
+  padding: 9px 16px;
+  text-decoration: none;
+  box-shadow: var(--glow-soft);
+}
+
+.tab {
+  flex: 1 1 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 14px;
+  border: 1px solid var(--edge-dim);
+  border-radius: 5px;
+  background: linear-gradient(180deg, #0b312f, #05201f);
+  color: var(--ink-dim);
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+}
+
+.tab:hover {
+  color: var(--ink-bright);
+  border-color: var(--edge);
+}
+
+.tab--on {
+  color: var(--ink-bright);
+  border-color: var(--edge);
+  background: linear-gradient(180deg, #14615a, #0a3a37);
+  box-shadow: var(--glow-soft);
+}
+
+/* The indicator lamp beside each tab label. */
+.tab__lamp {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #0a2c2a;
+  border: 1px solid var(--edge-dim);
+  flex: none;
+}
+
+.tab--on .tab__lamp {
+  background: #5cf3c8;
+  border-color: #5cf3c8;
+  box-shadow: 0 0 8px #5cf3c8;
+}
+
+/* --------------------------------------------------------------------------
+   Panels
+   -------------------------------------------------------------------------- */
+
+.panel {
+  border: 1px solid var(--edge);
+  border-radius: 6px;
+  background: var(--panel-inner);
+  box-shadow: inset 0 0 30px rgba(0, 0, 0, 0.55);
+  position: relative;
+  min-width: 0;
+}
+
+/* The faded emblem the game floats behind its list panes. Drawn rather than
+   loaded: a repository of TorqueScript is no place for a decorative bitmap. */
+.panel--emblem::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(closest-side, rgba(63, 208, 200, 0.07), transparent 70%) center / 60% 90%
+      no-repeat,
+    conic-gradient(
+        from 30deg,
+        transparent 0deg 18deg,
+        rgba(63, 208, 200, 0.05) 18deg 22deg,
+        transparent 22deg 40deg
+      )
+      center / 55% 85% no-repeat;
+  border-radius: 6px;
+}
+
+.panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--edge-dim);
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-bright);
+  background: linear-gradient(180deg, rgba(29, 111, 104, 0.55), rgba(9, 45, 43, 0.3));
+}
+
+/* A version string in a panel heading keeps its own case: "V1.1.0" is not what
+   is written on the tag, and this is the one label that has to match it. */
+.panel__head .version {
+  text-transform: none;
+  letter-spacing: 0.04em;
+  color: var(--amber);
+}
+
+.panel__body {
+  padding: 12px;
+  position: relative;
+}
+
+/* A pane that takes the rest of the screen, the way the game's list panes do:
+   the mail inbox in images/tmail.png is a tall box with four rows in it, not a
+   box that shrinks to four rows. */
+.panel--grow {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.panel--grow .panel__body {
+  flex: 1;
+}
+
+.columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.columns--grow {
+  flex: 1;
+  align-items: stretch;
+}
+
+@media (max-width: 780px) {
+  .columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* --------------------------------------------------------------------------
+   Label and value, the game's profile lines
+   -------------------------------------------------------------------------- */
+
+.fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px 14px;
+  margin: 0;
+}
+
+.fields dt {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.fields dd {
+  margin: 0;
+  color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+/* Free text out of a profile: preserved as typed, because it was typed into a
+   box that wrapped it. */
+.prose {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  margin: 0;
+}
+
+/* --------------------------------------------------------------------------
+   Tables
+   -------------------------------------------------------------------------- */
+
+.tablewrap {
+  overflow-x: auto;
+}
+
+table.list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+  min-width: 460px;
+}
+
+table.list th {
+  text-align: left;
+  padding: 7px 10px;
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-bright);
+  background: linear-gradient(180deg, var(--head-top), var(--head-bottom));
+  border: 1px solid var(--edge-dim);
+  border-top: 0;
+  white-space: nowrap;
+}
+
+table.list td {
+  padding: 6px 10px;
+  color: var(--list);
+  border-bottom: 1px solid rgba(63, 208, 200, 0.12);
+  white-space: nowrap;
+}
+
+table.list td.wrap {
+  white-space: normal;
+}
+
+table.list tbody tr:hover td {
+  background: linear-gradient(180deg, var(--select-top), var(--select-bottom));
+  color: var(--on-select);
+}
+
+table.list tbody tr:hover a {
+  color: var(--on-select);
+}
+
+table.list a {
+  color: var(--list);
+  text-decoration: none;
+}
+
+table.list a:hover {
+  text-decoration: underline;
+}
+
+td.num {
+  color: var(--amber);
+  text-align: right;
+}
+
+th.num {
+  text-align: right;
+}
+
+/* --------------------------------------------------------------------------
+   Controls
+   -------------------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 2px solid var(--edge);
+  border-radius: 4px;
+  background: linear-gradient(180deg, #0f4442, #072826);
+  color: var(--ink-bright);
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: linear-gradient(180deg, var(--select-top), var(--select-bottom));
+  color: var(--on-select);
+  box-shadow: var(--glow);
+}
+
+.btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.btn--small {
+  padding: 6px 12px;
+  font-size: 11px;
+  border-width: 1px;
+}
+
+.search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.search input {
+  flex: 1;
+  min-width: 0;
+  padding: 7px 10px;
+  background: #041816;
+  border: 1px solid var(--edge-dim);
+  border-radius: 4px;
+  color: var(--ink-bright);
+  font-family: var(--body);
+  font-size: 14px;
+}
+
+.search input:focus {
+  outline: none;
+  border-color: var(--edge);
+  box-shadow: var(--glow-soft);
+}
+
+.search input::placeholder {
+  color: var(--ink-dim);
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding-top: 12px;
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+/* --------------------------------------------------------------------------
+   Small parts
+   -------------------------------------------------------------------------- */
+
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #0a2c2a;
+  border: 1px solid var(--edge-dim);
+  vertical-align: middle;
+}
+
+.dot--on {
+  background: #5cf3c8;
+  border-color: #5cf3c8;
+  box-shadow: 0 0 8px #5cf3c8;
+}
+
+.tag {
+  color: var(--amber);
+}
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border: 1px solid var(--edge-dim);
+  border-radius: 3px;
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-bright);
+}
+
+.badge--open {
+  border-color: #5cf3c8;
+  color: #5cf3c8;
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.stat {
+  border: 1px solid var(--edge-dim);
+  border-radius: 5px;
+  background: #041816;
+  padding: 12px;
+  text-align: center;
+}
+
+.stat__n {
+  display: block;
+  font-family: var(--display);
+  font-size: clamp(20px, 4vw, 30px);
+  color: var(--amber);
+  text-shadow: 0 0 14px rgba(232, 163, 61, 0.35);
+}
+
+.stat__label {
+  display: block;
+  font-family: var(--display);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-dim);
+  margin-top: 4px;
+}
+
+.history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.history li {
+  display: flex;
+  gap: 12px;
+  padding: 5px 0;
+  border-bottom: 1px solid rgba(63, 208, 200, 0.1);
+  font-size: 14px;
+}
+
+.history time {
+  color: var(--amber);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.note {
+  color: var(--ink-dim);
+  font-size: 13px;
+  margin: 0;
+}
+
+.alarm {
+  color: var(--alarm);
+}
+
+.empty {
+  padding: 24px 12px;
+  text-align: center;
+  color: var(--ink-dim);
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.crumb {
+  font-size: 13px;
+  color: var(--ink-dim);
+}
+
+.heading {
+  font-family: var(--display);
+  font-size: clamp(17px, 3vw, 25px);
+  color: var(--ink-bright);
+  margin: 0;
+  letter-spacing: 0.05em;
+  overflow-wrap: anywhere;
+}
+
+.download {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 12px;
+  border: 1px solid var(--edge-dim);
+  border-radius: 5px;
+  background: #041816;
+}
+
+.download + .download {
+  margin-top: 10px;
+}
+
+.download__what {
+  min-width: 0;
+}
+
+.download__name {
+  font-family: var(--display);
+  font-size: 13px;
+  letter-spacing: 0.08em;
+  color: var(--ink-bright);
+}
+
+.download__why {
+  font-size: 13px;
+  color: var(--ink-dim);
+  margin: 4px 0 0;
+}
+
+code {
+  font-family: 'Cascadia Mono', 'Consolas', monospace;
+  font-size: 0.92em;
+  color: var(--amber);
+  background: rgba(63, 208, 200, 0.08);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+
+ol.steps {
+  margin: 0;
+  padding-left: 20px;
+}
+
+ol.steps li {
+  margin-bottom: 8px;
+}

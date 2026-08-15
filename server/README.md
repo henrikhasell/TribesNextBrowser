@@ -135,6 +135,8 @@ go build -o tnserver ./cmd/tnserver
 | `-session-ttl` | | how long a session survives unused, default 30m |
 | `-dev-trust-guid` | `TNB_DEV_TRUST_GUID` | **insecure**: accept any guid without proof, for the test suites |
 | `-migrate` | `TNB_MIGRATE` | apply pending migrations and exit, instead of serving |
+| `-releases-repo` | `TNB_RELEASES_REPO` | GitHub `owner/repo` the download page offers the newest `.vl2` from; empty disables the lookup |
+| `-release-tag` | `TNB_RELEASE_TAG` | release the download page names when that lookup fails, default `release.DefaultTag` |
 
 `migrations/` is compiled into the binary, so `-migrate` needs no psql and no
 copy of this repository — which is what lets the deployed image be a distroless
@@ -164,6 +166,55 @@ or bake both into the packages so installing is a single file copy:
 One address is all the client needs now: sessions and data come from the same
 place. Every control the client offers is offered unconditionally — this backend
 serves them all, and the client reports a refusal if any backend ever cannot.
+
+## The website
+
+The same binary serves a public site at `/`: a download page for the current
+`.vl2` archives, and a read-only directory of the warriors and tribes registered
+here. It is React, and it is compiled into the binary — there is no second
+service to deploy and no static host to keep in step with the API.
+
+```sh
+cd web
+npm ci
+npm run build     # type-checks, then writes web/dist/
+```
+
+`web/dist` is what `//go:embed all:dist` picks up, so **the Go binary carries
+whatever was last built**. Build the site before building the server, or the
+binary answers `/` with a plain-text 503 saying exactly that. The Dockerfile
+does both in the right order, so `docker build server/` needs nothing installed.
+
+While working on the UI, run the two together:
+
+```sh
+./tnserver -dsn "..."        # one terminal
+cd web && npm run dev        # the other, on :5173
+```
+
+`npm run dev` proxies `/api` to `localhost:8080`, so the site reloads on save
+while reading real data.
+
+The download page asks GitHub for the newest release once every ten minutes and
+caches the answer — unauthenticated GitHub allows sixty requests an hour per
+address, which is per server rather than per visitor.
+
+When that call fails, or the repository is private, it falls back to the release
+named by `-release-tag` and links straight at it. Naming and linking move
+together on purpose: printing a version beside a `releases/latest/` link would
+claim to offer a build that the next release would silently replace. With no tag
+configured at all it names nothing and links at `latest`, which is honest in the
+other direction.
+
+`release.DefaultTag` is a constant because there is nothing to derive it from —
+the deployed image is built from a branch, not a tag, so the build knows no
+version number. Bump it in the commit you then tag and the two cannot disagree.
+Being stale costs a stale version on one panel while GitHub is unreachable, and
+nothing else: the live lookup overrides it whenever it works.
+
+> **The repository must be public for any of this to reach a visitor.** A
+> private repo answers the anonymous API with 404 *and* refuses anonymous asset
+> downloads, so the page falls back to links that themselves 404.
 
 ## Logs
 
@@ -273,6 +324,19 @@ Paths and shapes are TribesNext's, so the client needs no new code:
   and Postgres rather than an edge cache. Unauthenticated: everything it returns
   — a name and a clan tag — is on the scoreboard of every server that player
   joins.
+
+The website's own endpoints are separate, read-only and unauthenticated. They
+are not part of the client protocol and their shapes are free to change:
+
+- `GET /api/stats` — warriors, tribes, online now
+- `GET /api/warriors?q=&page=` and `GET /api/warriors/{guid}`
+- `GET /api/tribes?q=&page=` and `GET /api/tribes/{id}`
+- `GET /api/releases/latest` — where the newest `.vl2` archives are
+- `GET /` — the app itself, and any path the browser routes itself
+
+They answer plain JSON with no leading blank line and keep the connection alive,
+which is the opposite of what the client's routes do and deliberately so: see
+the comment at the top of `internal/api/site.go`.
 
 Two behavioural differences from TribesNext, both intentional:
 

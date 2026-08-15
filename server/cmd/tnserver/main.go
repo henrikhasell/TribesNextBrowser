@@ -29,6 +29,7 @@ import (
 	"github.com/henrik/tnbrowser-server/internal/auth"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/migrate"
+	"github.com/henrik/tnbrowser-server/internal/release"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -63,6 +64,20 @@ func main() {
 			"how long an issued clan certificate stays valid")
 		genKey = flag.String("genkey", "",
 			"write a new clan signing key to this path, print the mod settings, and exit")
+
+		// The website's download page. Empty switches off the GitHub lookup and
+		// leaves the page serving the permanent /releases/latest/download/ URLs,
+		// which is the right answer for a fork with no releases of its own.
+		releasesRepo = flag.String("releases-repo",
+			envOr("TNB_RELEASES_REPO", release.DefaultRepo),
+			"GitHub owner/repo the download page offers the newest .vl2 from")
+
+		// Which release to name when GitHub cannot be asked. See
+		// release.DefaultTag for why this is configuration and not something
+		// the build can work out for itself.
+		releaseTag = flag.String("release-tag",
+			envOr("TNB_RELEASE_TAG", release.DefaultTag),
+			"release the download page names when the GitHub lookup fails")
 	)
 	flag.Parse()
 
@@ -142,6 +157,7 @@ func main() {
 		Log:       log,
 		TrustGUID: *trustGUID,
 		ClanCerts: signer,
+		Releases:  release.New(*releasesRepo, *releaseTag, release.DefaultTTL),
 	}
 
 	httpSrv := &http.Server{

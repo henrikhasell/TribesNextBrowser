@@ -226,8 +226,14 @@ func (s *Store) EnsureAccount(ctx context.Context, guid, name string, registered
 // true for the player making the request and honest-ish for everyone else. When
 // the server-side mod starts reporting connects, this becomes a real lookup.
 func online(lastSeen, now int64) int {
-	if lastSeen > 0 && now-lastSeen < 300 {
+	if lastSeen > 0 && now-lastSeen < onlineWindow {
 		return 1
 	}
 	return 0
 }
+
+// onlineWindow is how recently a player must have been seen to count as here.
+// Named because the website counts the same thing in SQL (internal/store/
+// directory.go) and two thresholds that drifted apart would have the landing
+// page disagreeing with the roster beside it.
+const onlineWindow = 300

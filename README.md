@@ -93,6 +93,13 @@ TribesNext client:
 | `TNBrowser/` | the client mod: seven script files, no GUI | every player |
 | `server/` | a Go backend answering the 61 ordinals | whoever hosts the community |
 | `TNBrowserServer/` | a server-side mod that renders tribe tags into player names | game-server operators |
+| `server/web/` | the public website: download the mod, browse the community | anybody with a browser |
+
+The website is served by the same binary and from the same address the mod
+talks to, at `/`. It is read-only and needs no login — a warrior name, a tribe
+tag and a roster are on the scoreboard of every server those players join, so
+there is nothing there to guard. Mail, buddy lists and invitations are not
+exposed by it at all.
 
 ## Authentication is TribesNext's identity, checked locally
 
@@ -159,16 +166,35 @@ install the patch they are already running.
 
 ## Installing
 
-A build pointing at `https://tnb.k8s.henrik.si` is published on every push to
-`main` — [TNBrowser.vl2][dl-client] for players, [TNBrowserServer.vl2][dl-server]
-for game-server operators — with the address already baked in.
+Each release points at `https://tnb.k8s.henrik.si` and has the address already
+baked in — [TNBrowser.vl2][dl-client] for players, [TNBrowserServer.vl2][dl-server]
+for game-server operators. The download page at
+[tnb.k8s.henrik.si](https://tnb.k8s.henrik.si/) names the current one and links
+to both.
 
 [dl-client]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowser.vl2
 [dl-server]: https://github.com/henrikhasell/TribesNextBrowser/releases/latest/download/TNBrowserServer.vl2
 
-Those links follow GitHub's pointer at the newest release. Each build is also
-released under its own `build-<sha>` tag, which is never rewritten, so a link to
-a particular one keeps handing out the bytes it was recorded for.
+Those links follow GitHub's pointer at the newest release, and a published
+release is never rewritten — so a link to a particular version keeps handing out
+the bytes it was recorded for.
+
+### Cutting a release
+
+A release is a tag, and only a tag: nothing is published for a push to `main`.
+
+```sh
+# 1. Bump release.DefaultTag in server/internal/release/release.go to match,
+#    so the website can still name the version when GitHub is unreachable.
+# 2. Commit that, then:
+git tag -a v1.2.0 -m "What changed"
+git push origin v1.2.0
+```
+
+`.github/workflows/vl2.yml` builds both archives on the tag and attaches them to
+a release of that name. This used to fire on every merge, which made "the newest
+build" and "the version we mean" two different things and gave players a list of
+releases nobody had decided to ship.
 
 For any other backend, build your own:
 
@@ -296,7 +322,9 @@ server/
 ├── internal/dbproxy/  the ordinal table and its 61 handlers
 ├── internal/store/    PostgreSQL, and the only place rank rules are enforced
 ├── internal/auth/     the TribesNext session check
-└── migrations/
+├── internal/release/  where the newest .vl2 is, cached, for the download page
+├── migrations/
+└── web/               the website: React, built into the binary by go:embed
 tests/                 four suites, run inside the game
 tools/                 container, deploy, mock backend, test runners, packaging
 ```

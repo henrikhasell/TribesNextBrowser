@@ -1,5 +1,13 @@
-# The build needs the Go sources and the migrations. Nothing else.
+# The build needs the Go sources, the migrations and the website's own source.
+# Nothing else.
 tnserver
 *.test
 testdata/
 README.md
+
+# The website's dependencies and build output. Both are produced inside the
+# image by the node stage, and sending a local copy would be slow at best --
+# at worst it would let a stale `npm run build` from somebody's machine end up
+# in a released image.
+web/node_modules/
+web/dist/

@@ -6,6 +6,24 @@
 #
 #   docker build -t tnserver server/
 
+# The website, built first because the Go build embeds its output.
+#
+# Node exists only in this stage. Nothing it installs reaches the final image --
+# what comes out is a directory of static files, which the next stage compiles
+# into the binary.
+FROM node:22-alpine AS web
+WORKDIR /web
+
+# The lockfile first, for the reason the Go stage gives below: editing a .tsx
+# file should not reinstall the dependency tree. `npm ci` rather than
+# `npm install` so the build is the lockfile's versions and not whatever is
+# newest today.
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+
+COPY web/ ./
+RUN npm run build
+
 FROM golang:1.26-alpine AS build
 WORKDIR /src
 
@@ -15,6 +33,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
+
+# After COPY . ., so the real build wins over whatever web/dist held in the
+# context -- normally just the .gitkeep placeholder that keeps `go:embed`
+# compiling on a checkout with no npm. See server/web/embed.go.
+COPY --from=web /web/dist ./web/dist
 
 # CGO off makes the binary static, which is what lets the runtime stage below
 # be an image with no libc in it. -trimpath keeps build paths out of the

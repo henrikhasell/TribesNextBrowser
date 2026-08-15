@@ -1,5 +1,6 @@
-// Package api is the front door: six routes, and nothing that knows what an
-// ordinal means.
+// Package api is the front door, and nothing here knows what an ordinal means.
+//
+// The game client:
 //
 //	POST /session             negotiate a session (internal/auth)
 //	POST /db                  one stored-procedure ordinal (internal/dbproxy)
@@ -7,6 +8,15 @@
 //	POST /clancert            the same record, signed, for a game server to check
 //	GET  /tn/server/authinfo  the game-server mod's clan lookup
 //	GET  /healthz
+//
+// The website, which is read-only, unauthenticated and shares nothing with the
+// above but the store underneath it -- see site.go:
+//
+//	GET  /api/stats           three numbers for the landing page
+//	GET  /api/warriors        the warrior directory
+//	GET  /api/tribes          the tribe directory
+//	GET  /api/releases/latest where to get the newest .vl2 (internal/release)
+//	GET  /                    the built React app (server/web)
 //
 // The interesting thing about this file is what is no longer in it. It used to
 // serve json_browser.php and json_mail.php -- TribesNext's method-and-JSON
@@ -28,11 +38,13 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
 	"github.com/henrik/tnbrowser-server/internal/dbproxy"
+	"github.com/henrik/tnbrowser-server/internal/release"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -45,6 +57,11 @@ type Server struct {
 	// when no key was configured, which is a supported deployment: /clancert
 	// answers 404 and players simply carry no tag.
 	ClanCerts *clancert.Signer
+
+	// Releases backs the website's download page. Nil is safe -- Get is written
+	// for a nil receiver and answers the permanent GitHub download URLs -- so a
+	// server assembled without one still serves working buttons.
+	Releases *release.Cache
 
 	// TrustGUID accepts a bare guid with no proof of anything, for driving the
 	// in-game test suites: the containers they run in hold no account key
@@ -74,6 +91,9 @@ type request struct {
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+
+	// The game client. These five are a wire protocol and their paths, methods
+	// and bodies are fixed -- see the package comment.
 	mux.HandleFunc("/session", s.handleSession)
 	mux.HandleFunc("/db", s.handleDB)
 	mux.HandleFunc("/cert", s.handleCert)
@@ -83,6 +103,26 @@ func (s *Server) Routes() http.Handler {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok\n"))
 	})
+
+	// The website. Read-only and unauthenticated; see site.go. A registration
+	// above is a more specific pattern than anything here, so adding "/" cannot
+	// shadow one of the client's paths.
+	mux.HandleFunc("GET /api/stats", s.handleStats)
+	mux.HandleFunc("GET /api/warriors", s.handleWarriors)
+	mux.HandleFunc("GET /api/warriors/{guid}", s.handleWarrior)
+	mux.HandleFunc("GET /api/tribes", s.handleTribes)
+	mux.HandleFunc("GET /api/tribes/{id}", s.handleTribe)
+	mux.HandleFunc("GET /api/releases/latest", s.handleLatestRelease)
+
+	// Anything under /api/ that got this far is a mistyped endpoint. It must
+	// answer as JSON rather than fall through to the app shell below, or a typo
+	// arrives at the caller looking like a parse failure.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		siteError(w, http.StatusNotFound, "no such endpoint")
+	})
+
+	mux.Handle("/", newSite())
+
 	return s.logRequests(mux)
 }
 
@@ -405,6 +445,15 @@ func (s *Server) logRequests(next http.Handler) http.Handler {
 		rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 
 		next.ServeHTTP(rec, r)
+
+		// A page load fetches a dozen fingerprinted assets, and a log that
+		// records each of them cannot answer the question it exists for: "did
+		// that player's request arrive?". Successful asset requests are
+		// therefore dropped. A failing one is still logged, because a 404 under
+		// assets/ means a deploy shipped a broken index.
+		if rec.status < 400 && strings.HasPrefix(r.URL.Path, "/assets/") {
+			return
+		}
 
 		// Read the form only after the handler has run. Calling ParseForm here
 		// would consume a POST body and, because ParseForm caches, would stop

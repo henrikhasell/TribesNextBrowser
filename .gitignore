@@ -10,6 +10,17 @@ screenshot-*.png
 /server/tnserver
 /server/**/*.test
 
+# The website's dependencies and build output.
+#
+# .gitkeep is the exception, and it is load-bearing: `//go:embed all:dist` is a
+# compile error when the pattern matches nothing, so without that one file a
+# checkout that has never run npm would not build at all. The vite config emits
+# it on every build so a build never leaves it deleted -- see
+# server/web/vite.config.ts.
+/server/web/node_modules/
+/server/web/dist/*
+!/server/web/dist/.gitkeep
+
 # Mod archives built by tools/build-vl2.sh, including the dist/live build that
 # tools/run-live-client.sh makes for the container. Build output, not source:
 # the install instructions run the build before copying one into a mod
