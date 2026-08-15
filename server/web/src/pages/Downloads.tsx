@@ -54,25 +54,30 @@ export default function Downloads() {
               , which is what the game runs on now, and an account registered with it.
             </li>
             <li>
-              Make a mod directory under your install, say <code>GameData/tnb/</code>, and drop{' '}
-              <code>TNBrowser.vl2</code> into it.
+              Drop <code>TNBrowser.vl2</code> into <code>GameData/base/</code>, beside the{' '}
+              <code>.vl2</code> files already there.
             </li>
             <li>
-              Launch with <code>-mod tnb</code>.
+              Start the game normally. There is no <code>-mod</code> flag and nothing to configure
+              &mdash; the game always loads <code>base</code>, and the backend address is baked into
+              the archive.
             </li>
             <li>
               The <strong>BROWSER</strong> and <strong>EMAIL</strong> buttons on the launch bar work
-              from then on. The backend address is baked into the archive, so there is nothing to
-              configure.
+              from then on, whichever mod you play.
             </li>
           </ol>
+
+          <p className="note" style={{ marginTop: 12 }}>
+            To remove it again, delete that one file. Nothing else in your install is touched.
+          </p>
         </Panel>
 
         <Panel title="Running a game server">
           <p className="prose">
-            <code>TNBrowserServer.vl2</code> is for server operators. Install it the same way on the
-            dedicated server and connecting players have their tribe tag rendered into their name,
-            the way it worked when WON was up.
+            <code>TNBrowserServer.vl2</code> is for server operators. Drop it into the dedicated
+            server&rsquo;s own <code>GameData/base/</code> and connecting players have their tribe
+            tag rendered into their name, the way it worked when WON was up.
           </p>
           <p className="prose" style={{ marginTop: 10 }}>
             A player carries a signed certificate naming their tribe, so the server checks a

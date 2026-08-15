@@ -138,8 +138,8 @@ jobs:
             --title "$TAG" \
             --notes "Built from \`$SHA\`, pointing at $HOST.
 
-          **TNBrowser.vl2** is the client package: the community screens, mail and clan browser. Drop it into \`GameData/<MOD>/\` and launch with \`-mod <MOD>\`. A TribesNext-patched client is required.
+          **TNBrowser.vl2** is the client package: the community screens, mail and clan browser. Drop it into \`GameData/base/\` and start the game normally -- no \`-mod\` flag, and it works under whichever mod you play. A TribesNext-patched client is required.
 
-          **TNBrowserServer.vl2** is the game-server package, which shows clan tags for connecting players. Server operators want this one; players do not need it.
+          **TNBrowserServer.vl2** is the game-server package, which shows clan tags for connecting players. Same install, into the dedicated server's own \`GameData/base/\`. Server operators want this one; players do not need it.
 
           Both have the backend address baked in, so there is nothing to configure after the install. To point one somewhere else, put \`\$TNB::Host = \"...\";\` in a loose \`autoexec.cs\` beside the archive."

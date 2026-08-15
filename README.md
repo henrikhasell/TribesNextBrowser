@@ -196,17 +196,30 @@ a release of that name. This used to fire on every merge, which made "the newest
 build" and "the version we mean" two different things and gave players a list of
 releases nobody had decided to ship.
 
+Copy the archive into `base`:
+
+```sh
+cp TNBrowser.vl2 <Tribes2>/GameData/base/
+```
+
+and start the game normally — no `-mod` flag. `base` is loaded whatever else is,
+so the community screens work under Classic and under any other mod, and
+uninstalling is deleting that one file.
+
+The engine indexes a directory's `.vl2` archives alongside its loose files, so
+nothing needs unpacking, and the archive root is the mod root: its
+`scripts/autoexec/tnbrowser.cs` is exec'd at boot exactly as a loose file in
+`base/scripts/autoexec/` would be.
+
 For any other backend, build your own:
 
 ```sh
 ./tools/build-vl2.sh --host "http://your-backend:8080"
-cp dist/TNBrowser.vl2 <Tribes2>/GameData/MyMod/
+cp dist/TNBrowser.vl2 <Tribes2>/GameData/base/
 ```
 
-then launch with `-mod MyMod`. The engine indexes a mod directory's `.vl2`
-archives alongside its loose files, so nothing needs unpacking. Settings can
-also go in a loose `autoexec.cs` beside the archive — the game execs that last,
-so a plain `$TNB::Host = "...";` overrides a baked value.
+Settings can also go in a loose `autoexec.cs` beside the archive — the game
+execs that last, so a plain `$TNB::Host = "...";` overrides a baked value.
 
 Builds are reproducible: every archive entry is stamped with the last commit's
 date, so rebuilding unchanged sources produces an identical file.

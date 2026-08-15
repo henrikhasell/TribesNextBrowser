@@ -11,7 +11,9 @@
 # The client package contains no .gui file, and that is the point rather than an
 # omission: the community screens a player sees are the shipped ones.
 #
-# Install:  drop the .vl2 into GameData/<MOD>/ and launch with -mod <MOD>
+# Install:  drop the .vl2 into GameData/base/ and start the game normally. base
+#           is the mod directory the engine always loads, so there is no -mod
+#           flag to pass and the screens work under whichever mod is played.
 #
 # Stored without compression (-0). The engine reads these archives directly and
 # the shipped ones are stored the same way; it costs a few hundred KB and avoids
@@ -28,9 +30,9 @@
 # Baking settings in
 # -----------------------------------------------------------------------------
 # The backend address is written into the packaged settings.cs, so the archive
-# is self-contained: dropping it into the active mod directory is the whole
-# install, with nothing else to create or edit. That is the sane way to hand
-# either package to someone else.
+# is self-contained: dropping it into GameData/base/ is the whole install, with
+# nothing else to create or edit. That is the sane way to hand either package to
+# someone else.
 #
 # The source tree is never modified -- packing happens from a copy.
 #
@@ -168,4 +170,4 @@ pack() {
 pack TNBrowser       TNBrowser.vl2       scripts tnbrowser
 pack TNBrowserServer TNBrowserServer.vl2 scripts tnbserver
 
-echo "Install: copy either into GameData/<MOD>/ and launch with -mod <MOD>"
+echo "Install: copy either into GameData/base/ -- no -mod flag needed"
