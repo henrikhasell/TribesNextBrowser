@@ -253,7 +253,18 @@ function TNBSessionStart()
 
       %cert = TNBAccountCertificate();
       if (%cert !$= "")
+      {
+         // Remembered so a failed replay check can say which account the
+         // challenge was minted for. The backend encrypts with the key in the
+         // certificate it was handed, and the reply is decrypted with the key
+         // of the account that is logged in -- two different questions, and
+         // nothing here proves they have the same answer. This machine has two
+         // accounts in public.store, which is the configuration where they can
+         // differ.
+         $TNB::CertName = getField(%cert, 0);
+         $TNB::CertGuid = getField(%cert, 1);
          %query = %query @ "&cert=" @ TNBUrlEncode(%cert);
+      }
    }
    else
    {
@@ -304,12 +315,46 @@ function TNBSessionAnswerChallenge()
       }
    }
 
+   // No nonce means no question was asked, so nothing here can answer one. The
+   // comparison below would pass on its own -- getSubStr(x, 0, 0) and "" are
+   // equal -- and the whole decrypted blob would go back as the response, which
+   // the backend refuses without saying why. Caught separately so the console
+   // says what actually happened.
+   if ($TNB::Nonce $= "")
+   {
+      error("TNBrowser: a challenge arrived with no nonce outstanding, discarding");
+      $TNB::Challenge = "";
+      TNBSessionRetry();
+      return "";
+   }
+
    %decrypted = t2csri_rsa_decrypt(%challenge);
 
    %replay = getSubStr(%decrypted, 0, strlen($TNB::Nonce));
    if (%replay !$= $TNB::Nonce)
    {
+      // Say what was seen, because the bare message names a symptom that has
+      // several causes and rules none of them out.
+      //
+      // Verified against a live client (orange01, 1024-bit key) and the
+      // deployed backend, so these are not among them: t2csri_rsa_decrypt
+      // round-trips this exact plaintext layout, including a blob whose leading
+      // hex digit the server's rendering dropped, and the engine reassembles a
+      // response line split across TCP segments before onLine sees it.
+      //
+      // What is left is a mismatch of identity or of timing, and the three
+      // lines below tell them apart. A decrypted value the right length but
+      // wrong throughout means it was encrypted for a key other than the one
+      // that decrypted it -- look at the two accounts on the last line. A short
+      // or empty one means the decrypt itself failed. A value that replays some
+      // other nonce means a second negotiation replaced ours while this
+      // challenge was in flight.
       error("TNBrowser: challenge did not replay our nonce, discarding");
+      error("TNBrowser:   nonce " @ strlen($TNB::Nonce) @ " chars, opens " @ getSubStr($TNB::Nonce, 0, 16));
+      error("TNBrowser:   decrypted " @ strlen(%decrypted) @ " chars, opens " @ getSubStr(%decrypted, 0, 16));
+      %now = TNBAccountCertificate();
+      error("TNBrowser:   certificate sent for " @ $TNB::CertName @ "/" @ $TNB::CertGuid @
+            ", account now " @ getField(%now, 0) @ "/" @ getField(%now, 1));
       $TNB::Challenge = "";
       TNBSessionRetry();
       return "";
