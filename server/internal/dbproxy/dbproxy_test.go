@@ -49,40 +49,50 @@ func TestEveryOrdinalCitesItsCallSite(t *testing.T) {
 	}
 }
 
-// The status field the client tests first has to be a code, and the sentence
-// after it has to be a sentence: webemail.cs:551, webbrowser.cs:927 and
-// webbrowser.cs:1446 all put field 1 straight into a MessageBoxOK.
-func TestStatusShape(t *testing.T) {
-	// The fallback, for the array forms whose status nothing displays. Field 1
-	// still has to be non-empty: the client tests it and so does the sweep.
-	if got := okStatus(""); got != "0\tOK" {
-		t.Errorf("okStatus(\"\") = %q, want %q", got, "0\tOK")
+// The code the client tests first has to be a code, and the message after it
+// has to be a sentence: webemail.cs:551, webbrowser.cs:927 and
+// webbrowser.cs:1446 all put the message straight into a MessageBoxOK.
+func TestAnswerShape(t *testing.T) {
+	// The fallback, for the array forms whose message nothing displays. It still
+	// has to be non-empty: the client tests it and so does the sweep.
+	empty := okRows(nil)
+	if empty.Code != 0 || empty.Message != "OK" {
+		t.Errorf("okRows(nil) = %+v, want code 0 and a message", empty)
+	}
+	if empty.Rows == nil {
+		t.Error("rows is null; the client iterates it without checking")
 	}
 
-	// The message is field 1 and the payload follows it, so a handler with
-	// something to say never displaces a field the pane parses.
-	if got := okStatus("Player Harabec has been kicked from Big Sucka Fishes."); got !=
-		"0\tPlayer Harabec has been kicked from Big Sucka Fishes." {
-		t.Errorf("okStatus with a message = %q", got)
+	// A handler with something to say puts it in the message, and the payload
+	// the two profile ordinals carry goes in fields -- so neither displaces the
+	// other, which is what the old single tab-separated status risked.
+	got := okFields("Here it is.", []string{"9001", "Big Sucka Fishes"}, "")
+	if got.Message != "Here it is." {
+		t.Errorf("message = %q", got.Message)
 	}
-	if got := okStatus("Here it is.", "9001", "Big Sucka Fishes"); got !=
-		"0\tHere it is.\t9001\tBig Sucka Fishes" {
-		t.Errorf("okStatus with payload = %q", got)
-	}
-
-	// okMessage puts the same sentence in both places a pane might read it.
-	m := okMessage("You have left Big Sucka Fishes.")
-	if m.Status != "0\tYou have left Big Sucka Fishes." ||
-		m.Result != "You have left Big Sucka Fishes." {
-		t.Errorf("okMessage = %+v", m)
+	if len(got.Fields) != 2 || got.Fields[1] != "Big Sucka Fishes" {
+		t.Errorf("fields = %+v", got.Fields)
 	}
 
-	f := fail("There is no tribe by that name.")
-	if code := strings.SplitN(f.Status, "\t", 2)[0]; code == "0" {
-		t.Errorf("fail() produced a success code: %q", f.Status)
+	// A refusal is a non-zero code and a sentence.
+	bad := fail("Player %s is not a member.", "Harabec")
+	if bad.Code == 0 {
+		t.Error("a refusal answered code 0")
 	}
-	if msg := strings.SplitN(f.Status, "\t", 2)[1]; !strings.HasSuffix(msg, ".") {
-		t.Errorf("fail() message is not a sentence: %q", msg)
+	if bad.Message != "Player Harabec is not a member." {
+		t.Errorf("refusal message = %q", bad.Message)
+	}
+}
+
+// A row keeps its fields separate and its types intact. The indices are the
+// shipped parsers' contract, so an empty value must still occupy its position.
+func TestRowKeepsEveryField(t *testing.T) {
+	r := row(7, "Test Clan", "", true, "")
+	if len(r) != 5 {
+		t.Fatalf("row has %d fields, want 5 -- an empty value is not an omission", len(r))
+	}
+	if r[0] != 7 || r[3] != true {
+		t.Errorf("row lost its types: %+v", r)
 	}
 }
 
@@ -98,10 +108,9 @@ func TestBodyLinesNeverEmpty(t *testing.T) {
 	}
 
 	// The count in the row has to match the lines that follow it.
-	row := withBody("head", "one\ntwo")
-	f := strings.Split(row, "\t")
-	if f[1] != "2" || len(f) != 4 {
-		t.Errorf("withBody = %q, want head, 2, one, two", row)
+	r := withBody(row("head"), "one\ntwo")
+	if len(r) != 4 || r[1] != 2 || r[2] != "one" || r[3] != "two" {
+		t.Errorf("withBody = %#v, want head, 2, one, two", r)
 	}
 }
 
@@ -120,29 +129,37 @@ func TestInviteLinkUsesNewlineSeparators(t *testing.T) {
 	}
 }
 
-// fields("") is no fields, not one empty field. Several ordinals take no
-// arguments at all and would otherwise see a phantom first one.
-func TestEmptyArgsIsNoFields(t *testing.T) {
-	if got := fields(""); len(got) != 0 {
-		t.Errorf("fields(%q) = %#v, want none", "", got)
+// Reading past the end of the argument list is empty, not a panic. Three
+// ordinals genuinely vary their argument count, so a handler asking for an
+// argument the caller did not send is normal rather than exceptional.
+//
+// Arguments arrive as a real list now, so "no arguments" is an empty list and
+// cannot be confused with one empty argument -- which is the ambiguity a
+// tab-joined string had.
+func TestReadingPastTheArgumentsIsEmpty(t *testing.T) {
+	if got := field(nil, 0); got != "" {
+		t.Errorf("field(nil, 0) = %q", got)
 	}
-	if got := field("", 0); got != "" {
-		t.Errorf("field(%q, 0) = %q", "", got)
-	}
-	if got := field("a\tb", 5); got != "" {
+	if got := field([]string{"a", "b"}, 5); got != "" {
 		t.Errorf("field past the end = %q, want empty", got)
+	}
+	if got := field([]string{"a", ""}, 1); got != "" {
+		t.Errorf("an empty argument = %q, want empty", got)
 	}
 }
 
 // An unknown ordinal is refused loudly. The alternative -- an empty success --
 // renders exactly like "there is nothing here" and hides the gap.
 func TestUnknownOrdinalIsRefusedNotEmpty(t *testing.T) {
-	answer, err := Dispatch(&Ctx{}, Scalar, "999", "")
+	answer, err := Dispatch(&Ctx{}, Scalar, "999", nil)
 	if err != nil {
 		t.Fatalf("Dispatch returned a fault for an unknown ordinal: %v", err)
 	}
-	if strings.HasPrefix(answer.Status, "0\t") {
-		t.Errorf("unknown ordinal answered success: %q", answer.Status)
+	if answer.Code == 0 {
+		t.Errorf("unknown ordinal answered success: %+v", answer)
+	}
+	if answer.Message == "" {
+		t.Error("a refusal with no sentence; the pane shows this one")
 	}
 	if len(answer.Rows) != 0 {
 		t.Errorf("unknown ordinal answered rows: %#v", answer.Rows)

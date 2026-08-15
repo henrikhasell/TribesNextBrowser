@@ -15,19 +15,30 @@ import (
 // Answer is what one ordinal produces, and it is the client's contract rather
 // than ours.
 //
-// Status is tab-separated. Field 0 is the code every onDatabaseQueryResult
-// tests with getField(%status,0)==0. Field 1 is a sentence several handlers put
+// Code is the outcome the shipped onDatabaseQueryResult tests first: 0
+// succeeded, non-zero was refused. Message is the sentence several handlers put
 // straight into a MessageBoxOK -- webemail.cs:551, webbrowser.cs:927,
-// webbrowser.cs:1446 -- so a failure message has to read like prose, not like
-// an error code. Fields 2.. carry the entire payload for the two profile
-// ordinals, which return no rows at all.
+// webbrowser.cs:1446 -- so a refusal has to read like prose, not like an error
+// code.
+//
+// Fields carries the payload the two profile ordinals return instead of rows;
+// the shim appends it after the message when it rebuilds the status string the
+// shipped scripts parse. Empty for everything else.
 //
 // Result is a row count for the array form. Several scalars overload it with a
-// payload instead: the MOTD, a tribe description, a tribe name.
+// payload instead: the MOTD, a tribe description, a tribe name. It stays a
+// string because it is genuinely one or the other depending on the ordinal, and
+// pretending otherwise would be a lie with a type on it.
+//
+// Rows are arrays of fields rather than tab-joined strings. The indices are
+// load-bearing -- a field exists because a shipped parser reads that position --
+// so a field with no value is an empty string and never an omission.
 type Answer struct {
-	Status string   `json:"status"`
-	Result string   `json:"result"`
-	Rows   []string `json:"rows"`
+	Code    int      `json:"code"`
+	Message string   `json:"message"`
+	Fields  []string `json:"fields,omitempty"`
+	Result  string   `json:"result"`
+	Rows    [][]any  `json:"rows"`
 }
 
 // Ctx is everything a handler may touch.
@@ -77,7 +88,7 @@ func (c *Ctx) notifyAll(to []string, subject, body string) {
 // Handler answers one ordinal. args is the raw tab-separated string the call
 // site assembled; splitting it is the handler's business, because several
 // ordinals are ambiguous about their own field count.
-type Handler func(c *Ctx, args string) (Answer, error)
+type Handler func(c *Ctx, args []string) (Answer, error)
 
 // registry is populated by the on() calls in the sibling files.
 var registry = map[Key]Handler{}
@@ -96,7 +107,7 @@ func on(form, ordinal string, h Handler) {
 // non-zero status, because that is a normal outcome the panes render. A fault
 // on our side comes back as an error, so the front door can log it and answer
 // 500 rather than dressing a broken server up as a rejected request.
-func Dispatch(c *Ctx, form, ordinal, args string) (Answer, error) {
+func Dispatch(c *Ctx, form, ordinal string, args []string) (Answer, error) {
 	h, found := registry[k(form, ordinal)]
 	if !found {
 		// Loud, never a silently plausible pane. Most paths raise status
@@ -121,123 +132,128 @@ func Dispatch(c *Ctx, form, ordinal, args string) (Answer, error) {
 // Status and row helpers
 //-----------------------------------------------------------------------------
 
-// okStatus is a well-formed success, and msg is field 1: the sentence the
-// client shows on the success path.
+// message is the sentence the client shows on the success path.
 //
 // It shows it on quite a few of them -- webbrowser.cs:927, :1725, :1781, :1784,
-// :1808 and webemail.cs:704, :706 all put getField(%status,1) straight into a
-// MessageBoxOK with no wording of their own. This used to be the literal word
-// "OK", which is how confirming an invitation, a graphic, a web address or a
-// buddy each produced a dialog reading "OK" and nothing else. A message that
-// names what happened, and to whom, costs the same bytes.
+// :1808 and webemail.cs:704, :706 all put it straight into a MessageBoxOK with
+// no wording of their own. This used to be the literal word "OK", which is how
+// confirming an invitation, a graphic, a web address or a buddy each produced a
+// dialog reading "OK" and nothing else. A message that names what happened, and
+// to whom, costs the same bytes.
 //
-// Any extra fields follow from field 2, which is where the two profile ordinals
-// and the deleted-mail notice put their payloads -- so the sentence never
-// displaces one.
-//
-// The blank fallback is for the array forms. Their status is never displayed
+// The blank fallback is for the array forms. Their message is never displayed
 // (the pane goes straight to the row count) and inventing prose per list would
-// be words nobody reads, but field 1 must still be non-empty: the client tests
-// it, and so does the sweep.
-func okStatus(msg string, extra ...string) string {
+// be words nobody reads, but it must still be non-empty: the client tests it,
+// and so does the sweep.
+func message(msg string) string {
 	if msg == "" {
-		msg = "OK"
+		return "OK"
 	}
-	return strings.Join(append([]string{"0", msg}, extra...), "\t")
+	return msg
 }
 
-func ok(rows ...string) Answer {
-	return Answer{Status: okStatus(""), Result: strconv.Itoa(len(rows)), Rows: rows}
+func ok(rows ...[]any) Answer {
+	return okRows(rows)
 }
 
-// okRows keeps an explicit result string, for the array ordinals whose count
-// the pane tests before it looks at anything else.
-func okRows(rows []string) Answer {
+// okRows is the array form: the count the pane tests before it looks at
+// anything else, and the rows themselves.
+func okRows(rows [][]any) Answer {
 	if rows == nil {
-		rows = []string{}
+		rows = [][]any{}
 	}
-	return Answer{Status: okStatus(""), Result: strconv.Itoa(len(rows)), Rows: rows}
+	return Answer{
+		Code:    0,
+		Message: message(""),
+		Result:  strconv.Itoa(len(rows)),
+		Rows:    rows,
+	}
 }
 
 // okMessage answers with a sentence and nothing else -- the shape of every
 // write that changes something and returns no data.
 //
-// The sentence goes in the result as well as the status because that is where
-// it has always been, and a handful of ordinals are read one way rather than
-// the other depending on which of the shipped panes issued them.
+// The sentence goes in the result as well, because that is where it has always
+// been, and a handful of ordinals are read one way rather than the other
+// depending on which of the shipped panes issued them.
 func okMessage(msg string) Answer {
-	return Answer{Status: okStatus(msg), Result: msg, Rows: []string{}}
+	return Answer{Code: 0, Message: message(msg), Result: msg, Rows: [][]any{}}
 }
 
-// okResult is the shape the scalars that overload resultString need: a payload
-// where an array form would put a count, and the sentence in the status beside
-// it. Both matter -- the payload is data the pane parses, the sentence is what
-// it shows the player.
+// okResult is the shape the scalars that overload the result need: a payload
+// where an array form would put a count, and the sentence beside it. Both
+// matter -- the payload is data the pane parses, the sentence is what it shows.
 func okResult(msg, result string) Answer {
-	return Answer{Status: okStatus(msg), Result: result, Rows: []string{}}
+	return Answer{Code: 0, Message: message(msg), Result: result, Rows: [][]any{}}
 }
 
-// okWith replaces the whole status, for the two profile ordinals that carry
-// their payload in status fields 2...
-func okWith(status, result string) Answer {
-	return Answer{Status: status, Result: result, Rows: []string{}}
+// okFields is the two profile ordinals, which carry their payload after the
+// message rather than in rows at all.
+func okFields(msg string, extra []string, result string) Answer {
+	return Answer{
+		Code:    0,
+		Message: message(msg),
+		Fields:  extra,
+		Result:  result,
+		Rows:    [][]any{},
+	}
 }
 
-// fail is a refusal the player will see. Field 0 is non-zero, which every
-// handler tests first, and field 1 is the sentence it shows.
+// withRows attaches rows to an answer built by okFields -- the two ordinals
+// that carry an extra status field AND a list.
+func (a Answer) withRows(rows [][]any) Answer {
+	if rows == nil {
+		rows = [][]any{}
+	}
+	a.Rows = rows
+	return a
+}
+
+// Refuse is a refusal built outside the handler table -- an unreadable request
+// or an unknown query form, which the front door catches before dispatch.
+func Refuse(msg string) Answer { return fail("%s", msg) }
+
+// fail is a refusal the player will see. A non-zero code is what every handler
+// tests first, and the message is the sentence it shows.
 func fail(format string, args ...any) Answer {
 	return Answer{
-		Status: "1\t" + fmt.Sprintf(format, args...),
-		Result: "0",
-		Rows:   []string{},
+		Code:    1,
+		Message: fmt.Sprintf(format, args...),
+		Result:  "0",
+		Rows:    [][]any{},
 	}
 }
 
-// tab joins row fields. Every row on the wire is tab-separated and the indices
-// are load-bearing, so a field that has no value is an empty string and never
-// an omission.
-func tab(fields ...any) string {
-	out := make([]string, len(fields))
-	for i, f := range fields {
-		switch v := f.(type) {
-		case string:
-			out[i] = v
-		case bool:
-			out[i] = boolField(v)
-		default:
-			out[i] = fmt.Sprint(v)
-		}
-	}
-	return strings.Join(out, "\t")
+// row is one row of an answer.
+//
+// The values keep their types -- an id stays a number, a flag stays a boolean --
+// because the client joins them with tabs at the last moment and the engine
+// reads a JSON true as 1, which is the spelling the shipped getField callers
+// want. What it must never do is drop a field: the indices are the shipped
+// parsers' contract, so a value that has nothing in it is an empty string.
+func row(values ...any) []any {
+	out := make([]any, len(values))
+	copy(out, values)
+	return out
 }
 
-// boolField is how the client reads a flag: getField gives it a string and it
-// tests truthiness, so 1 and 0 are the only two spellings that behave.
-func boolField(b bool) string {
+// flag is how a boolean is spelled inside the status fields, which are strings
+// rather than typed row values: the client reads them with getField and tests
+// truthiness, so 1 and 0 are the only two spellings that behave.
+func flag(b bool) string {
 	if b {
 		return "1"
 	}
 	return "0"
 }
 
-// fields splits an argument string. An empty argument is no fields, not one
-// empty field -- several ordinals take "(none)" and would otherwise see a
-// phantom first argument.
-func fields(args string) []string {
-	if args == "" {
-		return nil
-	}
-	return strings.Split(args, "\t")
-}
-
 // field reads one argument, tolerating a caller that sent fewer than the call
-// site's tuple suggests. Three ordinals genuinely vary their field count.
-func field(args string, n int) string {
-	f := fields(args)
-	if n < 0 || n >= len(f) {
+// site's tuple suggests. Three ordinals genuinely vary their argument count.
+func field(args []string, n int) string {
+	if n < 0 || n >= len(args) {
 		return ""
 	}
-	return f[n]
+	return args[n]
 }
 
 func atoi(s string) int64 {
@@ -252,12 +268,11 @@ func atoi(s string) int64 {
 // it as one field per line. Rejoining with newlines is the inverse of what
 // bodyLines does on the way out, so text survives a round trip through the
 // database unchanged.
-func fieldsFrom(args string, n int) string {
-	f := fields(args)
-	if n >= len(f) {
+func fieldsFrom(args []string, n int) string {
+	if n >= len(args) {
 		return ""
 	}
-	return strings.Join(f[n:], "\n")
+	return strings.Join(args[n:], "\n")
 }
 
 // date renders a timestamp for a control that will display it verbatim.
@@ -286,15 +301,16 @@ func bodyLines(text string) []string {
 	return strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 }
 
-// withBody appends "<line count> <line> <line> ..." to a row.
-func withBody(prefix string, body string) string {
+// withBody appends "<line count> <line> <line> ..." to a row already built.
+func withBody(head []any, body string) []any {
 	lines := bodyLines(body)
-	parts := make([]any, 0, len(lines)+2)
-	parts = append(parts, prefix, len(lines))
+	out := make([]any, 0, len(head)+len(lines)+1)
+	out = append(out, head...)
+	out = append(out, len(lines))
 	for _, l := range lines {
-		parts = append(parts, l)
+		out = append(out, l)
 	}
-	return tab(parts...)
+	return out
 }
 
 // mlLink builds an <a:...> link for a body the client renders in a

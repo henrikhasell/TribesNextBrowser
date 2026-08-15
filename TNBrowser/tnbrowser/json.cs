@@ -650,4 +650,36 @@ function TNBJsonObject(%k1, %v1, %k2, %v2, %k3, %v3, %k4, %v4)
    return %out @ "}";
 }
 
+// A JSON array of strings, from a tab-separated list.
+//
+// This is what the query builder needs and TNBJsonObject cannot give it: fixed
+// key/value pairs only, with every value a string. An argument list has to
+// cross as a real array, because a joined string cannot say whether "a\t\t" is
+// two arguments or three and three ordinals genuinely vary their count.
+//
+// getFieldCount counts what is there rather than what a trailing separator
+// implies, so an empty list is [] and not [""].
+function TNBJsonFieldArray(%tabbed)
+{
+   %n = getFieldCount(%tabbed);
+   %out = "[";
+   for (%i = 0; %i < %n; %i++)
+   {
+      if (%i > 0)
+         %out = %out @ ",";
+      %out = %out @ "\"" @ TNBJsonEscape(getField(%tabbed, %i)) @ "\"";
+   }
+   return %out @ "]";
+}
+
+// One object with a raw (already-encoded) value for the last key, so a caller
+// can nest an array without this file learning what an argument list is.
+function TNBJsonObjectWith(%k1, %v1, %k2, %v2, %rawKey, %rawValue)
+{
+   %out = "{\"" @ TNBJsonEscape(%k1) @ "\":\"" @ TNBJsonEscape(%v1) @ "\"" @
+          ",\"" @ TNBJsonEscape(%k2) @ "\":\"" @ TNBJsonEscape(%v2) @ "\"" @
+          ",\"" @ TNBJsonEscape(%rawKey) @ "\":" @ %rawValue @ "}";
+   return %out;
+}
+
 echo("TNBrowser: json.cs loaded");

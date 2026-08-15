@@ -44,7 +44,7 @@ func Certificate(c *Ctx) (string, error) {
 	}
 
 	records := []string{
-		strings.Join([]string{self.Name, self.Tag, boolField(self.Append), self.GUID}, "\t"),
+		strings.Join([]string{self.Name, self.Tag, flag(self.Append), self.GUID}, "\t"),
 		strconv.Itoa(len(tribes)),
 	}
 
@@ -56,7 +56,7 @@ func Certificate(c *Ctx) (string, error) {
 		records = append(records, strings.Join([]string{
 			p.Name,
 			p.Tag,
-			boolField(p.Append),
+			flag(p.Append),
 			strconv.FormatInt(t.ID, 10),
 			strconv.Itoa(t.Rank),
 			t.Title,
@@ -65,4 +65,71 @@ func Certificate(c *Ctx) (string, error) {
 
 	// Records are newline-separated because that is what getRecord splits on.
 	return strings.Join(records, "\n"), nil
+}
+
+//-----------------------------------------------------------------------------
+// The same identity, structured
+//-----------------------------------------------------------------------------
+
+// Identity is what /cert answers with.
+//
+// Certificate above renders the same facts as the flat record the clan token is
+// signed over, because a signature has to cover exact bytes. This is the shape
+// the client is *told* the answer in: real numbers, real booleans, one nested
+// list. The mod reassembles the record layout WONGetAuthInfo() has to hand the
+// shipped scripts, which is a dozen lines in one function and keeps the packed
+// format at the last possible moment rather than on the wire.
+type Identity struct {
+	Name   string          `json:"name"`
+	Tag    string          `json:"tag"`
+	Append bool            `json:"append"`
+	GUID   string          `json:"guid"`
+	Tribes []IdentityTribe `json:"tribes"`
+}
+
+// IdentityTribe is one membership, in the order the browser's own tribe list
+// renders them.
+type IdentityTribe struct {
+	Name   string `json:"name"`
+	Tag    string `json:"tag"`
+	Append bool   `json:"append"`
+	ID     int64  `json:"id"`
+	Rank   int    `json:"rank"`
+	Title  string `json:"title"`
+}
+
+func WarriorIdentity(c *Ctx) (Identity, error) {
+	self, err := c.Store.Quad(c.Ctx, c.GUID)
+	if err != nil {
+		return Identity{}, err
+	}
+
+	tribes, err := c.Store.WarriorTribes(c.Ctx, c.GUID)
+	if err != nil {
+		return Identity{}, err
+	}
+
+	out := Identity{
+		Name:   self.Name,
+		Tag:    self.Tag,
+		Append: self.Append,
+		GUID:   self.GUID,
+		Tribes: []IdentityTribe{},
+	}
+
+	for _, t := range tribes {
+		p, err := c.Store.TribeProfile(c.Ctx, t.ID)
+		if err != nil {
+			return Identity{}, err
+		}
+		out.Tribes = append(out.Tribes, IdentityTribe{
+			Name:   p.Name,
+			Tag:    p.Tag,
+			Append: p.Append,
+			ID:     t.ID,
+			Rank:   t.Rank,
+			Title:  t.Title,
+		})
+	}
+	return out, nil
 }

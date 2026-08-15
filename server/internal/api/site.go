@@ -1,20 +1,17 @@
 // The public website: a read-only view of the same community the game screens
 // show, plus somewhere to get the mod.
 //
-// Everything here is unauthenticated, and for the reason handleAuthInfo already
-// gives: a warrior name, a tribe tag and a roster are on the scoreboard of
-// every server those players join, so a login here would guard nothing while
-// costing a credential to distribute. What it must not touch is everything
-// else -- mail, buddy lists, blocks and invitations are private, and no handler
-// below can reach them.
+// Everything here is unauthenticated: a warrior name, a tribe tag and a roster
+// are on the scoreboard of every server those players join, so a login here
+// would guard nothing while costing a credential to distribute. What it must
+// not touch is everything else -- mail, buddy lists, blocks and invitations are
+// private, and no handler below can reach them.
 //
-// The other rule is that none of this may borrow the client's plumbing.
-// writeJSON, fatal and closeAfterResponse in api.go are shaped by Torque's
-// HTTPObject: a blank first line before the body, an HTML error page the mod
-// sniffs for "401", and a closed connection because the engine has no other
-// signal that a transfer finished. All three are wrong for a browser -- the
-// last one especially, since closing after every asset would turn one page load
-// into a dozen handshakes. So the site writes its own.
+// It answers the same error shape the game routes do, and deliberately: one
+// server, one way to say no. What it does not borrow is closeAfterResponse.
+// That exists because Torque's HTTPObject has no completion signal but a closed
+// socket; closing after every asset would turn one page load into a dozen
+// handshakes.
 package api
 
 import (
@@ -49,7 +46,7 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 	counts, err := s.Store.Counts(r.Context())
 	if err != nil {
 		s.Log.Error("site stats", "err", err)
-		siteError(w, http.StatusInternalServerError, "the community database is not answering")
+		siteError(w, http.StatusInternalServerError, "internal", "The community database is not answering.")
 		return
 	}
 	siteJSON(w, counts)
@@ -61,7 +58,7 @@ func (s *Server) handleWarriors(w http.ResponseWriter, r *http.Request) {
 	items, total, err := s.Store.Warriors(r.Context(), q, limit, offset)
 	if err != nil {
 		s.Log.Error("site warriors", "err", err)
-		siteError(w, http.StatusInternalServerError, "the community database is not answering")
+		siteError(w, http.StatusInternalServerError, "internal", "The community database is not answering.")
 		return
 	}
 	siteJSON(w, page[model.DirectoryWarrior]{
@@ -75,7 +72,7 @@ func (s *Server) handleTribes(w http.ResponseWriter, r *http.Request) {
 	items, total, err := s.Store.Tribes(r.Context(), q, limit, offset)
 	if err != nil {
 		s.Log.Error("site tribes", "err", err)
-		siteError(w, http.StatusInternalServerError, "the community database is not answering")
+		siteError(w, http.StatusInternalServerError, "internal", "The community database is not answering.")
 		return
 	}
 	siteJSON(w, page[model.DirectoryTribe]{
@@ -95,12 +92,12 @@ func (s *Server) handleWarrior(w http.ResponseWriter, r *http.Request) {
 
 	user, err := s.Store.UserView(r.Context(), guid)
 	if errors.Is(err, store.ErrNotFound) {
-		siteError(w, http.StatusNotFound, "no warrior with that id")
+		siteError(w, http.StatusNotFound, "not_found", "No warrior with that id.")
 		return
 	}
 	if err != nil {
 		s.Log.Error("site warrior", "guid", guid, "err", err)
-		siteError(w, http.StatusInternalServerError, "the community database is not answering")
+		siteError(w, http.StatusInternalServerError, "internal", "The community database is not answering.")
 		return
 	}
 
@@ -122,18 +119,18 @@ type tribePage struct {
 func (s *Server) handleTribe(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
-		siteError(w, http.StatusNotFound, "no tribe with that id")
+		siteError(w, http.StatusNotFound, "not_found", "No tribe with that id.")
 		return
 	}
 
 	clan, err := s.Store.ClanView(r.Context(), id)
 	if errors.Is(err, store.ErrNotFound) {
-		siteError(w, http.StatusNotFound, "no tribe with that id")
+		siteError(w, http.StatusNotFound, "not_found", "No tribe with that id.")
 		return
 	}
 	if err != nil {
 		s.Log.Error("site tribe", "id", id, "err", err)
-		siteError(w, http.StatusInternalServerError, "the community database is not answering")
+		siteError(w, http.StatusInternalServerError, "internal", "The community database is not answering.")
 		return
 	}
 
@@ -142,7 +139,7 @@ func (s *Server) handleTribe(w http.ResponseWriter, r *http.Request) {
 	// so a disbanded tribe is unreachable by browsing -- and should be
 	// unreachable by guessing an id too.
 	if clan.Active != "1" {
-		siteError(w, http.StatusNotFound, "that tribe has disbanded")
+		siteError(w, http.StatusNotFound, "not_found", "That tribe has disbanded.")
 		return
 	}
 
@@ -207,13 +204,14 @@ func siteJSON(w http.ResponseWriter, v any) {
 
 // siteError is fatal's counterpart: JSON, because the only thing reading it is
 // a fetch() that wants a message to show.
-func siteError(w http.ResponseWriter, code int, msg string) {
+func siteError(w http.ResponseWriter, code int, slug, msg string) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(struct {
-		Error string `json:"error"`
-	}{msg})
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}{slug, msg})
 }
 
 //-----------------------------------------------------------------------------

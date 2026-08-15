@@ -35,15 +35,15 @@ func init() {
 // WONGetAuthInfo() with a negated id (webforums.cs:817-822) -- so tribe forums
 // were always client-side and a server that invented them would produce
 // duplicates.
-func getForumList(c *Ctx, args string) (Answer, error) {
+func getForumList(c *Ctx, args []string) (Answer, error) {
 	forums, err := c.Store.Forums(c.Ctx)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(forums))
+	rows := make([][]any, 0, len(forums))
 	for i, f := range forums {
-		rows = append(rows, tab(i, f.Name, f.Flag, f.ID))
+		rows = append(rows, row(i, f.Name, f.Flag, f.ID))
 	}
 	return okRows(rows), nil
 }
@@ -51,15 +51,15 @@ func getForumList(c *Ctx, args string) (Answer, error) {
 // array 8. maxRows carries a page number at two of the three call sites and a
 // real limit at the third, so the slot cannot be read as a cap and the server
 // picks its own.
-func getTopicList(c *Ctx, args string) (Answer, error) {
+func getTopicList(c *Ctx, args []string) (Answer, error) {
 	topics, err := c.Store.Topics(c.Ctx, atoi(field(args, 0)), forumTopicLimit)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(topics))
+	rows := make([][]any, 0, len(topics))
 	for _, t := range topics {
-		rows = append(rows, tab(
+		rows = append(rows, row(
 			"", t.ID, t.Subject, t.Posts, "", "", date(t.Created), "",
 			t.Author, "", "", "",
 			t.HasDeletes, t.Security, t.MaxPostID,
@@ -71,7 +71,7 @@ func getTopicList(c *Ctx, args string) (Answer, error) {
 // array 9. Status field 2 is the per-forum flag the client caches as
 // ForumsGui.bflag (webforums.cs:765), which is why this one ordinal reads a
 // forum id it does not otherwise need.
-func getPostUpdates(c *Ctx, args string) (Answer, error) {
+func getPostUpdates(c *Ctx, args []string) (Answer, error) {
 	topicID := atoi(field(args, 0))
 	since := atoi(field(args, 1))
 
@@ -80,9 +80,9 @@ func getPostUpdates(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(posts))
+	rows := make([][]any, 0, len(posts))
 	for _, p := range posts {
-		head := tab(
+		head := row(
 			p.IsAuthor, "", p.ID, p.ParentID, p.ID,
 			p.Author.Name, p.Author.Tag, p.Author.Append, p.Author.GUID,
 			"", date(p.Created), "", p.Deleted, p.Subject,
@@ -92,17 +92,13 @@ func getPostUpdates(c *Ctx, args string) (Answer, error) {
 
 	// Field 2 is the per-forum flag the client caches as ForumsGui.bflag, so
 	// the sentence in field 1 goes in front of it rather than over it.
-	return Answer{
-		Status: okStatus("", "0"),
-		Result: strconv.Itoa(len(rows)),
-		Rows:   rows,
-	}, nil
+	return okFields("", []string{"0"}, strconv.Itoa(len(rows))).withRows(rows), nil
 }
 
 // scalar 12: a new topic when the topic id is 0, a reply otherwise. The client
 // sends both through this one ordinal and distinguishes them only by whether it
 // has a topic id yet (webforums.cs:482, :510).
-func postTopicOrReply(c *Ctx, args string) (Answer, error) {
+func postTopicOrReply(c *Ctx, args []string) (Answer, error) {
 	topic := atoi(field(args, 1))
 	subject := field(args, 3)
 	err := c.Store.PostTopic(c.Ctx, c.GUID,
@@ -117,7 +113,7 @@ func postTopicOrReply(c *Ctx, args string) (Answer, error) {
 	return okMessage("Your reply " + quoted(subject) + " has been posted."), nil
 }
 
-func editPost(c *Ctx, args string) (Answer, error) {
+func editPost(c *Ctx, args []string) (Answer, error) {
 	id := atoi(field(args, 0))
 	err := c.Store.EditPost(c.Ctx, c.GUID, id, field(args, 1), fieldsFrom(args, 2))
 	if err != nil {
@@ -140,8 +136,8 @@ func editPost(c *Ctx, args string) (Answer, error) {
 // Branching on the field count is the only reading available: the wire carries
 // nothing else that separates them, and the two one-field cases are the same
 // operation under different labels anyway.
-func postNewsOrDeletePost(c *Ctx, args string) (Answer, error) {
-	if len(fields(args)) >= 3 {
+func postNewsOrDeletePost(c *Ctx, args []string) (Answer, error) {
+	if len(args) >= 3 {
 		if err := requireStaff(c); err != nil {
 			return staffRefusal(err)
 		}
@@ -163,16 +159,16 @@ func postNewsOrDeletePost(c *Ctx, args string) (Answer, error) {
 // scalar 60 and 61 flag something for a moderator's attention. The shipped
 // scripts say what is sent and nothing about what came back, so both are
 // recorded and acknowledged rather than acted on.
-func requestTopicReview(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 60, 0, args); err != nil {
+func requestTopicReview(c *Ctx, args []string) (Answer, error) {
+	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 60, 0, strings.Join(args, "\t")); err != nil {
 		return Answer{}, err
 	}
 	return okMessage("Topic " + itoa64(atoi(field(args, 0))) +
 		" has been reported to the moderators."), nil
 }
 
-func requestPostReview(c *Ctx, args string) (Answer, error) {
-	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 61, 0, args); err != nil {
+func requestPostReview(c *Ctx, args []string) (Answer, error) {
+	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 61, 0, strings.Join(args, "\t")); err != nil {
 		return Answer{}, err
 	}
 	return okMessage("Post " + itoa64(atoi(field(args, 0))) +
@@ -184,9 +180,9 @@ func requestPostReview(c *Ctx, args string) (Answer, error) {
 // shipped scripts. The forums reading -- remove this topic -- is the one that
 // has a call site whose intent is legible, so it is the one acted on, and the
 // browser's selector is recorded alongside.
-func removeTopic(c *Ctx, args string) (Answer, error) {
+func removeTopic(c *Ctx, args []string) (Answer, error) {
 	selector := int(atoi(field(args, 0)))
-	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 62, selector, args); err != nil {
+	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 62, selector, strings.Join(args, "\t")); err != nil {
 		return Answer{}, err
 	}
 	topic := atoi(field(args, 1))
@@ -196,7 +192,7 @@ func removeTopic(c *Ctx, args string) (Answer, error) {
 	return okMessage("Topic " + itoa64(topic) + " has been removed."), nil
 }
 
-func lockTopic(c *Ctx, args string) (Answer, error) {
+func lockTopic(c *Ctx, args []string) (Answer, error) {
 	topic := atoi(field(args, 0))
 	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, topic, true); err != nil {
 		return userError(err)
@@ -205,7 +201,7 @@ func lockTopic(c *Ctx, args string) (Answer, error) {
 		"reply to it."), nil
 }
 
-func unlockTopic(c *Ctx, args string) (Answer, error) {
+func unlockTopic(c *Ctx, args []string) (Answer, error) {
 	topic := atoi(field(args, 0))
 	if err := c.Store.SetTopicLocked(c.Ctx, c.GUID, topic, false); err != nil {
 		return userError(err)
@@ -214,7 +210,7 @@ func unlockTopic(c *Ctx, args string) (Answer, error) {
 		"for replies."), nil
 }
 
-func moveTopic(c *Ctx, args string) (Answer, error) {
+func moveTopic(c *Ctx, args []string) (Answer, error) {
 	topic, forum := atoi(field(args, 0)), atoi(field(args, 1))
 	if err := c.Store.MoveTopic(c.Ctx, c.GUID, topic, forum); err != nil {
 		return userError(err)

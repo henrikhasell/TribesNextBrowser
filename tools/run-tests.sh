@@ -45,12 +45,16 @@ reseed() {
 preflight() {
     local code
     code=$(curl -s -o /dev/null -w '%{http_code}' \
-           --data 'guid=4510186&payload={"form":"scalar","ordinal":"0","args":""}' \
+           -H 'Content-Type: application/json' \
+           -H 'Authorization: TNB 4510186:preflight' \
+           -d '{"form":"scalar","ordinal":"0","args":[]}' \
            "$DATA_LOCAL/db")
     case "$code" in
         200) return 0 ;;
         401) echo "The backend refused a bare guid." >&2
              echo "Start it with -dev-trust-guid (or TNB_DEV_TRUST_GUID=1)." >&2
+             exit 1 ;;
+        400) echo "The backend answered 400 -- it is older than this runner." >&2
              exit 1 ;;
         000) echo "No backend answering on $DATA_LOCAL." >&2
              exit 1 ;;

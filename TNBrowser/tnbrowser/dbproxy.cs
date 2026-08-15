@@ -70,12 +70,17 @@ function TNBDbSend(%form, %ordinal, %maxRows, %args, %proxyObject, %key)
    if ($TNB::Debug)
       echo("TNBrowser db -> " @ %form SPC %ordinal SPC "[" @ %args @ "]");
 
-   // POST, always. Arguments are user-authored text often enough -- a profile
-   // body, a mail body, a clan description -- that a query string is the wrong
-   // place for them, and the two forms would otherwise differ for no reason.
+   // POST, always, with a JSON body. Arguments are user-authored text often
+   // enough -- a profile body, a mail body, a clan description -- that a query
+   // string is the wrong place for them, and the two forms would otherwise
+   // differ for no reason.
+   //
+   // %maxRows is not sent. It was nominally a row cap, but three of the shipped
+   // call sites put a page number in that slot and a fourth a real limit, so it
+   // could never be read as one; ordinals that need a bound pick their own.
    TNBApiEnqueueOn($TNB::DbURI, "db",
-                   TNBJsonObject("form", %form, "ordinal", %ordinal,
-                                 "maxRows", %maxRows, "args", %args),
+                   TNBJsonObjectWith("form", %form, "ordinal", %ordinal,
+                                     "args", TNBJsonFieldArray(%args)),
                    "TNBDbDone", %id, 1);
    return %id;
 }
@@ -110,15 +115,27 @@ function TNBDbDone(%id, %status, %result)
       return;
    }
 
-   %statusField = TNBJsonStr(%result, "status");
-   %resultString = TNBJsonStr(%result, "result");
-   %rows = TNBJsonGet(%result, "rows");
-
-   if (%statusField $= "")
+   // Rebuild the status string the shipped scripts parse. The wire carries a
+   // real code, a message and -- for the two profile ordinals -- the payload
+   // fields that used to trail the status. Joining them here is the whole job
+   // of a shim: the packed format lives for one line, at the last moment,
+   // instead of on the wire.
+   %code = TNBJsonStr(%result, "code");
+   if (%code $= "")
    {
-      TNBDbFail(%proxy, %key, "The community server sent an answer with no status.");
+      TNBDbFail(%proxy, %key, "The community server sent an answer with no code.");
       return;
    }
+
+   %statusField = %code TAB TNBJsonStr(%result, "message");
+
+   %extra = TNBJsonGet(%result, "fields");
+   %extraCount = TNBJsonCount(%extra);
+   for (%i = 0; %i < %extraCount; %i++)
+      %statusField = %statusField TAB TNBJsonValue(TNBJsonIndex(%extra, %i));
+
+   %resultString = TNBJsonStr(%result, "result");
+   %rows = TNBJsonGet(%result, "rows");
 
    // A query with neither proxy object nor key is a real call form, not a
    // mistake: DatabaseQuery(7, %id) at webemail.cs:1328 marks a message read
@@ -129,9 +146,12 @@ function TNBDbDone(%id, %status, %result)
 
    %proxy.onDatabaseQueryResult(%statusField, %resultString, %key);
 
+   // Each row arrives as an array of fields and leaves as the tab-joined string
+   // onDatabaseRow has always been handed. The engine reads a JSON true as 1,
+   // so a boolean field joins as the spelling getField callers test for.
    %count = TNBJsonCount(%rows);
    for (%i = 0; %i < %count; %i++)
-      %proxy.onDatabaseRow(TNBJsonValue(TNBJsonIndex(%rows, %i)),
+      %proxy.onDatabaseRow(TNBDbJoinRow(TNBJsonIndex(%rows, %i)),
                            (%i == %count - 1), %key);
 
    // No rows means no onDatabaseRow at all, and therefore no isLast. That
@@ -148,6 +168,21 @@ function TNBDbDone(%id, %status, %result)
 // string by name and show "please wait a few moments and try again", which is
 // both the right message and one the player has UI for. A failure our server
 // described in words is passed through instead, because it says more.
+// One row's fields, tab-joined. The indices are the shipped parsers' contract,
+// so every field is emitted including the empty ones.
+function TNBDbJoinRow(%row)
+{
+   %n = TNBJsonCount(%row);
+   %out = "";
+   for (%i = 0; %i < %n; %i++)
+   {
+      if (%i > 0)
+         %out = %out @ "\t";
+      %out = %out @ TNBJsonValue(TNBJsonIndex(%row, %i));
+   }
+   return %out;
+}
+
 function TNBDbFail(%proxy, %key, %reason)
 {
    if (%proxy $= "")
@@ -199,7 +234,7 @@ function TNBCertLoaded(%ctx, %status, %result)
 {
    if (%status $= "ok")
    {
-      $TNB::Cert = TNBJsonStr(%result, "cert");
+      $TNB::Cert = TNBCertRecord(%result);
       TNBCachePathSync();
    }
 
@@ -209,6 +244,45 @@ function TNBCertLoaded(%ctx, %status, %result)
    if (%cb !$= "")
       call(%cb, $TNB::CertCbCtx, %status,
            (%status $= "ok" ? $TNB::Cert : %result));
+}
+
+// Render the identity into the record layout WONGetAuthInfo() has to answer
+// with.
+//
+// The server sends this structured -- real booleans, a nested tribe list -- and
+// this is where it becomes the tab-and-newline layout 45 shipped call sites
+// read:
+//
+//     record 0    name TAB tag TAB append TAB guid
+//     record 1    <tribe count>
+//     record 2+n  name TAB tag TAB append TAB tribeId TAB rank TAB title
+//
+// Keeping the packed form here rather than on the wire is the point of a shim:
+// it exists for exactly one reader, and it is built one line before that reader
+// sees it.
+function TNBCertRecord(%root)
+{
+   %out = TNBJsonStr(%root, "name") TAB
+          TNBJsonStr(%root, "tag") TAB
+          (TNBJsonBool(%root, "append") ? 1 : 0) TAB
+          TNBJsonStr(%root, "guid");
+
+   %tribes = TNBJsonGet(%root, "tribes");
+   %n = TNBJsonCount(%tribes);
+   %out = %out NL %n;
+
+   for (%i = 0; %i < %n; %i++)
+   {
+      %t = TNBJsonIndex(%tribes, %i);
+      %out = %out NL
+             TNBJsonStr(%t, "name") TAB
+             TNBJsonStr(%t, "tag") TAB
+             (TNBJsonBool(%t, "append") ? 1 : 0) TAB
+             TNBJsonStr(%t, "id") TAB
+             TNBJsonStr(%t, "rank") TAB
+             TNBJsonStr(%t, "title");
+   }
+   return %out;
 }
 
 // Point the mail cache at the account whose mail it holds.

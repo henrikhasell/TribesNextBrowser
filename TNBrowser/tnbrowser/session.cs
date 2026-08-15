@@ -233,10 +233,8 @@ function TNBSessionStart()
       return;
    }
 
-   %query = "guid=" @ %guid @ "&";
-
    if ($TNB::UUID !$= "")
-      %query = %query @ "uuid=" @ $TNB::UUID;
+      %query = TNBJsonObject("guid", %guid, "uuid", $TNB::UUID);
    else if ($TNB::Challenge $= "")
    {
       // The certificate travels with the nonce. It is public -- the client
@@ -251,7 +249,8 @@ function TNBSessionStart()
       // which is every test container -- and whether that is allowed to log in
       // is the server's decision to make, not ours. A real backend answers ERR;
       // one started for the test suites hands over a session.
-      %query = %query @ "nonce=" @ TNBSessionMakeNonce();
+      %nonce = TNBSessionMakeNonce();
+      %query = TNBJsonObject("guid", %guid, "nonce", %nonce);
 
       %cert = TNBAccountCertificate();
       if (%cert !$= "")
@@ -265,7 +264,7 @@ function TNBSessionStart()
          // differ.
          $TNB::CertName = getField(%cert, 0);
          $TNB::CertGuid = getField(%cert, 1);
-         %query = %query @ "&cert=" @ TNBUrlEncode(%cert);
+         %query = TNBJsonObject("guid", %guid, "nonce", %nonce, "cert", %cert);
       }
    }
    else
@@ -273,7 +272,7 @@ function TNBSessionStart()
       %response = TNBSessionAnswerChallenge();
       if (%response $= "")
          return;                 // AnswerChallenge already restarted or failed
-      %query = %query @ "response=" @ %response;
+      %query = TNBJsonObject("guid", %guid, "response", %response);
    }
 
    TNBSessionSend(%query);
@@ -372,9 +371,8 @@ function TNBSessionSend(%query)
    new HTTPObject(TNBSessionInterface);
 
    TNBSessionInterface.buffer = "";
-   TNBSessionInterface.handled = 0;
-   TNBSessionInterface.setHeader("Accept", "text/plain");
-   TNBSessionInterface.setHeader("Content-Type", "application/x-www-form-urlencoded");
+   TNBSessionInterface.setHeader("Accept", "application/json");
+   TNBSessionInterface.setHeader("Content-Type", "application/json");
 
    // POST, because the certificate is about 1,200 characters and a query string
    // is the wrong place for it. The URI carries nothing: this build's
@@ -394,61 +392,84 @@ function TNBSessionSend(%query)
 // Transport callbacks
 //-----------------------------------------------------------------------------
 
+// The body arrives in pieces, so it is accumulated and parsed once the
+// transfer completes -- the same shape api.cs uses, and the reason /session
+// stopped being line-oriented: one JSON object cannot be read a line at a time.
 function TNBSessionInterface::onLine(%this, %line)
 {
-   %line = trim(%line);
-   if (%line $= "")
-      return;                    // blank separator line before the body
+   %this.buffer = %this.buffer @ %line;
+}
 
-   %this.handled = 1;
-
+// Everything the session can be told, in one place.
+//
+// Five states and no more: challenge, granted, refreshed, expired, or an error
+// object. The client acts on each and never has to guess from a status code.
+function TNBSessionComplete(%body)
+{
    if ($TNB::Debug)
-      echo("TNBrowser session <- " @ %line);
+      echo("TNBrowser session <- " @ getSubStr(%body, 0, 200));
 
-   if (getSubStr(%line, 0, 11) $= "CHALLENGE: ")
+   %root = TNBJsonParse(%body);
+   if (!%root)
    {
-      $TNB::Errors = 0;
-      $TNB::Challenge = getSubStr(%line, 11, strlen(%line));
-      // Answer on the next tick rather than inline, so the decrypt does not
-      // happen inside the network callback.
-      $TNB::Schedule = schedule(200, 0, "TNBSessionStart");
+      TNBSessionFail("The community server sent an unreadable answer.");
       return;
    }
 
-   if (getSubStr(%line, 0, 6) $= "UUID: ")
+   %error = TNBJsonStr(%root, "error");
+   if (%error !$= "")
+   {
+      %msg = TNBJsonStr(%root, "message");
+      if (%msg $= "")
+         %msg = "That session request was refused.";
+      TNBJsonFree(%root);
+      TNBSessionFail(%msg);
+      return;
+   }
+
+   %state = TNBJsonStr(%root, "state");
+
+   if (%state $= "challenge")
    {
       $TNB::Errors = 0;
-      $TNB::UUID = getSubStr(%line, 6, strlen(%line));
+      $TNB::Challenge = TNBJsonStr(%root, "challenge");
+      // Answer on the next tick rather than inline, so the decrypt does not
+      // happen inside the network callback.
+      $TNB::Schedule = schedule(200, 0, "TNBSessionStart");
+   }
+   else if (%state $= "granted")
+   {
+      $TNB::Errors = 0;
+      $TNB::UUID = TNBJsonStr(%root, "uuid");
       $TNB::Challenge = "";
       $TNB::Nonce = "";
       echo("TNBrowser: session established");
       $TNB::Schedule = schedule($TNB::SessionRefresh * 1000, 0, "TNBSessionStart");
+      TNBJsonFree(%root);
       TNBSessionFlushWaiters();
       return;
    }
-
-   if (getSubStr(%line, 0, 9) $= "REFRESHED")
+   else if (%state $= "refreshed")
    {
       $TNB::Errors = 0;
       $TNB::Schedule = schedule($TNB::SessionRefresh * 1000, 0, "TNBSessionStart");
-      return;
    }
-
-   if (getSubStr(%line, 0, 7) $= "TIMEOUT")
+   else if (%state $= "expired")
    {
       // The session lapsed; drop it and negotiate a fresh one.
       $TNB::UUID = "";
       $TNB::Challenge = "";
       $TNB::Errors = 0;
       $TNB::Schedule = schedule(200, 0, "TNBSessionStart");
+   }
+   else
+   {
+      TNBJsonFree(%root);
+      TNBSessionFail("The community server sent an unknown session state.");
       return;
    }
 
-   if (getSubStr(%line, 0, 5) $= "ERR: ")
-   {
-      TNBSessionFail(getSubStr(%line, 5, strlen(%line)));
-      return;
-   }
+   TNBJsonFree(%root);
 }
 
 // This build's libcurl-backed HTTPObject does NOT call onConnectFailed or
@@ -472,10 +493,18 @@ function TNBSessionInterface::onDisconnect(%this)
    // it always finds this cleared.
    $TNB::SessionBusy = "";
 
-   if (%this.handled)
-      return;
+   // The whole body is here now, so this is where it is read. onLine only
+   // accumulates: one JSON object cannot be understood a line at a time.
+   %body = trim(%this.buffer);
+   %this.buffer = "";
 
-   TNBSessionFail("Could not reach the community server.");
+   if (%body $= "")
+   {
+      TNBSessionFail("Could not reach the community server.");
+      return;
+   }
+
+   TNBSessionComplete(%body);
 }
 
 // Kept for completeness in case a future patch starts emitting them; they are

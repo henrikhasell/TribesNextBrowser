@@ -87,7 +87,11 @@ function TNBClanCertLoaded(%ctx, %status, %result)
    }
 
    // Copied out now: the parsed tree is freed as soon as this returns.
-   %cert = TNBJsonStr(%result, "cert");
+   // The response is JSON around an opaque token. The token itself is not JSON
+   // and will not become it: its signature covers the literal joined bytes, and
+   // the game server that checks it does so inside onConnect with getField and
+   // no parser at all.
+   %cert = TNBJsonStr(%result, "certificate");
 
    if (getFieldCount(%cert) != 6)
    {

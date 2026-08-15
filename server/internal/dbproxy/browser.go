@@ -84,7 +84,7 @@ func init() {
 // scalar 22. The payload is the STATUS, not a row: GetProfileHdr is handed
 // getFields(%status,2) and reads six fields off it (webbrowser.cs:1355). The
 // description goes in the resultString.
-func getTribeProfile(c *Ctx, args string) (Answer, error) {
+func getTribeProfile(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -94,21 +94,19 @@ func getTribeProfile(c *Ctx, args string) (Answer, error) {
 		return notFound(err, "There is no tribe by that name.")
 	}
 
-	status := okStatus(
-		"The profile for "+p.Name+" follows.",
+	return okFields("The profile for "+p.Name+" follows.", []string{
 		strconv.FormatInt(p.ID, 10),
 		p.Name,
 		p.Tag,
-		boolField(p.Append),
-		boolField(p.Recruiting),
+		flag(p.Append),
+		flag(p.Recruiting),
 		graphicOr(p.Graphic, defaultTribeGfx),
-	)
-	return okWith(status, p.Info), nil
+	}, p.Info), nil
 }
 
 // scalar 23, for both PROFILE and OPTIONS. See the ordinal table for why field
 // 9 carries the graphic rather than the tribe count the other reading wants.
-func getWarriorProfile(c *Ctx, args string) (Answer, error) {
+func getWarriorProfile(c *Ctx, args []string) (Answer, error) {
 	guid, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -118,18 +116,16 @@ func getWarriorProfile(c *Ctx, args string) (Answer, error) {
 		return notFound(err, "There is no warrior by that name.")
 	}
 
-	status := okStatus(
-		"The profile for "+p.Q.Name+" follows.",
+	return okFields("The profile for "+p.Q.Name+" follows.", []string{
 		p.Q.Name,
 		p.Q.Tag,
-		boolField(p.Q.Append),
+		flag(p.Q.Append),
 		p.Q.GUID,
 		date(p.Registered),
-		boolField(p.Online),
+		flag(p.Online),
 		p.URL,
 		graphicOr(p.Graphic, defaultPlayerGfx),
-	)
-	return okWith(status, p.Info), nil
+	}, p.Info), nil
 }
 
 //-----------------------------------------------------------------------------
@@ -139,16 +135,16 @@ func getWarriorProfile(c *Ctx, args string) (Answer, error) {
 // array 4. getTribeName (webbrowser.cs:316) renders fields 1 and 2 as
 // "<name> - <tag>" and keeps field 1 as the tab name, so field 1 must be the
 // bare name even though the row is a search hit.
-func searchTribes(c *Ctx, args string) (Answer, error) {
+func searchTribes(c *Ctx, args []string) (Answer, error) {
 	q, start, count := searchArgs(args)
 	hits, err := c.Store.SearchTribes(c.Ctx, q, start, count)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(hits))
+	rows := make([][]any, 0, len(hits))
 	for _, h := range hits {
-		rows = append(rows, tab(h.ID, h.Name, h.Tag))
+		rows = append(rows, row(h.ID, h.Name, h.Tag))
 	}
 	return okRows(rows), nil
 }
@@ -156,7 +152,7 @@ func searchTribes(c *Ctx, args string) (Answer, error) {
 // array 11. Field 10 is "isOwned" -- whether the row belongs to the caller's
 // side of the transaction -- and field 11 an online flag the client reads
 // inverted, MemberList.setRowStyleById(id, !online) at webbrowser.cs:1528.
-func getTribeInvites(c *Ctx, args string) (Answer, error) {
+func getTribeInvites(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -166,9 +162,9 @@ func getTribeInvites(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(invites))
+	rows := make([][]any, 0, len(invites))
 	for _, v := range invites {
-		rows = append(rows, tab(
+		rows = append(rows, row(
 			v.ID, date(v.Created),
 			v.From.Name, v.From.Tag, v.From.Append, v.From.GUID,
 			v.To.Name, v.To.Tag, v.To.Append, v.To.GUID,
@@ -182,7 +178,7 @@ func getTribeInvites(c *Ctx, args string) (Answer, error) {
 // array 12. The only ordinal whose rows are not field-structured: each row is
 // appended verbatim to a GuiMLTextCtrl (webbrowser.cs:1821), so it is a line of
 // display text and may carry Torque markup.
-func getWarriorHistory(c *Ctx, args string) (Answer, error) {
+func getWarriorHistory(c *Ctx, args []string) (Answer, error) {
 	guid, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -192,9 +188,9 @@ func getWarriorHistory(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(entries))
+	rows := make([][]any, 0, len(entries))
 	for _, e := range entries {
-		rows = append(rows, date(atoi(e.Time))+"  "+linkRefs(e.Event))
+		rows = append(rows, row(date(atoi(e.Time))+"  "+linkRefs(e.Event)))
 	}
 	return okRows(rows), nil
 }
@@ -251,7 +247,7 @@ func linkRefs(event string) string {
 // array 13. Only ever issued for OTHER warriors -- viewing your own tribe list
 // renders straight out of the certificate and sends no query at all
 // (webbrowser.cs:1909-1927).
-func getWarriorTribeList(c *Ctx, args string) (Answer, error) {
+func getWarriorTribeList(c *Ctx, args []string) (Answer, error) {
 	guid, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -261,9 +257,9 @@ func getWarriorTribeList(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(tribes))
+	rows := make([][]any, 0, len(tribes))
 	for _, t := range tribes {
-		rows = append(rows, tab(t.Name, "", t.ID, t.Rank,
+		rows = append(rows, row(t.Name, "", t.ID, t.Rank,
 			t.Rank >= store.RankOfficer, t.Title))
 	}
 	return okRows(rows), nil
@@ -273,7 +269,7 @@ func getWarriorTribeList(c *Ctx, args string) (Answer, error) {
 // handler sets state = "done" unconditionally (webbrowser.cs:1410) and the
 // branch that would have consumed these rows is commented out below it, so
 // tribe news was cut before release and nothing renders this.
-func getTribeNews(c *Ctx, args string) (Answer, error) {
+func getTribeNews(c *Ctx, args []string) (Answer, error) {
 	if _, err := c.Store.FindClan(c.Ctx, field(args, 0)); err != nil {
 		return notFound(err, "There is no tribe by that name.")
 	}
@@ -287,7 +283,7 @@ func getTribeNews(c *Ctx, args string) (Answer, error) {
 // scalar 15. The line count in field 1 is the client's own, and the
 // description follows it; taking the tail rather than field 2 alone keeps a
 // multi-line description intact.
-func setTribeDescription(c *Ctx, args string) (Answer, error) {
+func setTribeDescription(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -307,7 +303,7 @@ func setTribeDescription(c *Ctx, args string) (Answer, error) {
 // its own line count exactly as ordinal 15 sends it. Reading only the first
 // three founded every UI-created tribe with an empty description and
 // recruitment closed.
-func createTribe(c *Ctx, args string) (Answer, error) {
+func createTribe(c *Ctx, args []string) (Answer, error) {
 	name := field(args, 0)
 	tag := field(args, 1)
 	appendTag := truthy(field(args, 2))
@@ -321,7 +317,7 @@ func createTribe(c *Ctx, args string) (Answer, error) {
 	return okResult("The tribe "+name+" has been founded, with you as its leader.", name), nil
 }
 
-func deleteTribe(c *Ctx, args string) (Answer, error) {
+func deleteTribe(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -351,7 +347,7 @@ func deleteTribe(c *Ctx, args string) (Answer, error) {
 
 // scalar 19. Named from LinkKickMember and the state it sets, not from the
 // DatabaseQuery line -- an earlier reading of this ordinal had it as the invite.
-func kickMember(c *Ctx, args string) (Answer, error) {
+func kickMember(c *Ctx, args []string) (Answer, error) {
 	target, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -382,7 +378,7 @@ func kickMember(c *Ctx, args string) (Answer, error) {
 
 // scalar 20. "Recruiting" and "Appending" are the only two words any of the
 // four call sites passes.
-func toggleTribeFlag(c *Ctx, args string) (Answer, error) {
+func toggleTribeFlag(c *Ctx, args []string) (Answer, error) {
 	flag := field(args, 0)
 	id, err := c.Store.FindClan(c.Ctx, field(args, 1))
 	if err != nil {
@@ -431,7 +427,7 @@ func toggleTribeFlag(c *Ctx, args string) (Answer, error) {
 // the level is stored as the title, and atoi of a title like "Warlord" is 0, so
 // renaming a member demoted them to recruit and the refusal band never fired
 // because 0 is a legal rank.
-func setMemberProfile(c *Ctx, args string) (Answer, error) {
+func setMemberProfile(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -475,7 +471,7 @@ func setMemberProfile(c *Ctx, args string) (Answer, error) {
 		", at admin level " + itoa(rank) + "."), nil
 }
 
-func setTribeGraphic(c *Ctx, args string) (Answer, error) {
+func setTribeGraphic(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -490,7 +486,7 @@ func setTribeGraphic(c *Ctx, args string) (Answer, error) {
 	return okMessage("The graphic for " + p.Name + " has been updated."), nil
 }
 
-func setTribeTag(c *Ctx, args string) (Answer, error) {
+func setTribeTag(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -510,7 +506,7 @@ func setTribeTag(c *Ctx, args string) (Answer, error) {
 // Membership
 //-----------------------------------------------------------------------------
 
-func leaveTribe(c *Ctx, args string) (Answer, error) {
+func leaveTribe(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -534,7 +530,7 @@ func leaveTribe(c *Ctx, args string) (Answer, error) {
 // "<name> has been flagged as your primary tribe." (webbrowser.cs:1719). One
 // ordinal serves both set and clear -- which branch runs is decided entirely
 // client-side by the state LinkMakePrimary was called with.
-func setPrimaryTribe(c *Ctx, args string) (Answer, error) {
+func setPrimaryTribe(c *Ctx, args []string) (Answer, error) {
 	arg := field(args, 0)
 	if arg == "" || arg == "0" || arg == "-1" {
 		if err := c.Store.SetActiveClan(c.Ctx, c.GUID, -1); err != nil {
@@ -562,7 +558,7 @@ func setPrimaryTribe(c *Ctx, args string) (Answer, error) {
 // mailed a body carrying the accept and reject links. PlayerPane expects
 // exactly that -- it deletes the open message and re-checks mail once the
 // answer lands (webbrowser.cs:1726-1733).
-func inviteToTribe(c *Ctx, args string) (Answer, error) {
+func inviteToTribe(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -606,7 +602,7 @@ func inviteToTribe(c *Ctx, args string) (Answer, error) {
 // decides. Field 2 naming somebody other than the caller, with the caller able
 // to invite on the tribe's behalf, is an admin answering a request; anything
 // else is a warrior answering their own invitation.
-func answerInvitation(c *Ctx, args string) (Answer, error) {
+func answerInvitation(c *Ctx, args []string) (Answer, error) {
 	verb := strings.ToLower(field(args, 0))
 	id, err := c.Store.FindClan(c.Ctx, field(args, 1))
 	if err != nil {
@@ -694,7 +690,7 @@ func answerInvitation(c *Ctx, args string) (Answer, error) {
 // (webbrowser.cs:1446), so every branch here is a sentence rather than a code.
 // The tribe's admins are mailed, because the request is otherwise unanswerable:
 // array 11 is tribe-scoped and its tab is admin-only.
-func requestInvite(c *Ctx, args string) (Answer, error) {
+func requestInvite(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -734,8 +730,9 @@ func requestInvite(c *Ctx, args string) (Answer, error) {
 // scalar 17. Both call sites are the warrior description; the tribe branch of
 // the same dialog sends ordinal 15 instead. The literal NONE clears it
 // (webbrowser.cs:2553, doClearDescription).
-func setWarriorDescription(c *Ctx, args string) (Answer, error) {
-	text := args
+func setWarriorDescription(c *Ctx, args []string) (Answer, error) {
+	// Every line of it: the description arrives as one argument per line.
+	text := strings.Join(args, "\n")
 	if text == "NONE" {
 		text = ""
 	}
@@ -748,14 +745,14 @@ func setWarriorDescription(c *Ctx, args string) (Answer, error) {
 	return okMessage("The description on " + c.Name + " has been updated."), nil
 }
 
-func setPlayerGraphic(c *Ctx, args string) (Answer, error) {
+func setPlayerGraphic(c *Ctx, args []string) (Answer, error) {
 	if err := c.Store.SetGraphic(c.Ctx, c.GUID, field(args, 0)); err != nil {
 		return userError(err)
 	}
 	return okMessage("The graphic on " + c.Name + " has been updated."), nil
 }
 
-func setPlayerUrl(c *Ctx, args string) (Answer, error) {
+func setPlayerUrl(c *Ctx, args []string) (Answer, error) {
 	url := field(args, 0)
 	if err := c.Store.SetWebsite(c.Ctx, c.GUID, url); err != nil {
 		return userError(err)
@@ -772,12 +769,12 @@ func setPlayerUrl(c *Ctx, args string) (Answer, error) {
 // session and refreshes it on every request, so a rename here would be undone
 // within the minute -- succeeding and silently reverting is worse than saying
 // no.
-func setPlayerName(c *Ctx, args string) (Answer, error) {
+func setPlayerName(c *Ctx, args []string) (Answer, error) {
 	return fail("Your warrior name belongs to your TribesNext account and " +
 		"must be changed there."), nil
 }
 
-func clearBuddy(c *Ctx, args string) (Answer, error) {
+func clearBuddy(c *Ctx, args []string) (Answer, error) {
 	if err := c.Store.BuddyClear(c.Ctx, c.GUID); err != nil {
 		return userError(err)
 	}
@@ -789,7 +786,7 @@ func clearBuddy(c *Ctx, args string) (Answer, error) {
 // selector in field 0 is named nowhere in the shipped scripts, so the action is
 // recorded rather than interpreted -- guessing at a meaning would be worse than
 // keeping the evidence.
-func postAdminAction(c *Ctx, args string) (Answer, error) {
+func postAdminAction(c *Ctx, args []string) (Answer, error) {
 	staff, err := c.Store.IsStaff(c.Ctx, c.GUID)
 	if err != nil {
 		return Answer{}, err
@@ -798,7 +795,7 @@ func postAdminAction(c *Ctx, args string) (Answer, error) {
 		return fail("You do not have moderator privileges."), nil
 	}
 	if err := c.Store.LogAdminAction(c.Ctx, c.GUID, 63,
-		int(atoi(field(args, 0))), args); err != nil {
+		int(atoi(field(args, 0))), strings.Join(args, "\t")); err != nil {
 		return Answer{}, err
 	}
 	return okMessage("That moderator action has been recorded against " +
@@ -813,7 +810,7 @@ func postAdminAction(c *Ctx, args string) (Answer, error) {
 // search ordinals send. The trailing flag differs by caller -- the address book
 // sends 1, the browser 0 -- and what it selected is not recoverable from the
 // client, so it is read and ignored rather than guessed at.
-func searchArgs(args string) (q string, start, count int) {
+func searchArgs(args []string) (q string, start, count int) {
 	q = field(args, 0)
 	start = int(atoi(field(args, 1)))
 	count = int(atoi(field(args, 2)))

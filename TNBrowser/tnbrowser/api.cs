@@ -237,26 +237,21 @@ function TNBApiSend()
    // parameter too, naming which of a table of remote methods to run; there is
    // no such table now, every request goes to its own path, and the backend has
    // never read it.
-   %auth = "guid=" @ TNBSessionGuid() @
-           "&uuid=" @ $TNB::UUID;
+   // Identity travels in a header rather than the query string, so every
+   // authenticated route carries it the same way and the credential stays out
+   // of the request line -- which is the part that ends up in access logs.
+   TNBApiInterface.setHeader("Authorization",
+                             "TNB " @ TNBSessionGuid() @ ":" @ $TNB::UUID);
 
    if ($TNB::QPost[%h])
    {
-      // User-authored text (profile bodies, clan info, titles) can be long and
-      // contains characters that are awkward in a URI, so it travels as a form
-      // body. The backend reads the query string and the body alike, so the
-      // split costs the caller nothing.
-      TNBApiInterface.setHeader("Content-Type", "application/x-www-form-urlencoded");
-      TNBApiInterface.post(%host, %uri @ "?" @ %auth, "",
-                           "payload=" @ TNBUrlEncode(%payload));
+      // A JSON body, not a form. The payload used to be a URL-encoded JSON
+      // string inside a urlencoded field, which is two encodings doing one job.
+      TNBApiInterface.setHeader("Content-Type", "application/json");
+      TNBApiInterface.post(%host, %uri, "", %payload);
    }
    else
-   {
-      %full = %uri @ "?" @ %auth;
-      if (%payload !$= "")
-         %full = %full @ "&payload=" @ TNBUrlEncode(%payload);
-      TNBApiInterface.get(%host, %full, "");
-   }
+      TNBApiInterface.get(%host, %uri, "");
 
    if ($TNB::Debug)
       echo("TNBrowser api -> " @ %method @ " " @ %payload);
@@ -334,26 +329,20 @@ function TNBApiComplete(%body)
       return;
    }
 
-   // A transport failure comes back in the same shape an ordinal answers in,
-   // with the HTTP code in field 0 of the status and a sentence in field 1. So
-   // almost nothing needs handling here: a 500 has a status the game already
-   // reads as a failure and a message the pane already knows how to show.
-   //
-   // 401 is the exception, because it is the one the client can do something
-   // about. The session lapsed between negotiation and this request, so drop
-   // the token; the next request negotiates a fresh one.
-   //
-   // This used to grep the raw body for the string "401", because the answer
-   // was an HTML error page with no structure to read.
-   %status = TNBJsonStr(%root, "status");
+   // Two shapes and no third: an answer, or an error object. An error is the
+   // one the client can act on -- session_expired means the token lapsed
+   // between negotiation and this request, so drop it and let the next request
+   // negotiate a fresh one.
+   %error = TNBJsonStr(%root, "error");
 
-   if (getField(%status, 0) $= "401")
+   if (%error !$= "")
    {
-      $TNB::UUID = "";
+      if (%error $= "session_expired")
+         $TNB::UUID = "";
 
-      %msg = getField(%status, 1);
+      %msg = TNBJsonStr(%root, "message");
       if (%msg $= "")
-         %msg = "Session expired. Please try again.";
+         %msg = "The community server refused that request.";
 
       call(%callback, %ctx, "error", %msg);
       TNBJsonFree(%root);

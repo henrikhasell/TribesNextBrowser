@@ -23,16 +23,16 @@ func init() {
 // array 3. Field 0 is padding -- the address book reads field 1 and the browser
 // reads fields 1.. -- so the id goes there for anything that wants it and the
 // name stays where both readers look.
-func searchWarriors(c *Ctx, args string) (Answer, error) {
+func searchWarriors(c *Ctx, args []string) (Answer, error) {
 	q, start, count := searchArgs(args)
 	hits, err := c.Store.SearchWarriors(c.Ctx, q, start, count)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(hits))
+	rows := make([][]any, 0, len(hits))
 	for _, h := range hits {
-		rows = append(rows, tab(h.GUID, h.Name, h.Tag, h.Append))
+		rows = append(rows, row(h.GUID, h.Name, h.Tag, h.Append))
 	}
 	return okRows(rows), nil
 }
@@ -43,7 +43,7 @@ func searchWarriors(c *Ctx, args string) (Answer, error) {
 // Field 5 carries an online flag the client no longer uses: the
 // setRowStyleById it fed is commented out at webbrowser.cs:1847. It is sent
 // anyway, because the field index after it is not free to move.
-func getBuddyList(c *Ctx, args string) (Answer, error) {
+func getBuddyList(c *Ctx, args []string) (Answer, error) {
 	guid := c.GUID
 	if name := field(args, 0); name != "" {
 		found, err := c.Store.FindUser(c.Ctx, name)
@@ -58,9 +58,9 @@ func getBuddyList(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(people))
+	rows := make([][]any, 0, len(people))
 	for _, p := range people {
-		rows = append(rows, tab(p.Name, p.Tag, p.Append, p.GUID,
+		rows = append(rows, row(p.Name, p.Tag, p.Append, p.GUID,
 			date(atoi(p.Since)), p.Online))
 	}
 	return okRows(rows), nil
@@ -76,7 +76,7 @@ func getBuddyList(c *Ctx, args string) (Answer, error) {
 // anything about the member. The client draws the roster's right-click menu
 // from it, so getting it wrong either hides controls an officer should have or
 // offers a recruit controls the server will refuse.
-func getTribeMembers(c *Ctx, args string) (Answer, error) {
+func getTribeMembers(c *Ctx, args []string) (Answer, error) {
 	id, err := c.Store.FindClan(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no tribe by that name.")
@@ -90,9 +90,9 @@ func getTribeMembers(c *Ctx, args string) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(members))
+	rows := make([][]any, 0, len(members))
 	for _, m := range members {
-		rows = append(rows, tab(
+		rows = append(rows, row(
 			m.Q.Name, m.Q.Tag, m.Q.Append, m.Q.GUID,
 			m.Title, m.Rank, date(m.Joined), "",
 			canAdmin && m.Q.GUID != c.GUID,
@@ -102,7 +102,7 @@ func getTribeMembers(c *Ctx, args string) (Answer, error) {
 	return okRows(rows), nil
 }
 
-func addBuddy(c *Ctx, args string) (Answer, error) {
+func addBuddy(c *Ctx, args []string) (Answer, error) {
 	target, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -117,7 +117,7 @@ func addBuddy(c *Ctx, args string) (Answer, error) {
 	return okResult(who.Name+" has been added to your buddy list.", "1"), nil
 }
 
-func dropBuddy(c *Ctx, args string) (Answer, error) {
+func dropBuddy(c *Ctx, args []string) (Answer, error) {
 	target, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -142,8 +142,8 @@ func dropBuddy(c *Ctx, args string) (Answer, error) {
 // licence to answer badly: four call sites issue this and a correct answer
 // costs nothing, while a wrong-width one would break the moment somebody fixes
 // the typo.
-func getOnlineStatus(c *Ctx, args string) (Answer, error) {
-	ids := fields(args)
+func getOnlineStatus(c *Ctx, args []string) (Answer, error) {
+	ids := args
 	flags, err := c.Store.OnlineFor(c.Ctx, ids)
 	if err != nil {
 		return Answer{}, err
@@ -151,7 +151,7 @@ func getOnlineStatus(c *Ctx, args string) (Answer, error) {
 
 	var b strings.Builder
 	for _, on := range flags {
-		b.WriteString(boolField(on))
+		b.WriteString(flag(on))
 	}
 	// The bitmap is the payload; the sentence beside it says what it counts.
 	return okResult("Online status for "+itoa(len(ids))+" warriors follows.",

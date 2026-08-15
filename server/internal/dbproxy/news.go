@@ -1,6 +1,10 @@
 package dbproxy
 
-import "github.com/henrik/tnbrowser-server/internal/store"
+import (
+	"strings"
+
+	"github.com/henrik/tnbrowser-server/internal/store"
+)
 
 // News, the MOTD and Web Links: webnews.cs, weblinks.cs.
 //
@@ -34,7 +38,7 @@ func init() {
 
 // scalar 0. The resultString IS the payload here, not a row count: the handler
 // does setText(%RowCount_Result) (webnews.cs:481).
-func getMOTD(c *Ctx, args string) (Answer, error) {
+func getMOTD(c *Ctx, args []string) (Answer, error) {
 	text, err := c.Store.MOTD(c.Ctx)
 	if err != nil {
 		return Answer{}, err
@@ -42,14 +46,14 @@ func getMOTD(c *Ctx, args string) (Answer, error) {
 	return okResult("The message of the day follows.", text), nil
 }
 
-func setMOTD(c *Ctx, args string) (Answer, error) {
+func setMOTD(c *Ctx, args []string) (Answer, error) {
 	if err := requireStaff(c); err != nil {
 		return staffRefusal(err)
 	}
-	if err := c.Store.SetMOTD(c.Ctx, args); err != nil {
+	if err := c.Store.SetMOTD(c.Ctx, strings.Join(args, "\n")); err != nil {
 		return userError(err)
 	}
-	return okMessage("The message of the day is now " + quoted(args) + "."), nil
+	return okMessage("The message of the day is now " + quoted(strings.Join(args, "\n")) + "."), nil
 }
 
 // newsRow lays out the schema array 0 and array 100 share:
@@ -59,8 +63,8 @@ func setMOTD(c *Ctx, args string) (Answer, error) {
 //
 // Fields 0 and 7 are padding the parser never reads; they exist so 8..11 land
 // where NewsGui::rebuildText looks for the quad.
-func newsRow(a store.NewsArticle) string {
-	head := tab(
+func newsRow(a store.NewsArticle) []any {
+	head := row(
 		"", a.ID, a.ID, 1, date(a.Created), a.Updated, a.Author.GUID, "",
 		a.Author.Name, a.Author.Tag, a.Author.Append, a.Author.GUID,
 		a.Category, a.Headline,
@@ -71,13 +75,13 @@ func newsRow(a store.NewsArticle) string {
 // array 0. Status fields 2 and 3 are a total-record count and an ACL
 // (webnews.cs:206); the pane uses the ACL to decide whether to draw its edit
 // controls at all.
-func getNewsArticles(c *Ctx, args string) (Answer, error) {
+func getNewsArticles(c *Ctx, args []string) (Answer, error) {
 	return newsFeed(c, atoi(field(args, 1)))
 }
 
 // array 100. The call site comments its tuple as
 // "ordinal.page.start.direction.category", so the category is field 2.
-func getNewsByCategory(c *Ctx, args string) (Answer, error) {
+func getNewsByCategory(c *Ctx, args []string) (Answer, error) {
 	return newsFeed(c, atoi(field(args, 2)))
 }
 
@@ -92,19 +96,15 @@ func newsFeed(c *Ctx, category int64) (Answer, error) {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(articles))
+	rows := make([][]any, 0, len(articles))
 	for _, a := range articles {
 		rows = append(rows, newsRow(a))
 	}
 
-	return Answer{
-		Status: okStatus("", itoa(len(rows)), boolField(staff)),
-		Result: itoa(len(rows)),
-		Rows:   rows,
-	}, nil
+	return okFields("", []string{itoa(len(rows)), flag(staff)}, itoa(len(rows))).withRows(rows), nil
 }
 
-func postNewsArticle(c *Ctx, args string) (Answer, error) {
+func postNewsArticle(c *Ctx, args []string) (Answer, error) {
 	if err := requireStaff(c); err != nil {
 		return staffRefusal(err)
 	}
@@ -116,7 +116,7 @@ func postNewsArticle(c *Ctx, args string) (Answer, error) {
 		" has been posted."), nil
 }
 
-func editNewsArticle(c *Ctx, args string) (Answer, error) {
+func editNewsArticle(c *Ctx, args []string) (Answer, error) {
 	if err := requireStaff(c); err != nil {
 		return staffRefusal(err)
 	}
@@ -131,7 +131,7 @@ func editNewsArticle(c *Ctx, args string) (Answer, error) {
 // scalar 3. The caller assembles the fields itself and the shipped script does
 // not say what goes in them beyond the first, so the article id is read from
 // field 0 and the rest is left alone.
-func deleteNewsArticle(c *Ctx, args string) (Answer, error) {
+func deleteNewsArticle(c *Ctx, args []string) (Answer, error) {
 	if err := requireStaff(c); err != nil {
 		return staffRefusal(err)
 	}
@@ -146,15 +146,15 @@ func deleteNewsArticle(c *Ctx, args string) (Answer, error) {
 // when it is "0" -- a row-level veto, which is unusual enough to be worth
 // naming. On a non-zero query status it abandons the server's list entirely and
 // falls back to its own 50 hardcoded sites (weblinks.cs:1-56).
-func getWebLinks(c *Ctx, args string) (Answer, error) {
+func getWebLinks(c *Ctx, args []string) (Answer, error) {
 	links, err := c.Store.WebLinks(c.Ctx)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	rows := make([]string, 0, len(links))
+	rows := make([][]any, 0, len(links))
 	for _, l := range links {
-		rows = append(rows, tab("0", l.Name, l.Address))
+		rows = append(rows, row("0", l.Name, l.Address))
 	}
 	return okRows(rows), nil
 }

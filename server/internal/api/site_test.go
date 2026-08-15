@@ -278,12 +278,7 @@ func TestTheClientRoutesCloseAndDoNotPadTheBody(t *testing.T) {
 	ts := newServer(t, st)
 	account(t, ts, "1000")
 
-	resp, err := ts.Client().PostForm(ts.URL+"/cert", map[string][]string{
-		"guid": {"1000"}, "uuid": {"session-1000"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := call(t, ts, http.MethodGet, "/cert", "1000", nil)
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(resp.Body)
@@ -305,12 +300,9 @@ func TestAFaultAnswersInTheOrdinalShape(t *testing.T) {
 	st := testStore(t)
 	ts := newServer(t, st)
 
-	resp, err := ts.Client().PostForm(ts.URL+"/db", map[string][]string{
-		"guid": {"1000"}, "uuid": {"not-a-session"},
+	resp := call(t, ts, http.MethodPost, "/db", "", map[string]any{
+		"form": "scalar", "ordinal": "5",
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -323,27 +315,21 @@ func TestAFaultAnswersInTheOrdinalShape(t *testing.T) {
 		t.Errorf("content type %q, want JSON -- an HTML page is what this replaced", ct)
 	}
 
-	var answer struct {
-		Status string   `json:"status"`
-		Result string   `json:"result"`
-		Rows   []string `json:"rows"`
+	var out struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&answer); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("a fault must be parseable by the client's own parser: %v", err)
 	}
 
-	code, text, ok := strings.Cut(answer.Status, "\t")
-	if !ok {
-		t.Fatalf("status %q is not tab-separated", answer.Status)
+	// session_expired is the slug the client branches on: it drops its token
+	// and the next request negotiates a fresh one.
+	if out.Error != "session_expired" {
+		t.Errorf("error slug %q, want session_expired", out.Error)
 	}
-	if code != "401" {
-		t.Errorf("status field 0 is %q, want 401", code)
-	}
-	// Field 1 goes into a MessageBoxOK, so it has to read like a sentence.
-	if !strings.HasSuffix(text, ".") {
-		t.Errorf("status field 1 %q does not read like a sentence", text)
-	}
-	if answer.Rows == nil {
-		t.Error("rows is null; the client iterates it without checking")
+	// The message goes into a MessageBoxOK, so it has to read like a sentence.
+	if !strings.HasSuffix(out.Message, ".") {
+		t.Errorf("message %q does not read like a sentence", out.Message)
 	}
 }

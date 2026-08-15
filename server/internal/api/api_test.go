@@ -1,13 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/henrik/tnbrowser-server/internal/auth"
 	"github.com/henrik/tnbrowser-server/internal/clancert"
+	"github.com/henrik/tnbrowser-server/internal/dbproxy"
 	"github.com/henrik/tnbrowser-server/internal/store"
 )
 
@@ -90,20 +92,46 @@ func newServer(t *testing.T, st *store.Store) *httptest.Server {
 }
 
 // db issues one ordinal and returns the decoded answer.
+// call issues an authenticated request the way the v2 client does: a JSON body
+// and identity in the Authorization header.
+func call(t *testing.T, ts *httptest.Server, method, path, guid string, body any) *http.Response {
+	t.Helper()
+
+	var r io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		r = bytes.NewReader(encoded)
+	}
+
+	req, err := http.NewRequest(method, ts.URL+path, r)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if guid != "" {
+		req.Header.Set("Authorization", "TNB "+guid+":session-"+guid)
+	}
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	return resp
+}
+
 func db(t *testing.T, ts *httptest.Server, guid, form, ordinal, args string) map[string]any {
 	t.Helper()
 
-	payload, _ := json.Marshal(map[string]string{
-		"form": form, "ordinal": ordinal, "args": args,
-	})
-	resp, err := ts.Client().PostForm(ts.URL+"/db", url.Values{
-		"guid":    {guid},
-		"uuid":    {"session-" + guid},
-		"payload": {string(payload)},
-	})
-	if err != nil {
-		t.Fatalf("post: %v", err)
+	var list []string
+	if args != "" {
+		list = strings.Split(args, "\t")
 	}
+	resp := call(t, ts, http.MethodPost, "/db", guid, map[string]any{
+		"form": form, "ordinal": ordinal, "args": list,
+	})
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -140,25 +168,54 @@ func account(t *testing.T, ts *httptest.Server, guid string) string {
 }
 
 func statusCode(answer map[string]any) string {
-	s, _ := answer["status"].(string)
-	return strings.SplitN(s, "\t", 2)[0]
+	code, _ := answer["code"].(float64)
+	return strconv.Itoa(int(code))
 }
 
+// statusField reads what used to be a field of the tab-separated status. Index
+// 0 is the code and 1 the message; anything beyond comes from the fields array,
+// so the call sites keep the numbering the shipped scripts use.
 func statusField(answer map[string]any, i int) string {
-	s, _ := answer["status"].(string)
-	f := strings.Split(s, "\t")
-	if i >= len(f) {
+	switch i {
+	case 0:
+		code, _ := answer["code"].(float64)
+		return strconv.Itoa(int(code))
+	case 1:
+		msg, _ := answer["message"].(string)
+		return msg
+	}
+	extra, _ := answer["fields"].([]any)
+	if i-2 >= len(extra) {
 		return ""
 	}
-	return f[i]
+	v, _ := extra[i-2].(string)
+	return v
 }
 
+// rows joins each row's fields the way the client's shim does, so the
+// assertions below stay written in terms of what the shipped parsers see.
 func rows(t *testing.T, answer map[string]any) []string {
 	t.Helper()
 	raw, _ := answer["rows"].([]any)
 	out := make([]string, len(raw))
 	for i, r := range raw {
-		out[i], _ = r.(string)
+		fields, _ := r.([]any)
+		parts := make([]string, len(fields))
+		for j, f := range fields {
+			switch v := f.(type) {
+			case string:
+				parts[j] = v
+			case bool:
+				// The engine reads a JSON true as 1, which is the spelling the
+				// shipped getField callers test for.
+				parts[j] = map[bool]string{true: "1", false: "0"}[v]
+			case float64:
+				parts[j] = strconv.FormatFloat(v, 'f', -1, 64)
+			default:
+				parts[j] = fmt.Sprint(v)
+			}
+		}
+		out[i] = strings.Join(parts, "\t")
 	}
 	return out
 }
@@ -196,6 +253,33 @@ func TestRegistrationDateIsWrittenOnceAndKept(t *testing.T) {
 func TestUnauthenticatedIsRefused(t *testing.T) {
 	ts := newServer(t, testStore(t))
 
+	resp := call(t, ts, http.MethodPost, "/db", "", map[string]any{
+		"form": "scalar", "ordinal": "5",
+	})
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401", resp.StatusCode)
+	}
+
+	var out struct{ Error, Message string }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("a refusal must be parseable: %v", err)
+	}
+	if out.Error != "session_expired" {
+		t.Errorf("error slug %q, want session_expired -- the client branches on it", out.Error)
+	}
+	if out.Message == "" {
+		t.Error("no sentence to show the player")
+	}
+}
+
+// A v1 mod posts its query as a urlencoded form. It gets told to update rather
+// than a parse error, because an out-of-date install is a thing a player can
+// actually fix.
+func TestAV1ClientIsToldToUpdate(t *testing.T) {
+	ts := newServer(t, testStore(t))
+
 	resp, err := ts.Client().Post(ts.URL+"/db", "application/x-www-form-urlencoded",
 		strings.NewReader("payload={}"))
 	if err != nil {
@@ -203,8 +287,12 @@ func TestUnauthenticatedIsRefused(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("status %d, want 401", resp.StatusCode)
+	var out struct{ Error, Message string }
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Error != "client_too_old" {
+		t.Errorf("error slug %q, want client_too_old", out.Error)
 	}
 }
 
@@ -231,34 +319,27 @@ func TestCertificateLayout(t *testing.T) {
 	// Two ordinals first, so the account exists and owns a tribe.
 	db(t, ts, "1001", "scalar", "16", "Big Sucka Fishes\t[BSF]\t1")
 
-	resp, err := ts.Client().PostForm(ts.URL+"/cert", url.Values{
-		"guid": {"1001"}, "uuid": {"session-1001"},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := call(t, ts, http.MethodGet, "/cert", "1001", nil)
 	defer resp.Body.Close()
 
-	var out struct {
-		Cert string `json:"cert"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var id dbproxy.Identity
+	if err := json.NewDecoder(resp.Body).Decode(&id); err != nil {
 		t.Fatal(err)
 	}
 
-	records := strings.Split(out.Cert, "\n")
-	if len(records) < 3 {
-		t.Fatalf("certificate has %d records: %q", len(records), out.Cert)
+	if id.GUID != "1001" {
+		t.Errorf("guid = %q, want 1001", id.GUID)
 	}
-	if got := strings.Split(records[0], "\t"); len(got) != 4 || got[3] != "1001" {
-		t.Errorf("record 0 = %q, want a four-field quad ending in the GUID", records[0])
+	if id.Name == "" {
+		t.Error("no warrior name; GameGui.cs:1324 reads it")
 	}
-	if records[1] != "1" {
-		t.Errorf("record 1 = %q, want the tribe count", records[1])
+	if len(id.Tribes) != 1 {
+		t.Fatalf("%d tribes, want 1: %+v", len(id.Tribes), id.Tribes)
 	}
-	if fields := strings.Split(records[2], "\t"); len(fields) != 6 || fields[4] != "4" {
-		t.Errorf("record 2 = %q, want six fields with the admin level in field 4",
-			records[2])
+	// webbrowser.cs:1909-1926 renders your own tribe list straight out of this,
+	// so the id, the rank and the title all have to survive the round trip.
+	if tribe := id.Tribes[0]; tribe.Rank != 4 || tribe.ID == 0 || tribe.Title == "" {
+		t.Errorf("tribe = %+v, want the founder's rank, id and title", tribe)
 	}
 }
 
@@ -299,21 +380,21 @@ func TestTagKeepsItsSpacing(t *testing.T) {
 func certField(t *testing.T, ts *httptest.Server, guid string, i int) string {
 	t.Helper()
 
-	resp, err := ts.Client().PostForm(ts.URL+"/cert", url.Values{
-		"guid": {guid}, "uuid": {"session-" + guid},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := call(t, ts, http.MethodGet, "/cert", guid, nil)
 	defer resp.Body.Close()
 
-	var out struct {
-		Cert string `json:"cert"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	var id dbproxy.Identity
+	if err := json.NewDecoder(resp.Body).Decode(&id); err != nil {
 		t.Fatal(err)
 	}
-	return strings.Split(strings.Split(out.Cert, "\n")[0], "\t")[i]
+	return []string{id.Name, id.Tag, boolText(id.Append), id.GUID}[i]
+}
+
+func boolText(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // The first time a GUID authenticates it is greeted by mail, because mail is
@@ -430,12 +511,12 @@ func TestRankGateIsEnforcedServerSide(t *testing.T) {
 	answer := db(t, ts, "1002", "scalar", "15",
 		"Big Sucka Fishes\t1\tRewritten by a stranger.")
 	if statusCode(answer) == "0" {
-		t.Errorf("a non-member rewrote a tribe description: %v", answer["status"])
+		t.Errorf("a non-member rewrote a tribe description: %v", answer)
 	}
 
-	// And the refusal has to be a sentence: webbrowser.cs:927 puts status
-	// field 1 straight into a MessageBoxOK.
-	msg := strings.SplitN(answer["status"].(string), "\t", 2)[1]
+	// And the refusal has to be a sentence: webbrowser.cs:927 puts the message
+	// straight into a MessageBoxOK.
+	msg, _ := answer["message"].(string)
 	if msg == "" || !strings.ContainsAny(msg, " ") {
 		t.Errorf("refusal is not a sentence: %q", msg)
 	}
@@ -663,58 +744,82 @@ func sessionServer(t *testing.T) (*httptest.Server, *auth.Sessions) {
 	return ts, sessions
 }
 
-func sessionPost(t *testing.T, ts *httptest.Server, form url.Values) string {
+// sessionPost negotiates against /session and returns the decoded answer plus
+// the HTTP status, since a refusal is now carried by both.
+func sessionPost(t *testing.T, ts *httptest.Server, body map[string]any) (map[string]any, int) {
 	t.Helper()
 
-	resp, err := ts.Client().PostForm(ts.URL+"/session", form)
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := call(t, ts, http.MethodPost, "/session", "", body)
 	defer resp.Body.Close()
 
-	body, _ := io.ReadAll(resp.Body)
-	return strings.TrimSpace(string(body))
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return out, resp.StatusCode
 }
 
-func TestSessionKeepaliveAnswersRefreshedOrTimeout(t *testing.T) {
+func TestSessionKeepaliveAnswersRefreshedOrExpired(t *testing.T) {
 	ts, sessions := sessionServer(t)
 	sessions.GrantToken("live", auth.Identity{GUID: "4510186", Name: "orange01"})
 
 	cases := []struct {
-		name string
-		form url.Values
-		want string
+		name  string
+		body  map[string]any
+		state string
+		slug  string
 	}{
-		{"live token", url.Values{"guid": {"4510186"}, "uuid": {"live"}}, "REFRESHED"},
-		{"unknown token", url.Values{"guid": {"4510186"}, "uuid": {"gone"}}, "TIMEOUT"},
+		{"live token", map[string]any{"guid": "4510186", "uuid": "live"}, "refreshed", ""},
+		{"unknown token", map[string]any{"guid": "4510186", "uuid": "gone"}, "expired", ""},
 		// A live token presented for somebody else is not a session either, and
-		// answering TIMEOUT sends the client to negotiate a fresh one.
-		{"token for another guid", url.Values{"guid": {"4120041"}, "uuid": {"live"}}, "TIMEOUT"},
-		{"no guid", url.Values{"uuid": {"live"}}, "ERR: No GUID specified."},
-		{"nothing to do", url.Values{"guid": {"4510186"}}, "ERR: Nothing to do."},
+		// answering expired sends the client to negotiate a fresh one.
+		{"token for another guid", map[string]any{"guid": "4120041", "uuid": "live"}, "expired", ""},
+		{"no guid", map[string]any{"uuid": "live"}, "", "bad_request"},
+		{"nothing to do", map[string]any{"guid": "4510186"}, "", "bad_request"},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := sessionPost(t, ts, c.form); got != c.want {
-				t.Errorf("answer = %q, want %q", got, c.want)
+			got, code := sessionPost(t, ts, c.body)
+
+			if c.slug != "" {
+				if got["error"] != c.slug {
+					t.Errorf("error = %v, want %q", got["error"], c.slug)
+				}
+				if code == http.StatusOK {
+					t.Error("a refusal answered 200")
+				}
+				return
+			}
+			if got["state"] != c.state {
+				t.Errorf("state = %v, want %q", got["state"], c.state)
+			}
+			// A keepalive must never leak a token back; only a grant carries one.
+			if _, ok := got["uuid"]; ok {
+				t.Error("a keepalive answered with a token")
 			}
 		})
 	}
 }
 
-// A certificate that TribesNext did not sign gets an ERR line, not a challenge
-// -- and not a 500, which the client would retry against forever.
+// A certificate that TribesNext did not sign is refused, and not with a 500 --
+// which the client would retry against forever.
 func TestSessionRefusesAnUnsignedCertificate(t *testing.T) {
 	ts, _ := sessionServer(t)
 
-	got := sessionPost(t, ts, url.Values{
-		"guid":  {"4510186"},
-		"cert":  {"orange01\t4510186\t10001\tb7c1\tdeadbeef"},
-		"nonce": {"1f"},
+	got, code := sessionPost(t, ts, map[string]any{
+		"guid":  "4510186",
+		"cert":  "orange01\t4510186\t10001\tb7c1\tdeadbeef",
+		"nonce": "1f",
 	})
-	if !strings.HasPrefix(got, "ERR: ") {
-		t.Errorf("answer = %q, want an ERR line", got)
+	if got["error"] != "bad_certificate" {
+		t.Errorf("error = %v, want bad_certificate", got["error"])
+	}
+	if code != http.StatusUnauthorized {
+		t.Errorf("status %d, want 401", code)
+	}
+	if got["challenge"] != nil {
+		t.Error("a refused certificate was answered with a challenge")
 	}
 }
 
@@ -733,29 +838,42 @@ func TestDatabaseRequiresASession(t *testing.T) {
 	ts := httptest.NewServer(srv.Routes())
 	t.Cleanup(ts.Close)
 
-	post := func(values url.Values) int {
-		resp, err := ts.Client().PostForm(ts.URL+"/db", values)
+	query := map[string]any{"form": "scalar", "ordinal": "5"}
+
+	post := func(auth string) int {
+		encoded, _ := json.Marshal(query)
+		req, err := http.NewRequest(http.MethodPost, ts.URL+"/db", bytes.NewReader(encoded))
 		if err != nil {
-			t.Fatalf("post: %v", err)
+			t.Fatalf("request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if auth != "" {
+			req.Header.Set("Authorization", auth)
+		}
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatalf("send: %v", err)
 		}
 		defer resp.Body.Close()
 		return resp.StatusCode
 	}
 
-	payload, _ := json.Marshal(map[string]string{"form": "scalar", "ordinal": "5"})
-
-	if code := post(url.Values{"guid": {"1001"}, "uuid": {"good"}, "payload": {string(payload)}}); code != http.StatusOK {
+	if code := post("TNB 1001:good"); code != http.StatusOK {
 		t.Errorf("a session was refused: %d", code)
 	}
-	if code := post(url.Values{"guid": {"1001"}, "uuid": {"wrong"}, "payload": {string(payload)}}); code != http.StatusUnauthorized {
+	if code := post("TNB 1001:wrong"); code != http.StatusUnauthorized {
 		t.Errorf("an unknown token got %d, want 401", code)
 	}
-	if code := post(url.Values{"guid": {"1001"}, "payload": {string(payload)}}); code != http.StatusUnauthorized {
-		t.Errorf("no token at all got %d, want 401", code)
+	if code := post(""); code != http.StatusUnauthorized {
+		t.Errorf("no credentials at all got %d, want 401", code)
+	}
+	// A header in the wrong shape is not a session either.
+	if code := post("Bearer 1001"); code != http.StatusUnauthorized {
+		t.Errorf("a foreign scheme got %d, want 401", code)
 	}
 
 	srv.TrustGUID = true
-	if code := post(url.Values{"guid": {"1001"}, "payload": {string(payload)}}); code != http.StatusOK {
+	if code := post("TNB 1001:"); code != http.StatusOK {
 		t.Errorf("the dev bypass refused a bare guid: %d", code)
 	}
 }
@@ -795,24 +913,23 @@ func clanCertServer(t *testing.T, st *store.Store) (*httptest.Server, *clancert.
 func clanCert(t *testing.T, ts *httptest.Server, guid string) (string, int) {
 	t.Helper()
 
-	resp, err := ts.Client().PostForm(ts.URL+"/clancert", url.Values{
-		"guid": {guid}, "uuid": {"session-" + guid},
-	})
-	if err != nil {
-		t.Fatalf("post: %v", err)
-	}
+	resp := call(t, ts, http.MethodGet, "/clancert", guid, nil)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", resp.StatusCode
 	}
 	var out struct {
-		Cert string `json:"cert"`
+		Certificate string `json:"certificate"`
+		Expires     int64  `json:"expires"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	return out.Cert, resp.StatusCode
+	if out.Expires <= 0 {
+		t.Error("no expiry; the client refreshes on it")
+	}
+	return out.Certificate, resp.StatusCode
 }
 
 // The certificate a player carries has to say the same thing /cert says, and
@@ -857,10 +974,7 @@ func TestClanCertificateCarriesTheSignedRecord(t *testing.T) {
 func TestClanCertificateNeedsASession(t *testing.T) {
 	ts, _ := clanCertServer(t, testStore(t))
 
-	resp, err := ts.Client().PostForm(ts.URL+"/clancert", url.Values{"guid": {"1001"}})
-	if err != nil {
-		t.Fatal(err)
-	}
+	resp := call(t, ts, http.MethodGet, "/clancert", "", nil)
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusUnauthorized {
@@ -879,7 +993,7 @@ func TestClanCertificateIsOffWithoutAKey(t *testing.T) {
 	}
 
 	// And the rest of the front door is unaffected.
-	if _, code := db(t, ts, "1001", "scalar", "5", "")["status"]; !code {
+	if _, ok := db(t, ts, "1001", "scalar", "5", "")["code"]; !ok {
 		t.Error("/db stopped answering")
 	}
 }

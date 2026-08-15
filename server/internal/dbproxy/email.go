@@ -32,8 +32,8 @@ func init() {
 // and then never used in either branch (webemail.cs:1130, :1147) -- the client
 // takes the whole tail with getFields(%row,17) regardless -- but it has to be
 // there or the body starts one field early.
-func mailRow(m store.MailRow) string {
-	head := tab(
+func mailRow(m store.MailRow) []any {
+	head := row(
 		m.ID,
 		m.From.Name, m.From.Tag, m.From.Append, m.From.GUID,
 		m.To.Name, m.To.Tag, m.To.Append, m.To.GUID,
@@ -48,26 +48,26 @@ func mailRow(m store.MailRow) string {
 // optional: the pane caches what it is handed and polls again with the highest
 // id it has, so a server that ignores it lists every message once per poll and
 // the inbox grows without bound.
-func getMail(c *Ctx, args string) (Answer, error) {
+func getMail(c *Ctx, args []string) (Answer, error) {
 	rows, err := c.Store.MailSince(c.Ctx, c.GUID, atoi(field(args, 0)))
 	if err != nil {
 		return Answer{}, err
 	}
 
-	out := make([]string, 0, len(rows))
+	out := make([][]any, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, mailRow(m))
 	}
 	return okRows(out), nil
 }
 
-func getDeletedMail(c *Ctx, args string) (Answer, error) {
+func getDeletedMail(c *Ctx, args []string) (Answer, error) {
 	rows, err := c.Store.MailDeleted(c.Ctx, c.GUID)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	out := make([]string, 0, len(rows))
+	out := make([][]any, 0, len(rows))
 	for _, m := range rows {
 		out = append(out, mailRow(m))
 	}
@@ -77,8 +77,8 @@ func getDeletedMail(c *Ctx, args string) (Answer, error) {
 	if len(out) == 0 {
 		// Twice over: field 1 is the sentence every pane shows, field 2 the
 		// one this pane reads.
-		answer.Status = okStatus("Your deleted folder is empty.",
-			"Your deleted folder is empty.")
+		answer.Message = "Your deleted folder is empty."
+		answer.Fields = []string{"Your deleted folder is empty."}
 	}
 	return answer, nil
 }
@@ -86,15 +86,15 @@ func getDeletedMail(c *Ctx, args string) (Answer, error) {
 // array 2. getTextName(getFields(%row,0,4)) consumes fields 0..4 but reads only
 // four of them (webstuff.cs:19); field 4 is then re-read as the count of mail
 // that block has actually turned away.
-func getBlockList(c *Ctx, args string) (Answer, error) {
+func getBlockList(c *Ctx, args []string) (Answer, error) {
 	people, err := c.Store.BlockList(c.Ctx, c.GUID)
 	if err != nil {
 		return Answer{}, err
 	}
 
-	out := make([]string, 0, len(people))
+	out := make([][]any, 0, len(people))
 	for _, p := range people {
-		out = append(out, tab(p.Name, p.Tag, p.Append, p.GUID, p.Hits))
+		out = append(out, row(p.Name, p.Tag, p.Append, p.GUID, p.Hits))
 	}
 	return okRows(out), nil
 }
@@ -102,7 +102,7 @@ func getBlockList(c *Ctx, args string) (Answer, error) {
 // scalar 5. The client has already truncated the whole request to 4000
 // characters shared across all four fields (webemail.cs:154), which is the
 // clearest surviving evidence of how wide the backend column was.
-func sendMail(c *Ctx, args string) (Answer, error) {
+func sendMail(c *Ctx, args []string) (Answer, error) {
 	to := field(args, 0)
 	cc := field(args, 1)
 	subject := field(args, 2)
@@ -117,7 +117,7 @@ func sendMail(c *Ctx, args string) (Answer, error) {
 
 // scalar 6 moves to the deleted folder; 35 removes permanently. Both arrive
 // through DoEmailDelete, which picks the ordinal and nothing else.
-func deleteMail(c *Ctx, args string) (Answer, error) {
+func deleteMail(c *Ctx, args []string) (Answer, error) {
 	id := atoi(field(args, 0))
 	if err := c.Store.MailDelete(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
@@ -126,7 +126,7 @@ func deleteMail(c *Ctx, args string) (Answer, error) {
 		" has been moved to your deleted folder."), nil
 }
 
-func removeMailPermanently(c *Ctx, args string) (Answer, error) {
+func removeMailPermanently(c *Ctx, args []string) (Answer, error) {
 	id := atoi(field(args, 0))
 	if err := c.Store.PurgeMail(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
@@ -140,7 +140,7 @@ func removeMailPermanently(c *Ctx, args string) (Answer, error) {
 // reassembled by the client and thrown away. It is still worth answering
 // correctly -- a failure here would be invisible either way, which is exactly
 // why the write itself has to be right.
-func markMailRead(c *Ctx, args string) (Answer, error) {
+func markMailRead(c *Ctx, args []string) (Answer, error) {
 	id := atoi(field(args, 0))
 	if err := c.Store.MarkMailRead(c.Ctx, c.GUID, id); err != nil {
 		return userError(err)
@@ -150,7 +150,7 @@ func markMailRead(c *Ctx, args string) (Answer, error) {
 
 // scalar 9 and 8. Status field 1 is shown in a MessageBoxOK on both the success
 // and failure paths (webemail.cs:525), so both branches are sentences.
-func addBlock(c *Ctx, args string) (Answer, error) {
+func addBlock(c *Ctx, args []string) (Answer, error) {
 	target, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
@@ -165,7 +165,7 @@ func addBlock(c *Ctx, args string) (Answer, error) {
 	return okResult("Mail from "+who.Name+" will no longer reach you.", "1"), nil
 }
 
-func removeBlock(c *Ctx, args string) (Answer, error) {
+func removeBlock(c *Ctx, args []string) (Answer, error) {
 	target, err := c.Store.FindUser(c.Ctx, field(args, 0))
 	if err != nil {
 		return notFound(err, "There is no warrior by that name.")
