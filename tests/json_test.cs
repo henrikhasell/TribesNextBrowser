@@ -68,6 +68,21 @@ function TNBTestScalars()
    %r = TNBJsonParse("null");
    TNBTestEq("null type", TNBJsonType(%r), "null");
    TNBJsonFree(%r);
+
+   // How the accessors read a member that is not the type the caller assumed.
+   // A parser has to answer these whatever the backend of the day sends, and a
+   // reader that treats a null as a missing string, or a bare number as false,
+   // fails in a way that looks like missing data rather than a type error.
+   %mixed = "{\"a\":null,\"n\":1,\"z\":0,\"s\":\"x\",\"e\":[]}";
+   %r = TNBJsonParse(%mixed);
+   TNBTestEq("null member reads as empty", TNBJsonStr(%r, "a"), "");
+   TNBTestEq("null member keeps its type", TNBJsonType(TNBJsonGet(%r, "a")), "null");
+   TNBTestEq("null member is falsey", TNBJsonBool(%r, "a"), 0);
+   TNBTestEq("bare number is true when nonzero", TNBJsonBool(%r, "n"), 1);
+   TNBTestEq("bare zero is false", TNBJsonBool(%r, "z"), 0);
+   TNBTestEq("string member is unaffected", TNBJsonStr(%r, "s"), "x");
+   TNBTestEq("empty array member counts zero", TNBJsonCount(TNBJsonGet(%r, "e")), 0);
+   TNBJsonFree(%r);
 }
 
 function TNBTestObjects()
