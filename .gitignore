@@ -27,5 +27,16 @@ screenshot-*.png
 # directory, so a checkout has never needed a prebuilt copy.
 /dist/
 
+# Clan signing keys. `tnserver -genkey clan.pem` writes a private key into the
+# working directory, and server/README.md's own example runs it from server/ --
+# so without this the next `git add -A` would commit the one thing in this
+# system that has to stay secret.
+#
+# The public half is written beside it as clan.pem.pub.cs and is NOT matched
+# here, deliberately: it verifies signatures and cannot make them, game servers
+# need it, and tools/build-vl2.sh --clan-key bakes it into a package.
+*.pem
+*.key
+
 # Scratch list, kept locally rather than as a project TODO.
 /todo.txt
